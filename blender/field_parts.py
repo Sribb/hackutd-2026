@@ -28,6 +28,9 @@ PALETTE = {
     "M_BRINE": ((0.16, 0.26, 0.29), 0.0, 0.2),
     "M_RUBBER": ((0.04, 0.04, 0.04), 0.0, 0.8),
     "M_GLASS": ((0.08, 0.11, 0.13), 0.0, 0.1),
+    "M_LAMP": ((0.86, 0.86, 0.82), 0.0, 0.4),     # status lights and lamps: the console lights these
+    "M_WOOD": ((0.32, 0.26, 0.20), 0.0, 0.9),
+    "M_WIRE": ((0.10, 0.10, 0.10), 0.5, 0.5),
 }
 
 AXES = {
@@ -102,6 +105,10 @@ class Site:
     def pipe(self, name, points, radius, segs=10):
         bm = bmesh.new()
         line(bm, points, radius, segs)
+        pts = [Vector(p) for p in points]
+        for end, nxt in ((pts[0], pts[1]), (pts[-1], pts[-2])):
+            d = (nxt - end).normalized() * 0.03
+            tube(bm, end - d, end + d, radius * 1.7, segs)
         obj = self.mesh(name, bm, "M_PIPE")
         obj["pipe_id"] = name
         return obj
@@ -229,6 +236,9 @@ def build_tank(site, n, loc, xo_angle=None):
     k = Kit(site, tid, root)
     a0, a1 = math.radians(CUT[1]), math.radians(CUT[0] + 360)
     arc_wall(k["M_TANK"], TANK_R, TANK_R - WALL, 0, TANK_H, a0, a1, 44)
+    for z in (1.6, 3.25):
+        arc_wall(k["M_TANK"], TANK_R + 0.03, TANK_R - 0.01, z, z + 0.07, a0, a1, 44)
+    arc_wall(k["M_STEEL"], TANK_R + 0.06, TANK_R - 0.01, TANK_H - 0.1, TANK_H, a0, a1, 44)
     arc_roof(k["M_TANK"], TANK_R + 0.05, TANK_H, TANK_H + 0.08, TANK_H + 0.55, a0, a1, 44)
     cyl(k["M_TANK"], TANK_R, FLOOR, (0, 0, FLOOR / 2), segs=44)
     cyl(k["M_CONCRETE"], TANK_R + 0.4, 0.16, (0, 0, -0.06), segs=44)
@@ -283,6 +293,8 @@ def build_pump(site, n, loc):
     box(k["M_STEEL"], (0.3, 0.5, 0.45), (-0.8, 0, 0.6))
     tube(k["M_PIPE"], (-1.75, 0, 0.85), (-0.99, 0, 0.85), 0.12, 12)
     tube(k["M_PIPE"], (-0.8, 0, 1.2), (-0.8, 0, 1.9), 0.1, 12)
+    tube(k["M_STEEL_DARK"], (-0.8, 0.08, 1.6), (-0.8, 0.22, 1.6), 0.02, 6)
+    cyl(k["M_STEEL"], 0.09, 0.05, (-0.8, 0.25, 1.6), axis="Y", segs=14)
     box(k["M_STEEL"], (0.7, 0.34, 0.34), (-0.2, 0, 0.85))
     box(k["M_STEEL"], (0.4, 0.5, 0.45), (-0.2, 0, 0.6))
     box(k["M_STEEL_DARK"], (0.55, 0.42, 0.42), (0.35, 0, 0.85))
@@ -341,11 +353,17 @@ def build_pumpjack(site, wid, loc, rot_deg):
     tube(k["M_PIPE"], (0, -3.45, 0.85), (0.6, -3.45, 0.85), 0.07, 8)
     k.done()
     beam = bmesh.new()
-    box(beam, (0.32, 6.4, 0.5), (0, 0.1, 0.25))
-    box(beam, (0.42, 0.45, 1.5), (0, -3.25, 0.0))
-    box(beam, (0.42, 0.3, 0.8), (0, -3.5, -0.35))
+    for z in (0.03, 0.47):
+        box(beam, (0.36, 6.4, 0.06), (0, 0.1, z))
+    box(beam, (0.06, 6.4, 0.38), (0, 0.1, 0.25))
     box(beam, (0.5, 0.4, 0.3), (0, 3.05, -0.1))
-    tube(beam, (0, -3.45, -0.75), (0, -3.45, -2.72), 0.03, 6)
+    # horse head: an arc centered on the pivot, so the cable stays vertical as the beam rocks
+    before = set(beam.verts)
+    arc_wall(beam, 3.47, 3.12, -0.21, 0.21, math.radians(-22), math.radians(12), 10)
+    turn_to_yz = Matrix(((0, 0, 1, 0), (-1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 0, 1)))
+    bmesh.ops.transform(beam, matrix=turn_to_yz, verts=[v for v in beam.verts if v not in before])
+    tube(beam, (0, -3.47, -1.3), (0, -3.47, -2.72), 0.03, 6)
+    box(beam, (0.5, 0.08, 0.06), (0, -3.47, -2.72))          # carrier bar on the polished rod
     site.mesh(f"{wid}_beam", beam, "M_STEEL", root, loc=(0, 0, 4.1))
     crank = bmesh.new()
     for sx in (-0.62, 0.62):
@@ -433,9 +451,5 @@ def build_truck(site, tid, loc, rot_deg=0.0):
     for x in (-3.5, -1.3, 0.9):
         box(k["M_STEEL_DARK"], (0.3, 1.8, 0.5), (x, 0, 1.4))
     tube(k["M_PIPE"], (-4.45, 0, 1.7), (-4.95, 0, 1.7), 0.12, 10)
-    for x in (4.3, -2.0, -3.4):
-        for y in (-1.1, 1.1):
-            cyl(k["M_RUBBER"], 0.52, 0.42, (x, y, 0.52), axis="Y", segs=18)
-            cyl(k["M_STEEL"], 0.26, 0.44, (x, y, 0.52), axis="Y", segs=12)
     k.done()
-    return root
+    return root   # wheels are axle objects added in detail_site.truck_extras

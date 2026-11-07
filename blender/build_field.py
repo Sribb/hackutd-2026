@@ -21,8 +21,11 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 import field_parts as fp  # noqa: E402
+import detail_equipment as de  # noqa: E402
+import detail_site as ds  # noqa: E402
 
-importlib.reload(fp)
+for _mod in (fp, de, ds):
+    importlib.reload(_mod)
 
 PAD_X = [-137.5, -82.5, -27.5, 27.5, 82.5, 137.5]
 PAD_TOP = 0.15
@@ -96,17 +99,26 @@ def build(collection):
         padkit = fp.Kit(site, f"PAD_{n}", pad)
         fp.box(padkit["M_GRAVEL"], (24, 29, PAD_TOP), (0, 43.5, PAD_TOP / 2))
         for dy in (-6.2, 6.2):
-            fp.box(padkit["M_BERM"], (13, 0.6, 0.8), (0, TANK_Y + dy, PAD_TOP + 0.4))
+            fp.box(padkit["M_STEEL"], (13, 0.3, 0.8), (0, TANK_Y + dy, PAD_TOP + 0.4))
         for dx in (-6.2, 6.2):
-            fp.box(padkit["M_BERM"], (0.6, 11.8, 0.8), (dx, TANK_Y, PAD_TOP + 0.4))
+            fp.box(padkit["M_STEEL"], (0.3, 12.1, 0.8), (dx, TANK_Y, PAD_TOP + 0.4))
         padkit.done()
+        ds.pad_extras(site, n, pad, TANK_Y, PAD_TOP)
+        ds.light_tower(site, f"PAD_{n}", (cx + 10.5, 56.8, PAD_TOP), 226)
 
         xo = {3: 0.0, 4: 180.0}.get(n)
-        _, tank = fp.build_tank(site, n, (cx, TANK_Y, PAD_TOP), xo_angle=xo)
+        tank_root, tank = fp.build_tank(site, n, (cx, TANK_Y, PAD_TOP), xo_angle=xo)
+        lo = de.tank_extras(site, n, tank_root)
         px = cx + PUMP_DX
-        _, pump = fp.build_pump(site, n, (px, PUMP_Y, PAD_TOP))
+        pump_root, pump = fp.build_pump(site, n, (px, PUMP_Y, PAD_TOP))
+        de.pump_extras(site, n, pump_root)
         vx, vy, vz = px - 0.8, PUMP_Y - 0.9, PAD_TOP + 2.05
-        _, valve = fp.build_valve(site, f"VALVE_D_{n}", (vx, vy, vz))
+        valve_root, valve = fp.build_valve(site, f"VALVE_D_{n}", (vx, vy, vz))
+        de.valve_extras(site, f"VALVE_D_{n}", valve_root, f"D-{n}")
+        stand = (cx - 7.6, 35.0)
+        de.build_loadout(site, n, (*stand, PAD_TOP))
+        site.pipe(f"PIPE_TANK_{n}_LOADOUT_{n}", [lo, (lo.x, lo.y, 1.75), (lo.x, stand[1], 1.75),
+                                                 (stand[0], stand[1], 1.75)], 0.1)
         o, s = tank["outlet"], pump["suction"]
         site.pipe(f"PIPE_TANK_{n}_PUMP_{n}", [o, (o.x, o.y, 1.6), (o.x, s.y, 1.6), (o.x, s.y, s.z), s], 0.11)
         d = pump["discharge"]
@@ -124,7 +136,8 @@ def build(collection):
                                             (inlet.x, HEADER_Y, inlet.z), inlet], 0.08)
         for j, (dx, wy, rot) in enumerate(WELLS):
             k = 4 * (n - 1) + j + 1
-            _, well = fp.build_pumpjack(site, f"WELL_{k}", (cx + dx, wy, 0.0), rot)
+            well_root, well = fp.build_pumpjack(site, f"WELL_{k}", (cx + dx, wy, 0.0), rot)
+            de.well_extras(site, k, well_root)
             w = well["outlet"]
             hx = cx - 3 + 2 * j
             site.pipe(f"PIPE_WELL_{k}_TANK_{n}", [w, (w.x + 0.5, w.y, 0.12), (w.x + 0.5, 60.0, 0.12),
@@ -132,10 +145,11 @@ def build(collection):
                                                   (hx, HEADER_Y, 0.5)], 0.06, segs=8)
 
         site.empty(f"ROAD_JCT_TANK_{n}", (cx - 7, 0, 0.1), size=1)["kind"] = "waypoint"
-        site.empty(f"STOP_TANK_{n}", (cx - 7, 26.0, PAD_TOP), size=1)["kind"] = "waypoint"
+        site.empty(f"STOP_TANK_{n}", (cx - 10.2, 35.0, PAD_TOP), size=1)["kind"] = "waypoint"
 
     # crossover between Tank 3 and Tank 4, with its valve on a small pad in the gap
-    _, xo_valve = fp.build_valve(site, "VALVE_XO_34", (0.0, TANK_Y, 1.6), rot_z=math.pi / 2)
+    xo_root, xo_valve = fp.build_valve(site, "VALVE_XO_34", (0.0, TANK_Y, 1.6), rot_z=math.pi / 2)
+    de.valve_extras(site, "VALVE_XO_34", xo_root, "XO-34")
     t3 = Vector((PAD_X[2] + fp.NOZZLE_R, TANK_Y, PAD_TOP + 0.85))
     t4 = Vector((PAD_X[3] - fp.NOZZLE_R, TANK_Y, PAD_TOP + 0.85))
     west, east = sorted((xo_valve["north"], xo_valve["south"]), key=lambda v: v.x)
@@ -150,7 +164,8 @@ def build(collection):
     # disposal wells and the trunk line that feeds them
     swd_in = {}
     for sx, sid in ((-1, "SWD_1"), (1, "SWD_2")):
-        _, swd = fp.build_swd(site, sid, (sx * SWD_X, SWD_Y, 0.0), fx=-sx)
+        swd_root, swd = fp.build_swd(site, sid, (sx * SWD_X, SWD_Y, 0.0), fx=-sx)
+        ds.swd_extras(site, sid, swd_root, -sx, sid[-1])
         swd_in[sid] = swd["inlet"]
         site.empty(f"ROAD_JCT_{sid}", (sx * SWD_X, 0, 0.1), size=1)["kind"] = "waypoint"
         site.empty(f"STOP_{sid}", (sx * SWD_X, 7.5, 0.15), size=1)["kind"] = "waypoint"
@@ -170,9 +185,11 @@ def build(collection):
             fp.box(supports["M_CONCRETE"], (0.5, 0.9, TRUNK_Z - 0.15), (x, TRUNK_Y, (TRUNK_Z - 0.15) / 2))
         x += 10.0
 
-    fp.build_yard(site, (YARD[0], YARD[1], 0.0))
-    fp.build_truck(site, "TRUCK_1", (-2.0, -27.0, 0.12))
-    fp.build_truck(site, "TRUCK_2", (12.5, -27.0, 0.12))
+    yard = fp.build_yard(site, (YARD[0], YARD[1], 0.0))
+    ds.yard_extras(site, yard)
+    for tid, x in (("TRUCK_1", -2.0), ("TRUCK_2", 12.5)):
+        ds.truck_extras(site, tid, fp.build_truck(site, tid, (x, -27.0, 0.12)))
+    ds.power(site, [(cx - 12.8, 30.0) for cx in PAD_X] + [(-216.0, 7.0), (216.0, 7.0), (-20.0, -20.0)])
     site.empty("ROAD_JCT_YARD_1", (0, 0, 0.1), size=1)["kind"] = "waypoint"
     site.empty("STOP_YARD_1", (0, -21.0, 0.12), size=1)["kind"] = "waypoint"
     site.empty("ROAD_END_W", (-225, 0, 0.1), size=1)["kind"] = "waypoint"
@@ -231,7 +248,10 @@ def render_checks(scene, out_dir):
     shading.light, shading.color_type = "STUDIO", "MATERIAL"
     shading.show_cavity, shading.show_shadows = True, True
     scene.render.resolution_x, scene.render.resolution_y = 1600, 900
-    shots = {"overview": None, "tanks_3_4": ((-14, 10, 16), (0, 44, 2)),
+    shots = {"overview": None,
+             "tank_3": ((-12.0, 22.0, 9.0), (-27.5, 40.0, 2.5)),
+             "pumpjack": ((-36.0, 61.0, 4.5), (-43.5, 70.5, 2.0)),
+             "truck": ((9.0, -38.0, 5.0), (-1.0, -27.0, 1.8)),
              "swd_2": ((176, -12, 20), (205, 16, 2))}
     for name, view in shots.items():
         cam = scene.camera
