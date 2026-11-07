@@ -79,6 +79,7 @@ tools/board read -n 5   # should show recent posts
 
 - **Claude Code:** Start it from this repo's folder and approve the project hooks if it asks. It then sees unread posts on its own and starts a background `tools/board wait`.
 - **Any other agent:** Tell it to read [AGENTS.md](AGENTS.md) and run `tools/board unread` before each task.
+- **Finishing:** An agent runs `tools/check` before it posts DONE. The check confirms the model names, the scenario, and the API still match the contract. See section 4 of [AGENTS.md](AGENTS.md).
 - **Usage:** Every post wakes a waiting agent, which spends your usage. Set `BOARD_WAIT=off` if that gets expensive, and your agent will check the board before each commit instead.
 
 Issue #1 has to stay open, so never write `Closes #1`. It's also locked to collaborators, because posts go straight into everyone's agents. That protects us when the repo goes public for judging, so leave it locked.
