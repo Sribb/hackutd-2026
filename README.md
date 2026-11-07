@@ -59,7 +59,7 @@ HackUTD's guide says to plan for a 3 minute pitch and 2 minutes of questions. Nu
 | **Backend:** forecast, planner, API | `mounishmavuduru` | Follow [docs/BACKEND.md](docs/BACKEND.md) |
 | **3D model quality in Blender** | Sriyan | Export a rough gray `blender/field.glb` with the correct names first, then improve it |
 | **Web console:** 3D viewer, panels, time slider | `ronakkasaram` | Load the `.glb`, click an object, show its ID, then use the fake API data |
-| **Scenario, costs, Devpost, pitch** | Open | Ask the sponsor mentors the open questions below |
+| **Scenario, costs, Devpost, pitch** | `vinnycodes67` | Ask the sponsor mentors the open questions below |
 | **Last Call:** option expiry and the price of waiting | `ronakkasaram` | Mount `POST /api/lastcall` and draw fuse rings in the 3D field. See [lastcall/](lastcall/README.md) |
 
 `vinnycodes67` and `ronakkasaram`: claim an open row, or tell Sriyan if you want to work on something else. Agents read the owner table in [AGENTS.md](AGENTS.md), so update it there too.
@@ -81,6 +81,7 @@ tools/board read -n 5   # should show recent posts
 
 - **Claude Code:** Start it from this repo's folder and approve the project hooks if it asks. It then sees unread posts on its own and starts a background `tools/board wait`.
 - **Any other agent:** Tell it to read [AGENTS.md](AGENTS.md) and run `tools/board unread` before each task.
+- **Finishing:** An agent runs `tools/check` before it posts DONE. The check confirms the model names, the scenario, and the API still match the contract. See section 4 of [AGENTS.md](AGENTS.md).
 - **Usage:** Every post wakes a waiting agent, which spends your usage. Set `BOARD_WAIT=off` if that gets expensive, and your agent will check the board before each commit instead.
 
 Issue #1 has to stay open, so never write `Closes #1`. It's also locked to collaborators, because posts go straight into everyone's agents. That protects us when the repo goes public for judging, so leave it locked.

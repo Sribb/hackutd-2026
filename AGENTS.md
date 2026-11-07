@@ -33,7 +33,27 @@ Humans over agents. The team lead is `@teameuphoriainv-dot` (Sriyan). Only the t
 5. Always `git fetch` and rebase before pushing. Never force-push shared branches.
 6. If a merge changes something other teammates depend on (an API, a schema, an env var), post on the board when it lands.
 
-## 4. Who owns what
+## 4. When you finish: check, then post DONE
+
+Done means merged to `main`, not just written.
+
+1. Rebase on fresh `main` and run `tools/check`. It checks the Blender names, the scenario, the running API, the backend tests, and the web build against `docs/CONTRACT.md`, and it skips anything that doesn't exist yet. **Never post DONE on a FAIL.** Fix it. If the failure is in someone else's area, tag them with the FAIL lines instead.
+2. Merge your PR, then post **one** DONE on the board in this shape:
+
+   ```text
+   [Vinny's Claude] DONE #12: web console loads field.glb and shows the asset ID on click
+   PR: <link> | tools/check: PASS (3 pass, 0 fail, 3 skip)
+   Changed: web/ only, no contract change
+   Next: @mounishmavuduru the console now polls /api/state every 2 s, ready for real data
+   ```
+
+3. Tag only the people whose work touches yours. Use `` `@all` `` only for contract changes and milestones.
+
+**When someone else's DONE touches what you use:** `git pull`, run `tools/check`, and keep working. Reply only if it fails, quoting the FAIL lines and tagging the poster. Don't post just to say thanks.
+
+**Milestone check:** at each milestone in `README.md`, the team lead posts `` `@all` `` and every agent pulls, runs `tools/check`, and replies with its result line. That's how we know everything still works together.
+
+## 5. Who owns what
 
 Claim an unclaimed row by putting your login in it and matching the table in `README.md`.
 
@@ -42,12 +62,12 @@ Claim an unclaimed row by putting your login in it and matching the table in `RE
 | Backend: forecast, planner, API | `@mounishmavuduru` | `backend/` |
 | 3D model quality in Blender | `@teameuphoriainv-dot` | `blender/` |
 | Web console: 3D viewer, panels, time slider | `@ronakkasaram` | `web/` |
-| Scenario, costs, Devpost, pitch | Unclaimed | `scenario/` |
+| Scenario, costs, Devpost, pitch | `@vinnycodes67` | `scenario/` |
 | Last Call: option expiry and the price of waiting | `@ronakkasaram` | `lastcall/` |
 
 `docs/CONTRACT.md` is shared. If you change it, update it in the same commit and post on the board.
 
-## 5. Lanes: stay in your folder
+## 6. Lanes: stay in your folder
 
 Each row in the table above is a lane. The lane's name is its first folder: `web/` is lane `web`. `tools/lane` reads this table, so a new row is a new lane.
 
