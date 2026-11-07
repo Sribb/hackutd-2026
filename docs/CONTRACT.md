@@ -64,10 +64,11 @@ Everything that doesn't change during the night.
 {
   "tanks": [{ "id": "TANK_3", "capacity_bbl": 1000, "shutdown_pct": 90 }],
   "pumps": [{ "id": "PUMP_3", "tank_id": "TANK_3", "rate_bbl_hr": 150 }],
-  "valves": [{ "id": "VALVE_XO_34", "connects": ["TANK_3", "TANK_4"] }],
+  "valves": [{ "id": "VALVE_XO_34", "connects": ["TANK_3", "TANK_4"], "max_bbl_hr": 90, "manual": true }],
   "wells": [{ "id": "WELL_9", "tank_id": "TANK_3", "water_bbl_hr": 20, "lost_usd_hr": 300 }],
   "disposal_wells": [{ "id": "SWD_1", "max_bbl_hr": 600 }],
-  "trucks": [{ "id": "TRUCK_1", "capacity_bbl": 130, "minutes_to": { "TANK_3": 35 } }]
+  "trucks": [{ "id": "TRUCK_1", "capacity_bbl": 130, "minutes_to": { "TANK_3": 35 } }],
+  "lead_min": { "SET_VALVE_manual": 20, "SET_VALVE_remote": 1, "CHOKE_WELL": 2, "SEND_TRUCK": 5, "SET_PUMP": 1 }
 }
 ```
 
@@ -106,6 +107,10 @@ Request:
 ```
 
 Action types: `SET_VALVE`, `SET_PUMP`, `CHOKE_WELL`, `SEND_TRUCK`.
+
+`at_min` is when the action takes effect. For `SEND_TRUCK` it's the dispatch time, and the forecast adds the drive. For `CHOKE_WELL`, `value` is the fraction of normal flow the well keeps: `1.0` is untouched and `0.0` is shut in.
+
+`lead_min` in `/api/field` is how long an action takes to start working after the operator decides, such as the rover's drive to a manual valve. Last Call uses it. The forecast doesn't.
 
 Response:
 
@@ -150,6 +155,38 @@ Returns the best plans, cheapest first. It must always return something, even if
   ]
 }
 ```
+
+### `POST /api/lastcall`
+
+How long each fix stays possible, and what waiting costs. See [lastcall/README.md](../lastcall/README.md). Run it when an incident opens and after a plan is approved, not on every click. It takes about a second.
+
+Request: `{ "horizon_minutes": 360, "step_minutes": 5, "top_n": 3 }`, all optional.
+
+```json
+{
+  "status": "INCIDENT",
+  "headline": "Your cheapest plan expires at 2:20 AM. Wait past it and the bill goes from $1,408 to $1,962.",
+  "shutdown": { "asset_id": "TANK_3", "t_min": 62.7, "clock": "2:50 AM" },
+  "point_of_no_return": { "t_min": 57.8, "clock": "2:45 AM" },
+  "do_nothing_usd": 8834,
+  "options": [
+    {
+      "plan_id": "lc_36",
+      "summary": "Open the Tank 3 to 4 crossover and send one truck to Tank 3.",
+      "cost": { "total_usd": 1408 },
+      "expires_min": 33.3, "expires_clock": "2:20 AM",
+      "expires_min_hot": null, "robust": false,
+      "steps": [{ "n": 1, "asset_id": "VALVE_XO_34", "do_by_clock": "2:20 AM", "text": "Send the rover to open the Tank 3 to 4 crossover by 2:20 AM." }]
+    }
+  ],
+  "ladder": [{ "plan_id": "lc_36", "from_min": 0, "expires_min": 33.3, "usd_at_start": 1408, "asset_ids": ["VALVE_XO_34", "TRUCK_1"] }],
+  "cliffs": [{ "t_min": 33.3, "clock": "2:20 AM", "from_usd": 1324, "to_usd": 1962, "text": "..." }],
+  "curve": [{ "start_min": 0, "total_usd": 1408, "plan_id": "lc_36", "keeps_running": true }],
+  "assets": { "VALVE_XO_34": { "useful_until_min": 57.8, "in_cheapest_from_min": 0, "in_cheapest_until_min": 54.9 } }
+}
+```
+
+`expires_min_hot` is the same expiry with inflow 15% higher. `null` means the plan already fails at that inflow. When no tank reaches shutdown, `status` is `CALM`.
 
 ### `POST /api/plans/{id}/approve`
 

@@ -1,0 +1,71 @@
+"""Run with: python3 -m pytest lastcall  (or python3 -m lastcall.test_lastcall)"""
+
+import copy
+import os
+
+from lastcall import core, sim
+
+SCENARIO = core.load_scenario(os.path.join(os.path.dirname(__file__), "scenario.json"))
+
+
+def test_forecast_starts_from_current_level():
+    # Tank 3: 712 bbl, shutdown 900, inflow 180 bbl/hr, pump down -> 62.7 min.
+    fc = sim.forecast(SCENARIO, [])
+    hit = [e for e in fc["events"] if e["asset_id"] == "TANK_3"][0]
+    assert abs(hit["t_min"] - 62.7) < 0.5
+
+
+def test_fuller_tank_shuts_down_sooner():
+    full = copy.deepcopy(SCENARIO)
+    next(t for t in full["tanks"] if t["id"] == "TANK_3")["level_pct"] = 85.0
+    t_full = sim.forecast(full, [])["events"][0]["t_min"]
+    t_base = sim.forecast(SCENARIO, [])["events"][0]["t_min"]
+    assert t_full < t_base
+
+
+def test_cheap_slow_options_expire_first():
+    r = core.last_call(SCENARIO)
+    ladder = r["ladder"]
+    assert len(ladder) >= 2
+    # Each rung lives longer and costs more than the one before.
+    for a, b in zip(ladder, ladder[1:]):
+        assert b["expires_min"] >= a["expires_min"]
+        assert b["usd_at_start"] >= a["usd_at_start"]
+    # The point of no return is before the shutdown.
+    assert r["point_of_no_return"]["t_min"] < r["shutdown"]["t_min"]
+
+
+def test_every_option_really_works_at_its_expiry_and_not_after():
+    r = core.last_call(SCENARIO)
+    plans = {p["id"]: p for p in core.candidate_plans(SCENARIO, ["TANK_3"])}
+    for o in r["options"]:
+        p = plans[o["plan_id"]]
+        ok = sim.forecast(SCENARIO, core.schedule(p, o["expires_min"]))
+        late = sim.forecast(SCENARIO, core.schedule(p, o["expires_min"] + 2))
+        assert not ok["events"], o["summary"]
+        assert late["events"], o["summary"]
+
+
+def test_calm_field_reports_calm():
+    calm = copy.deepcopy(SCENARIO)
+    for p in calm["pumps"]:
+        p["status"] = "OK"
+    assert core.last_call(calm)["status"] == "CALM"
+
+
+def test_crossover_cannot_drown_the_neighbor():
+    # A plan that keeps Tank 3 alive by overfilling Tank 4 must not count as working.
+    tight = copy.deepcopy(SCENARIO)
+    next(t for t in tight["tanks"] if t["id"] == "TANK_4")["level_pct"] = 88.0
+    r = core.last_call(tight)
+    for o in r["options"]:
+        plan = next(p for p in core.candidate_plans(tight, ["TANK_3"]) if p["id"] == o["plan_id"])
+        fc = sim.forecast(tight, core.schedule(plan, 0))
+        assert not any(e["asset_id"] == "TANK_4" for e in fc["events"])
+
+
+if __name__ == "__main__":
+    for name, fn in list(globals().items()):
+        if name.startswith("test_"):
+            fn()
+            print("ok", name)
