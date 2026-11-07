@@ -1,3 +1,6 @@
+import "@fontsource/gloock/400.css";
+import "@fontsource/azeret-mono/400.css";
+import "@fontsource/azeret-mono/600.css";
 import * as THREE from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
@@ -17,8 +20,8 @@ renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x0a0c0f);
-scene.fog = new THREE.Fog(0x0a0c0f, 90, 180);
+scene.background = new THREE.Color(0x050505);
+scene.fog = new THREE.Fog(0x050505, 90, 180);
 
 const camera = new THREE.PerspectiveCamera(40, 1, 0.5, 500);
 camera.position.set(-6, 46, 62);
@@ -216,9 +219,9 @@ function boxOf(id) {
 
 // --------------------------------------------------------------- status ----
 const COLORS = {
-  WARNING: new THREE.Color(0xf0a63a),
-  ALARM: new THREE.Color(0xef5a50),
-  NO_DATA: new THREE.Color(0xf0a63a),
+  WARNING: new THREE.Color(0xc9a14a),
+  ALARM: new THREE.Color(0xff4b1f),
+  NO_DATA: new THREE.Color(0xc9a14a),
 };
 const TRYING = new THREE.Color(0x58c4e8);
 const SELECTED = new THREE.Color(0x2a2f36);
