@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Freeboard Console</title>
+  <link rel="stylesheet" href="/src/style.css">
+</head>
+<body>
+  <div id="app">
+    <main id="stage">
+      <canvas id="scene"></canvas>
+      <div id="hoverTag" class="tag" hidden></div>
+      <div id="loading" class="loading">Loading field…</div>
+      <div id="modelNote" class="model-note" hidden></div>
+      <div class="timebar">
+        <div class="timebar-row">
+          <span class="kicker">Forecast, no action</span>
+          <b id="timeClock">1:47 AM</b>
+          <span id="timeRel" class="muted">now</span>
+        </div>
+        <div class="slider-wrap">
+          <input id="time" type="range" min="0" max="360" step="5" value="0" aria-label="Forecast time">
+          <div id="marks" class="marks"></div>
+        </div>
+      </div>
+    </main>
+
+    <aside id="side">
+      <header class="brand-row">
+        <div class="brand">FREEBOARD</div>
+        <div id="source" class="badge"></div>
+      </header>
+      <div class="clock" id="clock">1:47 AM</div>
+
+      <section id="incident" class="card incident" hidden></section>
+
+      <section class="card" id="selected">
+        <div class="kicker">Selected</div>
+        <div class="empty">Click anything in the field.</div>
+      </section>
+
+      <section class="card">
+        <div class="kicker" id="tankKicker">Tank levels</div>
+        <div id="tanks"></div>
+      </section>
+
+      <footer id="warnings" class="warnings"></footer>
+    </aside>
+  </div>
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
