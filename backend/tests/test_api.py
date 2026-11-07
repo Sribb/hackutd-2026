@@ -30,7 +30,7 @@ def test_field_has_contract_keys_and_ids():
     body = r.json()
     for key in ("tanks", "pumps", "valves", "wells", "disposal_wells", "trucks"):
         assert key in body
-    ids = {x["id"] for key in body for x in body[key]}
+    ids = {x["id"] for key in body if isinstance(body[key], list) for x in body[key]}
     assert ids <= contract_ids()
     assert len(body["tanks"]) == 6 and len(body["wells"]) == 24
 

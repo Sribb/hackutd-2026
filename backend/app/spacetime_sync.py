@@ -30,6 +30,10 @@ def _config() -> tuple[str, str, str | None] | None:
     return url, db, os.environ.get("SPACETIME_TOKEN")
 
 
+def enabled() -> bool:
+    return _config() is not None
+
+
 def call_reducer(reducer: str, args: list, timeout: float = 3.0) -> None:
     """POST /v1/database/{db}/call/{reducer} with positional JSON args."""
     cfg = _config()
