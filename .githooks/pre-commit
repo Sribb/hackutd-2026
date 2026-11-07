@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Backstop for the lane fence: blocks commits that touch files outside this checkout's lane.
+# Agents can write files through the shell, which the Claude Code hook can't see. This catches those.
+# Active only in checkouts fenced with `tools/lane set` or `tools/lane start`. Override: LANE_FENCE=off.
+exec "$(git rev-parse --show-toplevel)/tools/lane" check --staged
