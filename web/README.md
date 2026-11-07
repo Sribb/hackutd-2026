@@ -19,16 +19,23 @@ npm run build                                    # what tools/check runs
 - The time slider plays the do-nothing forecast. Tank levels move, a tank turns red at shutdown, and its wells go dark. The big clock always shows the real time, and the forecast time is shown on the time bar.
 - The camera frames the whole field on load, whatever size the model is.
 
+## What-if, plans, approve, Last Call
+
+- **Try a change:** select a valve, truck, or well on the incident tank and press a "Try a change" button. The console posts `/api/forecast` with the action list, and the verdict, cost, tank levels, and slider update. Each action uses the lead time from `field.lead_min` (the rover's 20 minutes to the crossover, for example). The "Trying" card lists every action, and you can remove any one.
+- **Cheapest plans:** come from `/api/plans`, with Last Call's "Start by" time. "Try it" loads a plan as a what-if. "Approve" calls `/api/plans/{id}/approve` and walks the numbered steps: the camera flies to each step's asset, and the radio script is underneath. Escape exits and flies home.
+- **Last Call:** the incident card says when the cheapest plan expires. An amber fuse ring around each asset that can still help burns down as the slider moves and disappears at that asset's `useful_until_min` from `/api/lastcall`. Rings hide while a what-if is active.
+
 ## Data
 
-`src/api.js` reads the API in the `docs/CONTRACT.md` shape. Without `VITE_API`, or if the server is down, it uses `public/fake/*.json` and shows a **FAKE DATA** badge. The fake files were generated from the Last Call placeholder scenario (PR #10), so their numbers match it: Tank 3 shuts down at 2:50 AM.
+`src/api.js` reads the API in the `docs/CONTRACT.md` shape. Each endpoint falls back to `public/fake/*.json` on its own, so a backend that only has `/api/field` and `/api/state` still runs live for those two. The badge names any endpoint that's fake. A what-if the fake data doesn't cover is refused with a note. It's never guessed.
+
+The fake files are generated, not hand-written: `python3 web/scripts/make_fakes.py`. Every number comes from the Last Call reference forecast (PR #10) on its placeholder scenario: Tank 3 shuts down at 2:50 AM. `whatif.json` covers every combination of crossover, two trucks, and the four Tank 3 wells (none, 50%, or shut in).
 
 ## Debug
 
-`window.__freeboard` in the browser console has `assets` (ID to meshes), `select(id)`, `viewAt(t)`, and `missing` (contract IDs not found in the model).
+`window.__freeboard` in the browser console has `assets` (ID to meshes), `select(id)`, `viewAt(t)`, `setActions([...])`, `actions`, and `missing` (contract IDs not found in the model).
 
 ## Next
 
-1. What-if: clicking a valve, pump, or truck posts `/api/forecast` with that action and redraws the timeline.
-2. Plans panel from `/api/plans`, and the approve walk-through, where the camera moves to each step's asset.
-3. Last Call fuse rings from `/api/lastcall` `assets[id].useful_until_min`.
+1. Swap to the live `/api/forecast`, `/api/plans`, and `/api/lastcall` as the backend lands. No code change is needed.
+2. Run the README's 60-second test on a stranger.

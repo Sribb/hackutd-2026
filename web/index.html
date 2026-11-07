@@ -15,7 +15,7 @@
       <div id="modelNote" class="model-note" hidden></div>
       <div class="timebar">
         <div class="timebar-row">
-          <span class="kicker">Forecast, no action</span>
+          <span class="kicker" id="timeLabel">Forecast, no action</span>
           <b id="timeClock">1:47 AM</b>
           <span id="timeRel" class="muted">now</span>
         </div>
@@ -35,10 +35,16 @@
 
       <section id="incident" class="card incident" hidden></section>
 
+      <section id="walk" class="card walk" hidden></section>
+
       <section class="card" id="selected">
         <div class="kicker">Selected</div>
         <div class="empty">Click anything in the field.</div>
       </section>
+
+      <section id="whatif" class="card whatif" hidden></section>
+
+      <section id="plans" class="card" hidden></section>
 
       <section class="card">
         <div class="kicker" id="tankKicker">Tank levels</div>
