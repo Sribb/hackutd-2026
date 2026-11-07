@@ -316,7 +316,8 @@ function viewAt(t) {
   const view = {};
   for (const id of ids) {
     const s = data.state.assets[id];
-    view[id] = s ? { ...s } : { status: "NO_DATA" };
+    // A yard has no sensor, so no reading is normal there. Anything else without one is NO DATA.
+    view[id] = s ? { ...s } : /^YARD_/.test(id) ? { status: "OK" } : { status: "NO_DATA" };
   }
   for (const a of actions) {
     const v = view[a.asset_id];
@@ -560,7 +561,7 @@ function renderSources() {
   const src = $("source");
   if (!fakes.length) { src.textContent = "LIVE API"; src.className = "badge"; src.title = ""; return; }
   const all = fakes.length === Object.keys(api.sources).length;
-  src.textContent = all ? "FAKE DATA" : `FAKE: ${fakes.join(", ")}`;
+  src.textContent = all ? "FAKE DATA" : `LIVE · ${fakes.length} FAKE`;
   src.className = "badge fake";
   src.title = `Fake data for: ${fakes.join(", ")}`;
 }
@@ -611,7 +612,7 @@ function buildFuses() {
     if (!box) continue;
     const size = box.getSize(new THREE.Vector3());
     const c = box.getCenter(new THREE.Vector3());
-    const r = Math.max(size.x, size.z) * 0.6 + 0.9;
+    const r = Math.max(size.x, size.z) * 0.55 + 0.9;
     const w = Math.max(0.32, r * 0.09); // stays visible at any model scale
     const track = new THREE.Mesh(new THREE.RingGeometry(r, r + w, 64), fuseTrack);
     const burn = new THREE.Mesh(new THREE.RingGeometry(r, r + w, 64), fuseMat);
