@@ -1,0 +1,22 @@
+# Secrets
+.env
+.env.*
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.db
+*.sqlite3
+
+# Web
+node_modules/
+dist/
+.next/
+
+# Blender backups
+*.blend1
+*.blend2
+
+# Mac
+.DS_Store
