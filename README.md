@@ -58,7 +58,7 @@ HackUTD's guide says to plan for a 3 minute pitch and 2 minutes of questions. Nu
 | **Backend:** forecast, planner, API | `mounishmavuduru` | Follow [docs/BACKEND.md](docs/BACKEND.md) |
 | **3D model quality in Blender** | Sriyan | Export a rough gray `blender/field.glb` with the correct names first, then improve it |
 | **Web console:** 3D viewer, panels, time slider | Open | Load the `.glb`, click an object, show its ID, then use the fake API data |
-| **Scenario, costs, Devpost, pitch** | Open | Ask the sponsor mentors the open questions below |
+| **Scenario, costs, Devpost, pitch** | `vinnycodes67` | Ask the sponsor mentors the open questions below |
 
 `vinnycodes67` and `ronakkasaram`: claim an open row, or tell Sriyan if you want to work on something else. Agents read the owner table in [AGENTS.md](AGENTS.md), so update it there too.
 
