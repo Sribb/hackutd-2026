@@ -1,6 +1,7 @@
-# Secrets
+# Secrets (the example file has no secrets, so it is kept)
 .env
 .env.*
+!.env.example
 
 # Python
 .venv/

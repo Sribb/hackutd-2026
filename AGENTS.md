@@ -63,5 +63,6 @@ Claim an unclaimed row by putting your login in it and matching the table in `RE
 | 3D model quality in Blender | `@teameuphoriainv-dot` | `blender/` |
 | Web console: 3D viewer, panels, time slider | Unclaimed | `web/` |
 | Scenario, costs, Devpost, pitch | `@vinnycodes67` | `scenario/` |
+| Library on Maincloud: presets and the asset library | `@teameuphoriainv-dot` | `library/` |
 
 `docs/CONTRACT.md` is shared. If you change it, update it in the same commit and post on the board.
