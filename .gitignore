@@ -18,5 +18,8 @@ dist/
 *.blend1
 *.blend2
 
+# Agent board local state
+.board/
+
 # Mac
 .DS_Store
