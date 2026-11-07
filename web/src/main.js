@@ -73,7 +73,10 @@ function idFor(obj) {
   // Walk up from the clicked mesh. A node named exactly with an ID wins. Children like
   // PUMP_3_motor, and TANK_3_LEVEL kept outside the tank group, resolve to their asset.
   for (let o = obj; o; o = o.parent) {
+    // field.glb puts the ID in glTF extras, which three.js loads into userData.
+    if (o.userData && ids.has(o.userData.asset_id)) return o.userData.asset_id;
     if (ids.has(o.name)) return o.name;
+    if (/^(PIPE|STOP|ROAD|PAD|SITE|CAM)_/.test(o.name)) return null; // scenery, never an asset
     const m = o.name.match(/^([A-Z]+(?:_[A-Z]+)*_\d+)(?:_.*)?$/);
     if (m && ids.has(m[1])) return m[1];
   }
@@ -96,8 +99,27 @@ function indexModel(root) {
     }
     assets.set(id, a);
   });
-  root.traverse((o) => { if (assets.has(o.name)) assets.get(o.name).root = o; });
+  root.traverse((o) => {
+    if (assets.has(o.name)) assets.get(o.name).root = o;
+    // Moving parts from CONTRACT.md "What's in field.glb".
+    const m = o.name.match(/^(PUMP_\d+)_rotor$|^(VALVE_[A-Z0-9_]+?)_wheel$|^(WELL_\d+)_(beam|crank)$/);
+    if (m) movers.push({ node: o, id: m[1] || m[2] || m[3], kind: m[1] ? "rotor" : m[2] ? "wheel" : m[4], rest: o.rotation.clone() });
+  });
   for (const a of assets.values()) if (!a.root) a.root = a.meshes[0] || a.levelMesh;
+}
+
+// Animated parts: pumps spin while running, pumpjacks rock while producing,
+// a valve's handwheel turns while a what-if changes it.
+const movers = [];
+function animateMovers(dt, t) {
+  for (const mv of movers) {
+    const s = (lastView[mv.id] || {}).status;
+    const running = s !== "ALARM" && s !== "OFFLINE" && s !== "NO_DATA";
+    if (mv.kind === "rotor" && running) mv.node.rotation.x += dt * 12;
+    if (mv.kind === "crank" && running) mv.node.rotation.x += dt * 1.6;
+    if (mv.kind === "beam") mv.node.rotation.x = mv.rest.x + (running ? 0.25 * Math.sin(t * 1.6) : 0);
+    if (mv.kind === "wheel" && actions.some((a) => a.asset_id === mv.id)) mv.node.rotation.y += dt * 2;
+  }
 }
 
 function boxOf(id) {
@@ -501,17 +523,18 @@ function buildFuses() {
     if (!box) continue;
     const size = box.getSize(new THREE.Vector3());
     const c = box.getCenter(new THREE.Vector3());
-    const r = Math.max(size.x, size.z) / 2 + 0.9;
-    const track = new THREE.Mesh(new THREE.RingGeometry(r, r + 0.32, 64), fuseTrack);
-    const burn = new THREE.Mesh(new THREE.RingGeometry(r, r + 0.32, 64), fuseMat);
+    const r = Math.max(size.x, size.z) * 0.6 + 0.9;
+    const w = Math.max(0.32, r * 0.09); // stays visible at any model scale
+    const track = new THREE.Mesh(new THREE.RingGeometry(r, r + w, 64), fuseTrack);
+    const burn = new THREE.Mesh(new THREE.RingGeometry(r, r + w, 64), fuseMat);
     for (const m of [track, burn]) {
       m.rotation.x = -Math.PI / 2;
-      m.position.set(c.x, 0.06, c.z);
+      m.position.set(c.x, box.min.y + 0.06, c.z);
       m.renderOrder = 2;
       m.name = "fuse";
       scene.add(m);
     }
-    fuses.set(id, { track, burn, r, until: info.useful_until_min, frac: -1 });
+    fuses.set(id, { track, burn, r, w, until: info.useful_until_min, frac: -1 });
   }
 }
 
@@ -523,7 +546,7 @@ function updateFuses() {
     if (!visible || Math.abs(frac - f.frac) < 1e-3) continue;
     f.frac = frac;
     f.burn.geometry.dispose();
-    f.burn.geometry = new THREE.RingGeometry(f.r, f.r + 0.32, 64, 1, Math.PI / 2, Math.PI * 2 * frac);
+    f.burn.geometry = new THREE.RingGeometry(f.r, f.r + f.w, 64, 1, Math.PI / 2, Math.PI * 2 * frac);
   }
 }
 
@@ -546,7 +569,10 @@ let home = null;
 function frame(root) {
   // Fit the whole field in view, whatever size the Blender model turns out to be.
   // The operator should never need to touch the camera (README usability test).
-  const box = new THREE.Box3().setFromObject(root);
+  // Frame the assets, not the whole site: the model's ground and roads run far past them.
+  const box = new THREE.Box3();
+  for (const a of assets.values()) if (a.root) box.expandByObject(a.root);
+  if (box.isEmpty()) box.setFromObject(root);
   const size = box.getSize(new THREE.Vector3());
   const center = box.getCenter(new THREE.Vector3());
   const radius = Math.max(size.x, size.z) / 2;
@@ -558,8 +584,23 @@ function frame(root) {
   controls.target.set(center.x, 0, center.z + size.z * 0.12);
   camera.position.set(center.x, dist * 0.68, center.z + dist * 0.74);
   controls.maxDistance = dist * 2.5;
+  controls.minDistance = Math.max(4, radius * 0.05);
+  camera.near = Math.max(0.1, dist / 2000);
+  camera.far = dist * 6;
+  camera.updateProjectionMatrix();
   scene.fog.near = dist * 1.4;
   scene.fog.far = dist * 3;
+  // Shadows cover the whole field, whatever its size.
+  const half = Math.max(size.x, size.z) * 0.6;
+  Object.assign(moon.shadow.camera, { left: -half, right: half, top: half, bottom: -half, near: 1, far: dist * 4 });
+  moon.position.set(center.x - half * 0.5, half, center.z + half * 0.4);
+  moon.target.position.copy(center);
+  scene.add(moon.target);
+  moon.shadow.camera.updateProjectionMatrix();
+  // Sit under the model's own ground (if it has one) so the two never z-fight.
+  const whole = new THREE.Box3().setFromObject(root);
+  ground.position.set(center.x, Math.min(box.min.y, whole.min.y) - Math.max(0.05, half * 0.002), center.z);
+  ground.scale.setScalar(Math.max(1, (half * 6) / 400));
   controls.update();
   home = { t: controls.target.clone(), p: camera.position.clone() };
 }
@@ -656,7 +697,8 @@ async function boot() {
 
 const clock = new THREE.Clock();
 renderer.setAnimationLoop(() => {
-  const t = clock.getElapsedTime();
+  const dt = clock.getDelta();
+  const t = clock.elapsedTime;
   if (fly) {
     const k = Math.min(1, (performance.now() - fly.t0) / fly.dur);
     const e = k < 0.5 ? 2 * k * k : 1 - Math.pow(-2 * k + 2, 2) / 2;
@@ -665,7 +707,10 @@ renderer.setAnimationLoop(() => {
     if (k === 1) fly = null;
   }
   controls.update();
-  if (data) for (const id of ids) paint(id, (lastView[id] || {}).status || "NO_DATA", t);
+  if (data) {
+    for (const id of ids) paint(id, (lastView[id] || {}).status || "NO_DATA", t);
+    animateMovers(dt, t);
+  }
   if (selBox) selBox.update();
   renderer.render(scene, camera);
 });
