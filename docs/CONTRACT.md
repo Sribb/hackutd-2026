@@ -41,6 +41,48 @@ Save the source as `blender/field.blend` and the export as `blender/field.glb`.
 
 **Push a rough version first.** Plain boxes with the correct names are enough for the web console to start. Then improve the quality without changing the names.
 
+## What's in field.glb
+
+`blender/field.glb` is built by a script, so anyone can rebuild it. Run this from the repo root:
+
+```bash
+/Applications/Blender.app/Contents/MacOS/Blender --background --factory-startup --python blender/build_field.py
+```
+
+It writes `blender/field.blend` and `blender/field.glb`. Change the model in `blender/build_field.py` (the layout) and `blender/field_parts.py` (each asset), not by hand in the `.blend`, or the next rebuild will overwrite your edits.
+
+**Finding what was clicked:** Every asset is an empty node named with its ID. Static parts are child meshes, like `TANK_3_tank` and `TANK_3_steel`. Walk up from the clicked mesh until a node has `userData.asset_id`. Three.js puts glTF extras in `userData`.
+
+**Moving parts:** Each one has its origin at its pivot, with no rotation in the file. Animate it with one property:
+
+| Node | What it does | How to animate it in three.js |
+|---|---|---|
+| `TANK_n_LEVEL` | Brine level inside the cutaway tank | `scale.y` from 0 (empty) to 1 (full). The file ships at 0.55 for preview. |
+| `PUMP_n_rotor` | Motor fan, so you can see the pump running | Spin `rotation.x` while running, stop when failed |
+| `VALVE_*_wheel` | Handwheel on every valve | Turn `rotation.y` while the valve opens or closes |
+| `WELL_k_beam` | Pumpjack walking beam | Rock `rotation.x` by about ±0.25 rad while the well produces |
+| `WELL_k_crank` | Pumpjack crank and counterweights | Spin `rotation.x` while the well produces, stop when shut in |
+
+**Pipes:** Every pipe is its own mesh named for what it connects, with `userData.pipe_id`:
+
+| Pipes | Connects |
+|---|---|
+| `PIPE_WELL_k_TANK_n` | A well's flowline to its tank's inlet header |
+| `PIPE_INLET_n`, `PIPE_INLET_n_RISER` | The inlet header and the riser into the top of Tank n |
+| `PIPE_TANK_n_PUMP_n` | Tank n's outlet to its transfer pump |
+| `PIPE_PUMP_n_VALVE_D_n`, `PIPE_VALVE_D_n_TRUNK` | The pump through its discharge valve to the trunk |
+| `PIPE_TRUNK_0` to `PIPE_TRUNK_6` | The trunk line, west to east, between `SWD_1`, each pump's tie-in, and `SWD_2` |
+| `PIPE_XO_34_W`, `PIPE_XO_34_E` | The crossover, on each side of `VALVE_XO_34` |
+
+**Truck routes:** Empty nodes mark the road, so the console can drive a truck along it:
+- `STOP_YARD_1`, `STOP_TANK_1` to `STOP_TANK_6`, `STOP_SWD_1`, and `STOP_SWD_2` are where a truck parks.
+- `ROAD_JCT_*` is where each of those driveways meets the lease road, and the road runs straight along X between `ROAD_END_W` and `ROAD_END_E`.
+- A route is the start stop, its junction, along the road, the target's junction, then the target stop.
+
+**Other names:** `PAD_n` holds each tank pad's gravel and containment berm. `SITE_*` is the ground, roads, and pipe supports. `CAM_OVERVIEW` is a camera framing the whole field. None of these are clickable assets.
+
+**Scale and axes:** The field runs about 450 m along X. In three.js, Y is up and the lease road runs along X near Z = 0, with the tank pads toward negative Z.
+
 ## Status colors
 
 The backend sends the status. The web console picks the color.
