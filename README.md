@@ -154,3 +154,7 @@ Backend logic reviewed for reuse:
 Agent board: [hackathon-agent-board](https://github.com/azizu06/hackathon-agent-board). `tools/board` and `.claude/` are copied unchanged, and `AGENTS.md` is adapted from its template.
 
 When reused code lands, note the exact files here.
+
+- `backend/app/bus.py` follows the pattern of CauldronWatch's `backend/api/websocket.py`: one WebSocket manager with typed broadcasts. It was rewritten, not copied.
+- Ideas only, no code: the EOG 2021 optimizer's choke order (`backend/app/planner.py`) and AquaLink's timed-action replay (`forecast()` in `backend/app/sim.py`).
+- [backend/README.md](backend/README.md) maps each baseline bug from BACKEND.md to the fix and the test that covers it.
