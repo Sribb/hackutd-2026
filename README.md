@@ -7,6 +7,7 @@ Freeboard is the room left at the top of a tank. It is the margin an operator is
 **Start here, then go to your area:**
 - Backend: [docs/BACKEND.md](docs/BACKEND.md)
 - Everyone: [docs/CONTRACT.md](docs/CONTRACT.md) has the names and API we all build against
+- Your coding agent: [set up the agent board](#the-agent-board), then have it read [AGENTS.md](AGENTS.md)
 
 ## The track
 
@@ -59,9 +60,28 @@ HackUTD's guide says to plan for a 3 minute pitch and 2 minutes of questions. Nu
 | **Web console:** 3D viewer, panels, time slider | Open | Load the `.glb`, click an object, show its ID, then use the fake API data |
 | **Scenario, costs, Devpost, pitch** | Open | Ask the sponsor mentors the open questions below |
 
-`vinnycodes67` and `ronakkasaram`: claim an open row, or tell Sriyan if you want to work on something else.
+`vinnycodes67` and `ronakkasaram`: claim an open row, or tell Sriyan if you want to work on something else. Agents read the owner table in [AGENTS.md](AGENTS.md), so update it there too.
 
-**Work in parallel.** Don't wait on each other. Build against [docs/CONTRACT.md](docs/CONTRACT.md) with fake data, and swap in the real pieces as they land. If the contract has to change, update the doc in the same commit and tell the team.
+**Work in parallel.** Don't wait on each other. Build against [docs/CONTRACT.md](docs/CONTRACT.md) with fake data, and swap in the real pieces as they land. If the contract has to change, update the doc in the same commit and post on the board.
+
+## The agent board
+
+All of our coding agents talk on one pinned issue, the **[Message Board](https://github.com/teameuphoriainv-dot/hackutd-2026/issues/1)**. An agent posts when it finishes something or needs something, and tags the teammate it needs by GitHub login. That teammate's agent picks it up, so handoffs don't need a text.
+
+**Everyone does this once:**
+
+```bash
+git pull
+gh auth login
+tools/board whoami      # should print your GitHub login
+tools/board read -n 5   # should show recent posts
+```
+
+- **Claude Code:** Start it from this repo's folder and approve the project hooks if it asks. It then sees unread posts on its own and starts a background `tools/board wait`.
+- **Any other agent:** Tell it to read [AGENTS.md](AGENTS.md) and run `tools/board unread` before each task.
+- **Usage:** Every post wakes a waiting agent, which spends your usage. Set `BOARD_WAIT=off` if that gets expensive, and your agent will check the board before each commit instead.
+
+Issue #1 has to stay open, so never write `Closes #1`. It's also locked to collaborators, because posts go straight into everyone's agents. That protects us when the repo goes public for judging, so leave it locked.
 
 ## Folders
 
@@ -73,7 +93,7 @@ scenario/   the field definition and tonight's failure
 docs/       this plan
 ```
 
-Stay in your own folder when you can, and push small commits often. Never commit `.env` files or keys. GitHub rejects files over 100 MB, so keep `.blend` and `.glb` files well below that.
+Stay in your own folder and follow the workflow in [AGENTS.md](AGENTS.md). Never commit `.env` files or keys. GitHub rejects files over 100 MB, so keep `.blend` and `.glb` files well below that.
 
 ## Milestones
 
@@ -130,5 +150,7 @@ Backend logic reviewed for reuse:
 - [SnitchTheWitch](https://github.com/Abhijith-utla/SnitchTheWitch) (HackUTD 2025)
 - [EOG_HackUTD](https://github.com/Lord-Protector/EOG_HackUTD) (HackUTD VIII)
 - [AquaLink](https://github.com/bilal-feroz/AquaLink) (simulation logic only, no 3D or visuals)
+
+Agent board: [hackathon-agent-board](https://github.com/azizu06/hackathon-agent-board). `tools/board` and `.claude/` are copied unchanged, and `AGENTS.md` is adapted from its template.
 
 When reused code lands, note the exact files here.
