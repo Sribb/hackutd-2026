@@ -56,6 +56,10 @@ The backend sends the status. The web console picks the color.
 
 The default server address is `http://127.0.0.1:8000`. All numbers below are examples. Times are minutes from now.
 
+The server allows cross-origin requests (`CORS_ORIGINS`, default `*`), so the web console can run on its own dev port. Responses may carry more fields than shown here; clients should ignore what they don't use.
+
+**Realtime:** everything below is also pushed over `ws://<host>:8000/ws`, along with telemetry, alerts, Jarvis replies and `ui` directives that drive the 3D camera. See [backend/README.md](../backend/README.md) for the message list.
+
 ### `GET /api/field`
 
 Everything that doesn't change during the night.
@@ -136,6 +140,8 @@ If data is missing or stale, say so in `warnings`. **Never report a tank as safe
 
 Returns the best plans, cheapest first. It must always return something, even if not every tank can be saved.
 
+Request body is optional: `{ "horizon_minutes": 360 }`. Each call replaces the previous plan IDs. Plans also carry `robust` (still holds if inflow runs 15% high), `notes`, and `recommended` on the first one.
+
 ```json
 {
   "plans": [
@@ -153,7 +159,7 @@ Returns the best plans, cheapest first. It must always return something, even if
 
 ### `POST /api/plans/{id}/approve`
 
-Turns a plan into the steps the 3D scene walks through.
+Turns a plan into the steps the 3D scene walks through. Optional body `{ "by": "Vinay", "execute": true }`. With `execute` (the default) the live field carries out each step when it's due and broadcasts `plan_step`.
 
 ```json
 {

@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0d1117">
+<title>Freeboard Remote</title>
+<style>
+  :root { --bg:#0d1117; --panel:#161b22; --line:#30363d; --text:#e6edf3; --dim:#8b949e;
+          --ok:#3fb950; --warn:#d29922; --alarm:#f85149; --accent:#58a6ff; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:15px/1.4 -apple-system,system-ui,sans-serif;
+         padding:env(safe-area-inset-top) 16px 120px; }
+  header { display:flex; justify-content:space-between; align-items:center; padding:14px 0 8px; }
+  header b { font-size:18px; }
+  #conn { font-size:12px; color:var(--dim); }
+  #conn.on::before { content:"● "; color:var(--ok); } #conn.off::before { content:"● "; color:var(--alarm); }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:14px; margin:10px 0; }
+  #countdown { border-color:var(--alarm); }
+  #countdown.calm { border-color:var(--line); }
+  #cd-big { font-size:30px; font-weight:700; font-variant-numeric:tabular-nums; }
+  .dim { color:var(--dim); font-size:13px; }
+  h2 { font-size:13px; text-transform:uppercase; letter-spacing:.06em; color:var(--dim); margin:18px 0 6px; }
+  button { font:inherit; border:0; border-radius:10px; padding:10px 14px; background:#21262d; color:var(--text); }
+  button.primary { background:var(--accent); color:#0d1117; font-weight:600; }
+  .row { display:flex; gap:8px; flex-wrap:wrap; margin-top:8px; }
+  .alert { border-left:4px solid var(--dim); }
+  .alert.CRITICAL { border-left-color:var(--alarm); } .alert.WARNING { border-left-color:var(--warn); }
+  .alert.acked { opacity:.5; }
+  .pending { border-color:var(--warn); }
+  #chat { max-height:40vh; overflow:auto; }
+  .msg { margin:6px 0; } .msg.you { color:var(--accent); } .msg.jarvis::before { content:"Jarvis: "; color:var(--dim); }
+  #bar { position:fixed; left:0; right:0; bottom:0; padding:10px 16px calc(10px + env(safe-area-inset-bottom));
+         background:var(--panel); border-top:1px solid var(--line); display:flex; gap:8px; }
+  #bar input { flex:1; min-width:0; font:inherit; padding:12px; border-radius:10px; border:1px solid var(--line);
+               background:var(--bg); color:var(--text); }
+  #mic.listening { background:var(--alarm); }
+</style>
+</head>
+<body>
+<header><b>Freeboard</b><span id="conn" class="off">connecting</span></header>
+
+<div id="countdown" class="card calm">
+  <div class="dim" id="clock">--:--</div>
+  <div id="cd-big">All tanks safe</div>
+  <div id="cd-text" class="dim"></div>
+  <div id="incident"></div>
+</div>
+
+<div id="pending"></div>
+
+<h2>Quick</h2>
+<div class="row">
+  <button data-say="what's failing">What's failing</button>
+  <button data-say="what's the cheapest fix">Cheapest fix</button>
+  <button data-say="how long do we have">Time left</button>
+  <button data-say="show me tank 3">Show Tank 3</button>
+  <button data-say="fast forward 1 hour">+1 hour</button>
+  <button data-say="back to now">Live</button>
+</div>
+
+<div id="plans"></div>
+
+<h2>Jarvis</h2>
+<div id="chat" class="card"><div class="dim">Ask anything. Replies show on every screen.</div></div>
+
+<h2>Alerts</h2>
+<div id="alerts"></div>
+
+<div id="bar">
+  <button id="mic" aria-label="Talk">🎤</button>
+  <input id="say" placeholder="Ask Jarvis…" autocomplete="off" enterkeyhint="send">
+  <button id="send" class="primary">Send</button>
+</div>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+let NAME = "Phone";
+try { NAME = localStorage.getItem("fb_name") || prompt("Your name (shown to the team)?") || "Phone"; localStorage.setItem("fb_name", NAME); } catch {}
+let ws, rid = 0;
+
+function connect() {
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  ws = new WebSocket(`${proto}://${location.host}/ws?role=phone&name=${encodeURIComponent(NAME)}`);
+  ws.onopen = () => { $("#conn").className = "on"; $("#conn").textContent = NAME; };
+  ws.onclose = () => { $("#conn").className = "off"; $("#conn").textContent = "reconnecting"; setTimeout(connect, 1500); };
+  ws.onmessage = (ev) => handle(JSON.parse(ev.data));
+}
+const send = (msg) => ws && ws.readyState === 1 && ws.send(JSON.stringify({ ...msg, rid: ++rid, by: NAME }));
+
+function handle(m) {
+  const d = m.data || {};
+  if (m.clock) $("#clock").textContent = m.clock;
+  switch (m.type) {
+    case "hello": case "reset":
+      renderCountdown(d.forecast && d.forecast.countdown, d.state && d.state.incident);
+      $("#alerts").innerHTML = ""; (d.alerts || []).forEach((a) => addAlert(a, false));
+      $("#pending").innerHTML = ""; (d.pending || []).forEach(addPending);
+      renderPlans(d.plans);
+      break;
+    case "forecast": renderCountdown(d.countdown, null); break;
+    case "incident": renderIncident(d); break;
+    case "alert": addAlert(d, true); break;
+    case "alert_ack": { const el = document.getElementById(d.id); if (el) el.classList.add("acked"); break; }
+    case "pending_command": addPending(d); break;
+    case "pending_cleared": { const el = document.getElementById(d.id); if (el) el.remove(); break; }
+    case "plans": renderPlans(d); break;
+    case "plan_approved": chat("jarvis", `Plan approved by ${d.approved_by || "operator"}. ${d.steps.map((s) => s.n + ". " + s.text).join(" ")}`); break;
+    case "plan_step": chat("jarvis", `Done: step ${d.n}. ${d.text}`); break;
+    case "jarvis_heard": if (d.by !== NAME) chat("you", `${d.by || d.source}: ${d.text}`); break;
+    case "jarvis": chat("jarvis", d.reply); if (d.by === NAME) say(d.reply); break;
+    case "command": chat("jarvis", `${d.status === "DONE" ? "Done" : "Rejected"}: ${d.text} (${d.by || d.source})`); break;
+  }
+}
+
+function renderCountdown(cd, incident) {
+  const box = $("#countdown");
+  if (cd) {
+    box.classList.toggle("calm", !cd.certain);
+    $("#cd-big").textContent = `${Math.round(cd.t_min)} min`;
+    $("#cd-text").textContent = cd.text;
+  } else {
+    box.classList.add("calm"); $("#cd-big").textContent = "All tanks safe"; $("#cd-text").textContent = "No shutdown in the next 6 hours.";
+  }
+  if (incident) renderIncident(incident);
+}
+function renderIncident(inc) {
+  $("#incident").innerHTML = inc && !inc.resolved_clock
+    ? `<div style="margin-top:8px"><b>${esc(inc.summary)}</b><div class="dim">${esc(inc.reason)}</div></div>` : "";
+}
+function addAlert(a, fresh) {
+  const el = document.createElement("div");
+  el.className = `card alert ${esc(a.severity)}${a.acked ? " acked" : ""}`; el.id = a.id;
+  el.innerHTML = `<b>${esc(a.title)}</b> <span class="dim">${esc(a.clock)}</span><div>${esc(a.body)}</div>
+    <div class="row">${a.asset_id ? `<button data-focus="${esc(a.asset_id)}">Show on big screen</button>` : ""}
+    ${a.acked ? "" : `<button data-ack="${esc(a.id)}">Acknowledge</button>`}</div>`;
+  $("#alerts").prepend(el);
+  if (fresh && a.severity === "CRITICAL" && navigator.vibrate) navigator.vibrate([300, 100, 300]);
+}
+function addPending(p) {
+  if (document.getElementById(p.id)) return;
+  const el = document.createElement("div");
+  const pv = p.preview || {}, s = pv.summary || {};
+  const effect = s.keeps_running ? "Keeps every tank running." : (s.first_shutdown ? `Still: ${s.first_shutdown.text}.` : "");
+  el.className = "card pending"; el.id = p.id;
+  el.innerHTML = `<b>Confirm?</b> <span class="dim">from ${esc(p.by || p.source)}</span><div>${esc(p.text)}</div>
+    <div class="dim">${esc(effect)} ${pv.cost ? "Cost $" + Math.round(pv.cost.total_usd).toLocaleString() : ""}</div>
+    <div class="row"><button class="primary" data-confirm="${esc(p.id)}">Confirm</button><button data-cancel="${esc(p.id)}">Cancel</button></div>`;
+  $("#pending").prepend(el);
+}
+function renderPlans(r) {
+  const plans = (r && r.plans) || [];
+  $("#plans").innerHTML = plans.length ? "<h2>Plans</h2>" + plans.map((p) => `
+    <div class="card"><b>$${Math.round(p.cost.total_usd).toLocaleString()}</b> ${p.recommended ? "· recommended" : ""}
+      <div>${esc(p.summary)}</div><div class="dim">${esc((p.notes || []).join(" "))} ${p.cannot_save.length ? "Cannot save: " + esc(p.cannot_save.join(", ")) : ""}</div>
+      <div class="row"><button class="primary" data-approve="${esc(p.id)}">Approve</button></div></div>`).join("") : "";
+}
+function chat(who, text) {
+  const el = document.createElement("div"); el.className = `msg ${who}`; el.textContent = text;
+  $("#chat").append(el); $("#chat").scrollTop = 1e9;
+}
+function say(text) {
+  if (!window.speechSynthesis) return;
+  speechSynthesis.cancel(); speechSynthesis.speak(new SpeechSynthesisUtterance(text));
+}
+function ask(text) {
+  if (!text.trim()) return;
+  chat("you", text); send({ type: "jarvis", text });
+}
+
+document.addEventListener("click", (e) => {
+  const b = e.target.closest("button"); if (!b) return;
+  if (b.dataset.say) ask(b.dataset.say);
+  if (b.dataset.ack) send({ type: "ack_alert", id: b.dataset.ack });
+  if (b.dataset.focus) send({ type: "ui", data: { action: "focus", asset_id: b.dataset.focus } });
+  if (b.dataset.confirm) send({ type: "confirm", id: b.dataset.confirm });
+  if (b.dataset.cancel) send({ type: "confirm", id: b.dataset.cancel, approve: false });
+  if (b.dataset.approve) send({ type: "approve", plan_id: b.dataset.approve });
+});
+$("#send").onclick = () => { ask($("#say").value); $("#say").value = ""; };
+$("#say").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#send").click(); });
+
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+if (SR) {
+  const rec = new SR(); rec.lang = "en-US"; rec.interimResults = false;
+  rec.onresult = (e) => ask(e.results[0][0].transcript);
+  rec.onend = () => $("#mic").classList.remove("listening");
+  $("#mic").onclick = () => { $("#mic").classList.add("listening"); rec.start(); };
+} else { $("#mic").style.display = "none"; }
+
+connect();
+</script>
+</body>
+</html>
