@@ -21,7 +21,9 @@ from . import core
 router = APIRouter()
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-_get_scenario: Callable[[], dict] = lambda: core.load_scenario(os.path.join(_HERE, "scenario.json"))
+_FIELD = os.path.join(os.path.dirname(_HERE), "scenario", "field.json")
+_get_scenario: Callable[[], dict] = lambda: core.load_scenario(
+    _FIELD if os.path.exists(_FIELD) else os.path.join(_HERE, "scenario.json"))
 _forecast: Optional[Callable[[List[dict], float], dict]] = None
 
 

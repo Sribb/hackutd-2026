@@ -347,5 +347,36 @@ def _step_text(a: dict, do_by: float, scenario: dict) -> str:
 
 
 def load_scenario(path: str) -> dict:
+    """Load lastcall/scenario.json, or scenario/field.json (Vinny's lane) adapted to the same shape."""
     with open(path) as f:
-        return json.load(f)
+        data = json.load(f)
+    return from_field_json(data) if "initial" in data else data
+
+
+def from_field_json(fj: dict) -> dict:
+    """Adapt scenario/field.json to the shape sim.py reads, at the moment of the first fault.
+
+    field.json starts its clock before the failure (clock_start) and lists faults with
+    at_min. Last Call starts at the fault: tanks at their initial levels (a running pump
+    holds its tank there), faulted pumps tripped, valves at their default positions.
+    """
+    faults = fj.get("faults", [])
+    at = min((f.get("at_min", 0) for f in faults), default=0)
+    h, m = (int(x) for x in fj.get("clock_start", "00:00").split(":"))
+    clock = "{:02d}:{:02d}".format(*divmod((h * 60 + m + int(at)) % 1440, 60))
+    levels = fj.get("initial", {}).get("tank_pct", {})
+    tripped = {f["asset_id"]: f.get("reason", "Tripped.") for f in faults if f.get("type") == "TRIP"}
+    tanks = []
+    for t in fj["tanks"]:
+        lvl = levels.get(t["id"])
+        if lvl is None:
+            raise ValueError(f"{t['id']} has no initial level. Last Call never assumes a tank is safe.")
+        tanks.append({**t, "level_pct": lvl, "setpoint_pct": t.get("setpoint_pct", lvl)})
+    pumps = [{**p, "status": "ALARM" if p["id"] in tripped else "OK",
+              **({"reason": tripped[p["id"]]} if p["id"] in tripped else {})} for p in fj["pumps"]]
+    valves = [{**v, "position": v.get("position", v.get("default", "CLOSED")),
+               "max_bbl_hr": v.get("max_bbl_hr", 0)} for v in fj["valves"]]
+    trucks = [{**t, "load_min": t.get("load_min", t.get("load_minutes", 20)),
+               "haul_to_swd_min": t.get("haul_to_swd_min", t.get("minutes_to_disposal", 30) + t.get("unload_minutes", 0))}
+              for t in fj["trucks"]]
+    return {**fj, "clock": clock, "tanks": tanks, "pumps": pumps, "valves": valves, "trucks": trucks}

@@ -130,8 +130,15 @@ def _run(scenario: dict, actions: List[dict], horizon: int, step: int, inflow_sc
             if not valve_open[vid]:
                 continue
             a_id, b_id = v["connects"]
-            gap = level[a_id] - level[b_id]
-            q = max(-v["max_bbl_hr"], min(v["max_bbl_hr"], XO_GAIN_PER_HR * gap))
+            if a_id not in level or b_id not in level:
+                continue  # a pump's discharge valve, not a tank-to-tank crossover
+            if v.get("bbl_hr_per_pct") is not None:
+                # scenario/field.json gives crossover flow per percent of level gap.
+                gap_pct = 100.0 * (level[a_id] / cap[a_id] - level[b_id] / cap[b_id])
+                q = v["bbl_hr_per_pct"] * gap_pct
+            else:
+                q = XO_GAIN_PER_HR * (level[a_id] - level[b_id])
+            q = max(-v["max_bbl_hr"], min(v["max_bbl_hr"], q))
             net[a_id] -= q
             net[b_id] += q
         # Pumps hold their tank at setpoint.

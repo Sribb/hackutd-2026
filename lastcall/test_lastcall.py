@@ -64,6 +64,37 @@ def test_crossover_cannot_drown_the_neighbor():
         assert not any(e["asset_id"] == "TANK_4" for e in fc["events"])
 
 
+def test_reads_scenario_field_json_shape():
+    # scenario/field.json (Vinny's lane) starts before the fault and names things differently.
+    fj = {
+        "clock_start": "01:44",
+        "faults": [{"asset_id": "PUMP_3", "type": "TRIP", "at_min": 3, "reason": "Pump tripped."}],
+        "initial": {"tank_pct": {t["id"]: t["level_pct"] for t in SCENARIO["tanks"]}},
+        "tanks": [{k: t[k] for k in ("id", "capacity_bbl", "shutdown_pct")} for t in SCENARIO["tanks"]],
+        "pumps": [{k: p[k] for k in ("id", "tank_id", "rate_bbl_hr")} for p in SCENARIO["pumps"]],
+        "valves": [{"id": "VALVE_D_1", "connects": ["PUMP_1", "SWD_1"], "default": "OPEN"},
+                   {"id": "VALVE_XO_34", "connects": ["TANK_3", "TANK_4"], "default": "CLOSED",
+                    "max_bbl_hr": 90, "manual": True}],
+        "wells": SCENARIO["wells"], "disposal_wells": SCENARIO["disposal_wells"],
+        "trucks": [{"id": t["id"], "capacity_bbl": t["capacity_bbl"], "minutes_to": t["minutes_to"],
+                    "load_minutes": 20, "minutes_to_disposal": 30} for t in SCENARIO["trucks"]],
+        "lead_min": SCENARIO["lead_min"], "costs": SCENARIO["costs"],
+    }
+    s = core.from_field_json(fj)
+    assert s["clock"] == "01:47"
+    assert next(p for p in s["pumps"] if p["id"] == "PUMP_3")["status"] == "ALARM"
+    r = core.last_call(s)
+    assert r["status"] == "INCIDENT" and r["shutdown"]["asset_id"] == "TANK_3"
+    # A tank with no reading must stop the run, never be treated as safe.
+    bad = copy.deepcopy(fj)
+    del bad["initial"]["tank_pct"]["TANK_5"]
+    try:
+        core.from_field_json(bad)
+        assert False, "missing level accepted"
+    except ValueError:
+        pass
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

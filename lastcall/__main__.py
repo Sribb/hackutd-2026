@@ -13,7 +13,9 @@ from . import core, sim
 
 here = os.path.dirname(os.path.abspath(__file__))
 ap = argparse.ArgumentParser(prog="python3 -m lastcall")
-ap.add_argument("--scenario", default=os.path.join(here, "scenario.json"))
+field = os.path.join(os.path.dirname(here), "scenario", "field.json")
+ap.add_argument("--scenario", default=field if os.path.exists(field) else os.path.join(here, "scenario.json"),
+                help="default: scenario/field.json if present, else lastcall/scenario.json")
 ap.add_argument("--demo", help="write a data.js file the demo page loads")
 args = ap.parse_args()
 
