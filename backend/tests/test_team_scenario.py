@@ -6,8 +6,8 @@ from backend.app.scenario import TEAM_SCENARIO, from_team_shape, load_scenario, 
 
 MINI = {
     "clock_start": "01:44",
-    "tanks": [{"id": "TANK_3", "capacity_bbl": 500, "shutdown_pct": 90, "warning_pct": 80},
-              {"id": "TANK_4", "capacity_bbl": 500, "shutdown_pct": 90, "warning_pct": 80}],
+    "tanks": [{"id": "TANK_3", "capacity_bbl": 500, "shutdown_pct": 90, "warning_pct": 80, "pump_low_pct": 40},
+              {"id": "TANK_4", "capacity_bbl": 500, "shutdown_pct": 90, "warning_pct": 80, "pump_low_pct": 40}],
     "pumps": [{"id": "PUMP_3", "tank_id": "TANK_3", "rate_bbl_hr": 150},
               {"id": "PUMP_4", "tank_id": "TANK_4", "rate_bbl_hr": 150}],
     "valves": [{"id": "VALVE_D_3", "connects": ["PUMP_3", "SWD_1"], "default": "OPEN"},
@@ -25,20 +25,30 @@ MINI = {
 }
 
 
-def test_team_shape_converts():
-    s = from_team_shape(MINI)
+def test_team_shape_converts(tmp_path):
+    import json
+    path = tmp_path / "field.json"
+    path.write_text(json.dumps(MINI))
+    s = load_scenario(path)
     assert s["start_clock"] == "01:47"
     assert s["failures"][0]["summary"] == "Pump 3 failed. Tank 3 is filling."
     assert s["field"]["trucks"][0]["load_min"] == 20
+    # 3 minutes of pumping (150 bbl/hr out, 94 in) before the trip: 71.76% -> about 71.2%.
+    assert abs(s["initial_levels_pct"]["TANK_3"] - 71.2) < 0.05
     st = state_payload(s)
     assert st["assets"]["VALVE_XO_34"]["position"] == "CLOSED"
     assert st["assets"]["PUMP_3"]["status"] == "ALARM"
     ev = next(e for e in forecast(s, [])["events"] if e["type"] == "SHUTDOWN_LEVEL")
-    # (90 - 71.76)% of 500 bbl at 94 bbl/hr is 58.2 minutes after 1:47 AM.
-    assert ev["asset_id"] == "TANK_3" and abs(ev["t_min"] - 58.2) < 1.5
-    # Tank 4 holds its starting level with no crossover open.
-    assert abs(forecast(s, [])["timeline"][-1]["tanks"]["TANK_4"] - 60.0) < 1.0
+    # (90 - 71.2)% of 500 bbl at 94 bbl/hr is 60 minutes: 2:47 AM.
+    assert ev["asset_id"] == "TANK_3" and abs(ev["t_min"] - 60) < 1.0 and "2:47 AM" in ev["text"]
     assert make_plans(s)["plans"]
+
+
+def test_conversion_does_not_touch_the_input():
+    import copy
+    before = copy.deepcopy(MINI)
+    from_team_shape(MINI)
+    assert MINI == before
 
 
 @pytest.mark.skipif(not TEAM_SCENARIO.exists(), reason="scenario/field.json not in this checkout yet")

@@ -35,6 +35,7 @@ def load_scenario(path: str | Path | None = None) -> dict:
     data = json.loads(path.read_text(encoding="utf-8"))
     if "field" not in data and "tanks" in data:
         data = from_team_shape(data)
+        _preroll(data)
     missing = [k for k in FIELD_KEYS if k not in data.get("field", {})]
     if missing:
         raise ValueError(f"{path}: field is missing {missing}")
@@ -48,11 +49,27 @@ def _add_minutes(clock: str, minutes: float) -> str:
     return f"{(total // 60) % 24:02d}:{total % 60:02d}"
 
 
+def _preroll(data: dict) -> None:
+    """Replays clock_start to the first fault with every pump healthy, so the
+    forecast starts at the fault with the levels the field has by then."""
+    minutes = int(round(data.pop("_preroll_min", 0)))
+    if minutes <= 0:
+        return
+    from .forecast import build_plant, simulate  # local import: forecast imports this module
+
+    calm = {**data, "failures": [], "start_clock": data.pop("_clock_start")}
+    run = simulate(build_plant(calm), [], minutes, record_every=minutes)
+    for tid, lv in run.levels[minutes].items():
+        if lv is not None:
+            data["initial_levels_pct"][tid] = round(lv, 2)
+
+
 def from_team_shape(d: dict) -> dict:
     """Converts scenario/field.json into the backend shape.
 
-    The forecast starts at the first fault, using the readings in `initial`.
-    Tanks hold their starting level until then, so the levels carry over.
+    The forecast starts at the first fault. `_preroll` replays the minutes
+    between clock_start and the fault so the starting levels are right.
+    A pump with no setpoint pumps down toward `pump_low_pct`.
     """
     faults = d.get("faults", [])
     start_offset = min((f.get("at_min", 0) for f in faults), default=0)
@@ -63,8 +80,8 @@ def from_team_shape(d: dict) -> dict:
     tanks = []
     for t in d["tanks"]:
         t = dict(t)
-        # With no setpoint given, a running pump holds the tank where it started.
-        t.setdefault("setpoint_pct", levels.get(t["id"], 50))
+        # A running pump works the tank down toward pump_low_pct, as in scenario/.
+        t.setdefault("setpoint_pct", t.get("pump_low_pct", levels.get(t["id"], 50)))
         tanks.append(t)
     valves = [{**v, "position": v.get("default", v.get("position", "CLOSED"))} for v in d["valves"]]
     trucks = []
@@ -91,7 +108,8 @@ def from_team_shape(d: dict) -> dict:
     for extra in ("lead_min", "costs", "yards"):
         if extra in d:
             field[extra] = d[extra]
-    return {"start_clock": start, "field": field, "initial_levels_pct": levels, "failures": failures}
+    return {"start_clock": start, "field": field, "initial_levels_pct": levels, "failures": failures,
+            "_preroll_min": start_offset, "_clock_start": d.get("clock_start", "00:00")}
 
 
 def field_payload(scenario: dict) -> dict:
