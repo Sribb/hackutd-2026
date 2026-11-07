@@ -45,7 +45,7 @@ def ground_height(x, y):
 def ground(site):
     import bmesh
     bm = bmesh.new()
-    x0, x1, y0, y1, nx, ny = -260, 260, -90, 130, 104, 44
+    x0, x1, y0, y1, nx, ny = -235, 235, -55, 100, 94, 31
     grid = [[bm.verts.new((x0 + (x1 - x0) * i / nx, y0 + (y1 - y0) * j / ny,
                            ground_height(x0 + (x1 - x0) * i / nx, y0 + (y1 - y0) * j / ny)))
              for i in range(nx + 1)] for j in range(ny + 1)]
