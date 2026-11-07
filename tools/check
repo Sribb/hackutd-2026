@@ -1,0 +1,293 @@
+#!/usr/bin/env python3
+"""Integration check: do the pieces still fit docs/CONTRACT.md?
+
+Run it before every DONE post on the board, and after pulling someone else's DONE.
+Each check SKIPs when its piece doesn't exist yet, so it is useful from hour 1.
+
+  tools/check                                 run everything that exists
+  CHECK_API=http://host:port tools/check      point at another backend (default http://127.0.0.1:8000)
+
+Exit code 0 = no FAIL, 1 = at least one FAIL. Standard library only.
+"""
+from __future__ import annotations
+
+import json
+import os
+import re
+import shutil
+import struct
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+API = os.environ.get("CHECK_API", "http://127.0.0.1:8000").rstrip("/")
+STATUSES = {"OK", "WARNING", "ALARM", "OFFLINE"}
+
+results: list[tuple[str, str, str]] = []  # (PASS|FAIL|WARN|SKIP, name, detail)
+
+
+def report(kind: str, name: str, detail: str = "") -> None:
+    results.append((kind, name, detail))
+    print(f"{kind:4}  {name}" + (f": {detail}" if detail else ""))
+
+
+# ---------- contract ----------
+
+def _expand(a: str, b: str) -> list[str]:
+    """`TANK_1` to `TANK_6` -> TANK_1..TANK_6; `TANK_1_LEVEL` to `TANK_6_LEVEL` too."""
+    pa, pb = re.split(r"(\d+)", a), re.split(r"(\d+)", b)
+    if len(pa) != len(pb):
+        return [a, b]
+    diff = [i for i, (x, y) in enumerate(zip(pa, pb)) if x != y]
+    if len(diff) != 1 or not pa[diff[0]].isdigit():
+        return [a, b]
+    i = diff[0]
+    out = []
+    for n in range(int(pa[i]), int(pb[i]) + 1):
+        parts = list(pa)
+        parts[i] = str(n)
+        out.append("".join(parts))
+    return out
+
+
+def contract_ids() -> tuple[set[str], set[str]]:
+    """Returns (asset IDs, mesh-only IDs like TANK_3_LEVEL) from the Asset IDs table."""
+    text = (ROOT / "docs" / "CONTRACT.md").read_text()
+    m = re.search(r"^## Asset IDs\s*$(.*?)^## ", text, re.S | re.M)
+    if not m:
+        raise ValueError("no '## Asset IDs' section in docs/CONTRACT.md")
+    ids: set[str] = set()
+    for line in m.group(1).splitlines():
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        if len(cells) < 2 or not cells[1].startswith("`"):
+            continue
+        col = cells[1]
+        for a, b in re.findall(r"`([A-Z0-9_]+)`\s+to\s+`([A-Z0-9_]+)`", col):
+            ids.update(_expand(a, b))
+        col = re.sub(r"`[A-Z0-9_]+`\s+to\s+`[A-Z0-9_]+`", "", col)
+        ids.update(re.findall(r"`([A-Z0-9_]+)`", col))
+    mesh_only = {i for i in ids if i.endswith("_LEVEL")}
+    return ids - mesh_only, mesh_only
+
+
+# ---------- scenario ----------
+
+def all_ids(obj) -> set[str]:
+    found: set[str] = set()
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if k == "id" and isinstance(v, str):
+                found.add(v)
+            else:
+                found |= all_ids(v)
+    elif isinstance(obj, list):
+        for v in obj:
+            found |= all_ids(v)
+    return found
+
+
+def check_scenario(assets: set[str]) -> None:
+    path = ROOT / "scenario" / "field.json"
+    if not path.exists():
+        report("SKIP", "scenario", "scenario/field.json not in repo yet")
+        return
+    try:
+        data = json.loads(path.read_text())
+    except json.JSONDecodeError as e:
+        report("FAIL", "scenario", f"invalid JSON: {e}")
+        return
+    ids = all_ids(data)
+    unknown = sorted(ids - assets)
+    missing = sorted(assets - ids)
+    if unknown:
+        report("FAIL", "scenario", f"IDs not in CONTRACT.md: {', '.join(unknown)}")
+    else:
+        report("PASS", "scenario", f"{len(ids)} IDs, all in the contract")
+    if missing:
+        report("WARN", "scenario", f"contract IDs not defined: {', '.join(missing)}")
+
+
+# ---------- blender ----------
+
+def glb_node_names(path: Path) -> list[str]:
+    raw = path.read_bytes()
+    magic, _version, _length = struct.unpack_from("<III", raw, 0)
+    if magic != 0x46546C67:  # 'glTF'
+        raise ValueError("not a .glb file")
+    chunk_len, chunk_type = struct.unpack_from("<II", raw, 12)
+    if chunk_type != 0x4E4F534A:  # 'JSON'
+        raise ValueError("first chunk is not JSON")
+    gltf = json.loads(raw[20 : 20 + chunk_len])
+    return [n.get("name", "") for n in gltf.get("nodes", [])]
+
+
+def check_glb(assets: set[str], meshes: set[str]) -> None:
+    path = ROOT / "blender" / "field.glb"
+    if not path.exists():
+        report("SKIP", "blender", "blender/field.glb not in repo yet")
+        return
+    mb = path.stat().st_size / 1e6
+    try:
+        names = glb_node_names(path)
+    except Exception as e:  # noqa: BLE001
+        report("FAIL", "blender", f"could not read field.glb: {e}")
+        return
+    dupes = sorted({n for n in names if re.search(r"\.\d{3}$", n)})
+    if dupes:
+        report("FAIL", "blender", f"'.001'-style names break matching: {', '.join(dupes[:10])}")
+    missing = sorted((assets | meshes) - set(names))
+    if missing:
+        report("FAIL", "blender", f"contract names missing from field.glb: {', '.join(missing)}")
+    if not dupes and not missing:
+        report("PASS", "blender", f"all {len(assets | meshes)} contract names present, {mb:.1f} MB")
+    if mb > 30:
+        report("WARN", "blender", f"field.glb is {mb:.0f} MB (budget is 30 MB)")
+
+
+# ---------- API ----------
+
+def call(method: str, path: str, body: dict | None = None, timeout: float = 5.0):
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(API + path, data=data, method=method,
+                                 headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read() or b"null")
+
+
+def check_api(assets: set[str]) -> None:
+    try:
+        field = call("GET", "/api/field")
+    except urllib.error.HTTPError as e:
+        report("FAIL", "api /api/field", f"HTTP {e.code}")
+        return
+    except (urllib.error.URLError, OSError):
+        report("SKIP", "api", f"no server at {API} (start the backend to check the API)")
+        return
+    except json.JSONDecodeError:
+        report("FAIL", "api /api/field", "response is not JSON")
+        return
+
+    need = ["tanks", "pumps", "valves", "wells", "disposal_wells", "trucks"]
+    gone = [k for k in need if not isinstance(field, dict) or k not in field]
+    unknown = sorted(all_ids(field) - assets) if isinstance(field, dict) else []
+    if gone or unknown:
+        report("FAIL", "api /api/field",
+               "; ".join(filter(None, [gone and f"missing keys {gone}",
+                                       unknown and f"IDs not in contract {unknown}"])))
+    else:
+        report("PASS", "api /api/field")
+
+    try:
+        state = call("GET", "/api/state")
+        got = state.get("assets", {}) if isinstance(state, dict) else {}
+        bad = [f"{k}={v.get('status')}" for k, v in got.items()
+               if isinstance(v, dict) and v.get("status") not in STATUSES]
+        stray = sorted(set(got) - assets)
+        if not isinstance(state, dict) or "clock" not in state or "assets" not in state:
+            report("FAIL", "api /api/state", "needs 'clock' and 'assets'")
+        elif bad or stray:
+            report("FAIL", "api /api/state",
+                   "; ".join(filter(None, [bad and f"unknown status {bad[:5]}",
+                                           stray and f"IDs not in contract {stray[:5]}"])))
+        else:
+            report("PASS", "api /api/state")
+    except Exception as e:  # noqa: BLE001
+        report("FAIL", "api /api/state", str(e))
+
+    try:
+        t0 = time.monotonic()
+        fc = call("POST", "/api/forecast", {"horizon_minutes": 360, "step_minutes": 5, "actions": []})
+        ms = (time.monotonic() - t0) * 1000
+        gone = [k for k in ("timeline", "events", "cost", "warnings") if k not in fc]
+        if gone:
+            report("FAIL", "api /api/forecast", f"missing keys {gone}")
+        elif not fc["timeline"]:
+            report("FAIL", "api /api/forecast", "empty timeline")
+        else:
+            report("PASS", "api /api/forecast", f"{len(fc['timeline'])} steps in {ms:.0f} ms")
+            if ms > 500:
+                report("WARN", "api /api/forecast", f"{ms:.0f} ms; it runs on every click")
+    except urllib.error.HTTPError as e:
+        report("SKIP" if e.code in (404, 405) else "FAIL", "api /api/forecast", f"HTTP {e.code}")
+    except Exception as e:  # noqa: BLE001
+        report("FAIL", "api /api/forecast", str(e))
+
+    try:
+        plans = call("POST", "/api/plans", {}, timeout=30)
+        if not plans.get("plans"):
+            report("FAIL", "api /api/plans", "must always return at least one plan")
+        else:
+            report("PASS", "api /api/plans", f"{len(plans['plans'])} plans")
+    except urllib.error.HTTPError as e:
+        report("SKIP" if e.code in (404, 405) else "FAIL", "api /api/plans", f"HTTP {e.code}")
+    except Exception as e:  # noqa: BLE001
+        report("FAIL", "api /api/plans", str(e))
+
+
+# ---------- tests and builds ----------
+
+def run(name: str, cmd: list[str], cwd: Path) -> None:
+    try:
+        p = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=300)
+    except subprocess.TimeoutExpired:
+        report("FAIL", name, "timed out after 300 s")
+        return
+    if p.returncode == 0:
+        report("PASS", name)
+    else:
+        tail = (p.stdout + p.stderr).strip().splitlines()[-8:]
+        report("FAIL", name, "\n      " + "\n      ".join(tail))
+
+
+def check_backend_tests() -> None:
+    tests = ROOT / "backend" / "tests"
+    if not tests.is_dir() or not any(tests.rglob("test_*.py")):
+        report("SKIP", "backend tests", "no backend/tests/test_*.py yet")
+        return
+    py = ROOT / ".venv" / "bin" / "python"
+    run("backend tests", [str(py if py.exists() else sys.executable), "-m", "pytest", "-q", "backend/tests"], ROOT)
+
+
+def check_web_build() -> None:
+    pkg = ROOT / "web" / "package.json"
+    if not pkg.exists():
+        report("SKIP", "web build", "web/package.json not in repo yet")
+        return
+    if not (ROOT / "web" / "node_modules").is_dir():
+        report("SKIP", "web build", "run npm install in web/ first")
+        return
+    if "build" not in json.loads(pkg.read_text()).get("scripts", {}):
+        report("SKIP", "web build", "no build script")
+        return
+    if not shutil.which("npm"):
+        report("SKIP", "web build", "npm not installed")
+        return
+    run("web build", ["npm", "run", "-s", "build"], ROOT / "web")
+
+
+def main() -> int:
+    try:
+        assets, meshes = contract_ids()
+        report("PASS", "contract", f"{len(assets)} asset IDs, {len(meshes)} level meshes")
+    except Exception as e:  # noqa: BLE001
+        report("FAIL", "contract", str(e))
+        return 1
+    check_scenario(assets)
+    check_glb(assets, meshes)
+    check_api(assets)
+    check_backend_tests()
+    check_web_build()
+
+    counts = {k: sum(1 for r in results if r[0] == k) for k in ("PASS", "FAIL", "WARN", "SKIP")}
+    verdict = "FAIL" if counts["FAIL"] else "PASS"
+    print(f"\ntools/check: {verdict} ({counts['PASS']} pass, {counts['FAIL']} fail, "
+          f"{counts['WARN']} warn, {counts['SKIP']} skip)")
+    return 1 if counts["FAIL"] else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
