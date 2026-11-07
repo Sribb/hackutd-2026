@@ -99,13 +99,100 @@ function indexModel(root) {
     }
     assets.set(id, a);
   });
+  root.updateMatrixWorld(true);
   root.traverse((o) => {
+    if (/^(STOP|ROAD)_/.test(o.name)) waypoints.set(o.name, o.getWorldPosition(new THREE.Vector3()));
     if (assets.has(o.name)) assets.get(o.name).root = o;
     // Moving parts from CONTRACT.md "What's in field.glb".
     const m = o.name.match(/^(PUMP_\d+)_rotor$|^(VALVE_[A-Z0-9_]+?)_wheel$|^(WELL_\d+)_(beam|crank)$/);
     if (m) movers.push({ node: o, id: m[1] || m[2] || m[3], kind: m[1] ? "rotor" : m[2] ? "wheel" : m[4], rest: o.rotation.clone() });
   });
   for (const a of assets.values()) if (!a.root) a.root = a.meshes[0] || a.levelMesh;
+  for (const a of assets.values()) {
+    if (!/^TRUCK_/.test(a.id) || !a.root) continue;
+    a.home = { pos: a.root.position.clone(), quat: a.root.quaternion.clone() };
+    // The truck's long axis is its forward axis. Used to point it along the road.
+    const size = new THREE.Box3().setFromObject(a.root).getSize(new THREE.Vector3());
+    a.forward = size.x >= size.z ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 0, 1);
+  }
+}
+
+// ---------------------------------------------------------------- trucks ----
+// When a what-if sends a truck, the slider drives it on the same timing the forecast
+// uses: drive to the tank, load, haul to the nearest disposal well, drive back, repeat.
+// Routes follow the STOP_* and ROAD_JCT_* points in field.glb (CONTRACT.md). The
+// placeholder model has none, so the truck drives straight there.
+const waypoints = new Map();
+const LOAD_MIN = 20, HAUL_MIN = 30; // same as the reference forecast until field.json says otherwise
+
+function stopPos(id) {
+  if (waypoints.has(`STOP_${id}`)) return waypoints.get(`STOP_${id}`).clone();
+  const b = boxOf(id);
+  return b ? b.getCenter(new THREE.Vector3()).setY(b.min.y) : null;
+}
+function route(fromId, toId, fromPos) {
+  const a = fromPos || stopPos(fromId), b = stopPos(toId);
+  if (!a || !b) return null;
+  const ja = waypoints.get(`ROAD_JCT_${fromId}`), jb = waypoints.get(`ROAD_JCT_${toId}`);
+  return ja && jb ? [a, ja.clone(), jb.clone(), b] : [a, b];
+}
+function along(points, frac) {
+  const lens = points.slice(1).map((p, i) => p.distanceTo(points[i]));
+  let d = Math.max(0, Math.min(1, frac)) * lens.reduce((x, y) => x + y, 0);
+  for (let i = 0; i < lens.length; i++) {
+    if (d <= lens[i] || i === lens.length - 1) {
+      const k = lens[i] ? Math.min(1, d / lens[i]) : 1;
+      return { pos: points[i].clone().lerp(points[i + 1], k), dir: points[i + 1].clone().sub(points[i]) };
+    }
+    d -= lens[i];
+  }
+  return { pos: points[0].clone(), dir: new THREE.Vector3(1, 0, 0) };
+}
+function nearestSwd(tankId) {
+  const t = stopPos(tankId);
+  let best = null, bestD = Infinity;
+  for (const d of field.disposal_wells || []) {
+    const p = stopPos(d.id);
+    if (p && t && p.distanceTo(t) < bestD) { best = d.id; bestD = p.distanceTo(t); }
+  }
+  return best;
+}
+// Where a sent truck is at minute t, and what it's doing.
+function truckAt(truck, action, t) {
+  const a = assets.get(truck.id);
+  const drive = (truck.minutes_to || {})[action.target_id];
+  if (!a || !a.home || drive == null) return null;
+  const home = a.root.parent.localToWorld(a.home.pos.clone());
+  const tank = action.target_id, swd = nearestSwd(tank);
+  if (t < action.at_min) return { pos: null, text: `Dispatch at ${clockAt(action.at_min)}` };
+  let x = t - action.at_min;
+  if (x < drive) return { ...along(route("YARD_1", tank, home), x / drive), text: `Driving to ${nice(tank)}, arrives ${clockAt(action.at_min + drive)}` };
+  x -= drive;
+  for (;;) {
+    if (x < LOAD_MIN) return { ...along([stopPos(tank), stopPos(tank)], 1), dir: null, text: `Loading at ${nice(tank)}` };
+    x -= LOAD_MIN;
+    if (!swd) return { pos: stopPos(tank), text: `At ${nice(tank)}` };
+    if (x < HAUL_MIN) return { ...along(route(tank, swd), x / HAUL_MIN), text: `Hauling to ${nice(swd)}` };
+    x -= HAUL_MIN;
+    if (x < drive) return { ...along(route(swd, tank), x / drive), text: `Back to ${nice(tank)}` };
+    x -= drive;
+  }
+}
+const _q = new THREE.Quaternion();
+function placeTrucks(view) {
+  for (const truck of field.trucks || []) {
+    const a = assets.get(truck.id);
+    if (!a || !a.home) continue;
+    const act = actions.find((x) => x.type === "SEND_TRUCK" && x.asset_id === truck.id);
+    const at = act && truckAt(truck, act, tMin);
+    if (view[truck.id] && at) view[truck.id] = { ...view[truck.id], location_text: at.text };
+    if (!at || !at.pos) { a.root.position.copy(a.home.pos); a.root.quaternion.copy(a.home.quat); continue; }
+    a.root.position.copy(a.root.parent.worldToLocal(at.pos.clone()));
+    if (at.dir && at.dir.lengthSq() > 1e-6) {
+      _q.setFromUnitVectors(a.forward, at.dir.clone().setY(0).normalize());
+      a.root.quaternion.copy(a.home.quat).premultiply(_q);
+    }
+  }
 }
 
 // Animated parts: pumps spin while running, pumpjacks rock while producing,
@@ -343,7 +430,7 @@ function renderSelected(view) {
   const truck = (field.trucks || []).find((t) => t.id === selectedId);
   if (truck) {
     add("Capacity", `${truck.capacity_bbl} bbl`);
-    add("Location", s.location ? nice(s.location) : null);
+    add("Location", s.location_text || (s.location ? nice(s.location) : null));
     for (const [tid, m] of Object.entries(truck.minutes_to || {})) add(`To ${nice(tid)}`, `${m} min`);
   }
   const fuse = data.lc && data.lc.assets && data.lc.assets[selectedId];
@@ -480,6 +567,7 @@ function renderSources() {
 
 function render() {
   const view = viewAt(tMin);
+  placeTrucks(view);
   $("clock").textContent = clockAt(0); // the real "now" never moves with the slider
   $("tankKicker").textContent = tMin === 0 ? "Tank levels" : `Tank levels at ${clockAt(tMin)} (forecast)`;
   $("timeClock").textContent = clockAt(tMin);
