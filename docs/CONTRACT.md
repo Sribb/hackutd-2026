@@ -49,7 +49,11 @@ Save the source as `blender/field.blend` and the export as `blender/field.glb`.
 /Applications/Blender.app/Contents/MacOS/Blender --background --factory-startup --python blender/build_field.py
 ```
 
-It writes `blender/field.blend` and `blender/field.glb`. Change the model in `blender/build_field.py` (the layout) and `blender/field_parts.py` (each asset), not by hand in the `.blend`, or the next rebuild will overwrite your edits.
+It writes `blender/field.blend` and `blender/field.glb`. Change the model in the scripts, not by hand in the `.blend`, or the next rebuild will overwrite your edits:
+- `blender/build_field.py` holds the layout.
+- `blender/field_parts.py` builds each core asset.
+- `blender/detail_equipment.py` adds gauges, sensors, panels, wellhead trees, labels, and load-outs.
+- `blender/detail_site.py` adds power, light towers, containment, disposal well and yard equipment, and truck detail.
 
 **Finding what was clicked:** Every asset is an empty node named with its ID. Static parts are child meshes, like `TANK_3_tank` and `TANK_3_steel`. Walk up from the clicked mesh until a node has `userData.asset_id`. Three.js puts glTF extras in `userData`.
 
@@ -62,6 +66,16 @@ It writes `blender/field.blend` and `blender/field.glb`. Change the model in `bl
 | `VALVE_*_wheel` | Handwheel on every valve | Turn `rotation.y` while the valve opens or closes |
 | `WELL_k_beam` | Pumpjack walking beam | Rock `rotation.x` by about ±0.25 rad while the well produces |
 | `WELL_k_crank` | Pumpjack crank and counterweights | Spin `rotation.x` while the well produces, stop when shut in |
+| `TANK_n_gauge` | Float marker on the outside level board | `position.y = 0.3 + 4.3 × level` (0 to 1), in the tank's local space |
+| `TRUCK_n_axle_1` to `_3` | Wheel pairs | Spin `rotation.z` while the truck drives |
+| `SWD_n_gate` | Swinging gate in the fence | `rotation.y` 0 is closed, 1.31 rad is open. It ships open. |
+
+**Lights:** These meshes use the `M_LAMP` material. Set the emissive color to light them by status:
+- `PUMP_n_light` and `WELL_k_light` are the status lights on each pump panel and well controller.
+- `TRUCK_n_beacon` is the amber beacon for a truck on a job, and `TRUCK_n_headlights` are its head and tail lights.
+- `PAD_n_lamps` and `SWD_n_lamps` are the light tower heads.
+
+**Sensors:** `TANK_n_lt` (radar level) and `TANK_n_lshh` (high-level switch) are separate meshes, so the console can highlight the sensor behind an alarm. Clicking them selects the tank.
 
 **Pipes:** Every pipe is its own mesh named for what it connects, with `userData.pipe_id`:
 
@@ -73,13 +87,21 @@ It writes `blender/field.blend` and `blender/field.glb`. Change the model in `bl
 | `PIPE_PUMP_n_VALVE_D_n`, `PIPE_VALVE_D_n_TRUNK` | The pump through its discharge valve to the trunk |
 | `PIPE_TRUNK_0` to `PIPE_TRUNK_6` | The trunk line, west to east, between `SWD_1`, each pump's tie-in, and `SWD_2` |
 | `PIPE_XO_34_W`, `PIPE_XO_34_E` | The crossover, on each side of `VALVE_XO_34` |
+| `PIPE_TANK_n_LOADOUT_n` | Tank n's load-out line to the truck hookup |
 
 **Truck routes:** Empty nodes mark the road, so the console can drive a truck along it:
-- `STOP_YARD_1`, `STOP_TANK_1` to `STOP_TANK_6`, `STOP_SWD_1`, and `STOP_SWD_2` are where a truck parks.
+- `STOP_YARD_1`, `STOP_TANK_1` to `STOP_TANK_6`, `STOP_SWD_1`, and `STOP_SWD_2` are where a truck parks. `STOP_TANK_n` sits beside `LOADOUT_n`, the stand where a truck hooks up to drain the tank.
 - `ROAD_JCT_*` is where each of those driveways meets the lease road, and the road runs straight along X between `ROAD_END_W` and `ROAD_END_E`.
 - A route is the start stop, its junction, along the road, the target's junction, then the target stop.
 
-**Other names:** `PAD_n` holds each tank pad's gravel and containment berm. `SITE_*` is the ground, roads, and pipe supports. `CAM_OVERVIEW` is a camera framing the whole field. None of these are clickable assets.
+**Other names:** None of these are clickable assets:
+- `PAD_n` holds each tank pad's gravel, steel containment, liner, step-over, sign, and light tower.
+- `LOADOUT_n` is the truck hookup stand.
+- `SITE_*` is the ground, roads, pipe supports, and the power line.
+- `CAM_OVERVIEW` is a camera framing the whole field.
+- Names ending in `_label`, `_sign`, or `_tag` are painted numbers and signs.
+
+**Size:** About 200,000 triangles and 8 MB, inside the 300,000 triangle and 30 MB budget.
 
 **Scale and axes:** The field runs about 450 m along X. In three.js, Y is up and the lease road runs along X near Z = 0, with the tank pads toward negative Z.
 
