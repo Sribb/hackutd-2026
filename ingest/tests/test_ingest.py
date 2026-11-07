@@ -102,6 +102,16 @@ def test_refusal_becomes_a_clear_error():
     assert err.value.status == 422 and "declined" in err.value.message
 
 
+def test_missing_credentials_is_a_clear_503_not_a_crash():
+    def no_auth(**_kwargs):
+        raise TypeError("Could not resolve authentication method. Expected one of api_key, auth_token, or credentials to be set.")
+
+    client = SimpleNamespace(beta=SimpleNamespace(messages=SimpleNamespace(create=no_auth)))
+    with pytest.raises(IngestError) as err:
+        ingest_bytes(PNG_HEADER, "plan.png", client=client)
+    assert err.value.status == 503 and "ANTHROPIC_API_KEY" in err.value.message
+
+
 def test_csv_is_parsed_without_claude():
     csv_text = ("kind,id,tank,capacity,rate,x,y,connects\n"
                 "tank,TANK_1,,500,,0,40,\n"

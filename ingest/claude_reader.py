@@ -88,6 +88,11 @@ def read_plan(data, media_type, text=None, client=None):
         raise IngestError("Could not reach Claude. Check the server's network.", 503)
     except anthropic.AnthropicError as exc:
         raise IngestError(f"Claude is not configured on the server: {exc}", 503)
+    except TypeError as exc:
+        # The SDK raises a plain TypeError when it finds no credentials at all.
+        if "authentication" in str(exc).lower():
+            raise IngestError("Reading images and PDFs needs ANTHROPIC_API_KEY on the server.", 503)
+        raise
 
     if response.stop_reason == "refusal":
         details = getattr(response, "stop_details", None)
