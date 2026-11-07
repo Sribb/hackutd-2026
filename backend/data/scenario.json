@@ -3,75 +3,78 @@
   "start_clock": "01:47",
   "field": {
     "tanks": [
-      { "id": "TANK_1", "capacity_bbl": 1000, "shutdown_pct": 90 },
-      { "id": "TANK_2", "capacity_bbl": 1000, "shutdown_pct": 90 },
-      { "id": "TANK_3", "capacity_bbl": 1000, "shutdown_pct": 90 },
-      { "id": "TANK_4", "capacity_bbl": 1000, "shutdown_pct": 90 },
-      { "id": "TANK_5", "capacity_bbl": 1000, "shutdown_pct": 90 },
-      { "id": "TANK_6", "capacity_bbl": 1000, "shutdown_pct": 90 }
+      {"id": "TANK_1", "capacity_bbl": 1000, "shutdown_pct": 90, "setpoint_pct": 50},
+      {"id": "TANK_2", "capacity_bbl": 1000, "shutdown_pct": 90, "setpoint_pct": 50},
+      {"id": "TANK_3", "capacity_bbl": 1000, "shutdown_pct": 90, "setpoint_pct": 50},
+      {"id": "TANK_4", "capacity_bbl": 1000, "shutdown_pct": 90, "setpoint_pct": 50},
+      {"id": "TANK_5", "capacity_bbl": 1000, "shutdown_pct": 90, "setpoint_pct": 50},
+      {"id": "TANK_6", "capacity_bbl": 1000, "shutdown_pct": 90, "setpoint_pct": 50}
     ],
     "pumps": [
-      { "id": "PUMP_1", "tank_id": "TANK_1", "rate_bbl_hr": 220 },
-      { "id": "PUMP_2", "tank_id": "TANK_2", "rate_bbl_hr": 220 },
-      { "id": "PUMP_3", "tank_id": "TANK_3", "rate_bbl_hr": 220 },
-      { "id": "PUMP_4", "tank_id": "TANK_4", "rate_bbl_hr": 220 },
-      { "id": "PUMP_5", "tank_id": "TANK_5", "rate_bbl_hr": 220 },
-      { "id": "PUMP_6", "tank_id": "TANK_6", "rate_bbl_hr": 220 }
+      {"id": "PUMP_1", "tank_id": "TANK_1", "rate_bbl_hr": 220},
+      {"id": "PUMP_2", "tank_id": "TANK_2", "rate_bbl_hr": 220},
+      {"id": "PUMP_3", "tank_id": "TANK_3", "rate_bbl_hr": 220},
+      {"id": "PUMP_4", "tank_id": "TANK_4", "rate_bbl_hr": 220},
+      {"id": "PUMP_5", "tank_id": "TANK_5", "rate_bbl_hr": 220},
+      {"id": "PUMP_6", "tank_id": "TANK_6", "rate_bbl_hr": 220}
     ],
     "valves": [
-      { "id": "VALVE_D_1", "connects": ["PUMP_1", "SWD_1"] },
-      { "id": "VALVE_D_2", "connects": ["PUMP_2", "SWD_1"] },
-      { "id": "VALVE_D_3", "connects": ["PUMP_3", "SWD_1"] },
-      { "id": "VALVE_D_4", "connects": ["PUMP_4", "SWD_2"] },
-      { "id": "VALVE_D_5", "connects": ["PUMP_5", "SWD_2"] },
-      { "id": "VALVE_D_6", "connects": ["PUMP_6", "SWD_2"] },
-      { "id": "VALVE_XO_34", "connects": ["TANK_3", "TANK_4"] }
+      {"id": "VALVE_D_1", "connects": ["PUMP_1", "SWD_1"], "manual": false},
+      {"id": "VALVE_D_2", "connects": ["PUMP_2", "SWD_1"], "manual": false},
+      {"id": "VALVE_D_3", "connects": ["PUMP_3", "SWD_1"], "manual": false},
+      {"id": "VALVE_D_4", "connects": ["PUMP_4", "SWD_2"], "manual": false},
+      {"id": "VALVE_D_5", "connects": ["PUMP_5", "SWD_2"], "manual": false},
+      {"id": "VALVE_D_6", "connects": ["PUMP_6", "SWD_2"], "manual": false},
+      {"id": "VALVE_XO_34", "connects": ["TANK_3", "TANK_4"], "max_bbl_hr": 90, "manual": true}
     ],
     "wells": [
-      { "id": "WELL_1", "tank_id": "TANK_1", "water_bbl_hr": 38, "lost_usd_hr": 260 },
-      { "id": "WELL_2", "tank_id": "TANK_1", "water_bbl_hr": 41, "lost_usd_hr": 290 },
-      { "id": "WELL_3", "tank_id": "TANK_1", "water_bbl_hr": 35, "lost_usd_hr": 240 },
-      { "id": "WELL_4", "tank_id": "TANK_1", "water_bbl_hr": 40, "lost_usd_hr": 310 },
-      { "id": "WELL_5", "tank_id": "TANK_2", "water_bbl_hr": 44, "lost_usd_hr": 330 },
-      { "id": "WELL_6", "tank_id": "TANK_2", "water_bbl_hr": 37, "lost_usd_hr": 250 },
-      { "id": "WELL_7", "tank_id": "TANK_2", "water_bbl_hr": 42, "lost_usd_hr": 300 },
-      { "id": "WELL_8", "tank_id": "TANK_2", "water_bbl_hr": 39, "lost_usd_hr": 280 },
-      { "id": "WELL_9", "tank_id": "TANK_3", "water_bbl_hr": 50, "lost_usd_hr": 300 },
-      { "id": "WELL_10", "tank_id": "TANK_3", "water_bbl_hr": 46, "lost_usd_hr": 420 },
-      { "id": "WELL_11", "tank_id": "TANK_3", "water_bbl_hr": 44, "lost_usd_hr": 360 },
-      { "id": "WELL_12", "tank_id": "TANK_3", "water_bbl_hr": 48, "lost_usd_hr": 250 },
-      { "id": "WELL_13", "tank_id": "TANK_4", "water_bbl_hr": 30, "lost_usd_hr": 220 },
-      { "id": "WELL_14", "tank_id": "TANK_4", "water_bbl_hr": 28, "lost_usd_hr": 210 },
-      { "id": "WELL_15", "tank_id": "TANK_4", "water_bbl_hr": 33, "lost_usd_hr": 260 },
-      { "id": "WELL_16", "tank_id": "TANK_4", "water_bbl_hr": 29, "lost_usd_hr": 230 },
-      { "id": "WELL_17", "tank_id": "TANK_5", "water_bbl_hr": 43, "lost_usd_hr": 320 },
-      { "id": "WELL_18", "tank_id": "TANK_5", "water_bbl_hr": 40, "lost_usd_hr": 290 },
-      { "id": "WELL_19", "tank_id": "TANK_5", "water_bbl_hr": 36, "lost_usd_hr": 270 },
-      { "id": "WELL_20", "tank_id": "TANK_5", "water_bbl_hr": 41, "lost_usd_hr": 300 },
-      { "id": "WELL_21", "tank_id": "TANK_6", "water_bbl_hr": 39, "lost_usd_hr": 280 },
-      { "id": "WELL_22", "tank_id": "TANK_6", "water_bbl_hr": 42, "lost_usd_hr": 310 },
-      { "id": "WELL_23", "tank_id": "TANK_6", "water_bbl_hr": 37, "lost_usd_hr": 260 },
-      { "id": "WELL_24", "tank_id": "TANK_6", "water_bbl_hr": 40, "lost_usd_hr": 290 }
+      {"id": "WELL_1", "tank_id": "TANK_1", "water_bbl_hr": 38, "lost_usd_hr": 260},
+      {"id": "WELL_2", "tank_id": "TANK_1", "water_bbl_hr": 41, "lost_usd_hr": 290},
+      {"id": "WELL_3", "tank_id": "TANK_1", "water_bbl_hr": 35, "lost_usd_hr": 240},
+      {"id": "WELL_4", "tank_id": "TANK_1", "water_bbl_hr": 40, "lost_usd_hr": 310},
+      {"id": "WELL_5", "tank_id": "TANK_2", "water_bbl_hr": 44, "lost_usd_hr": 330},
+      {"id": "WELL_6", "tank_id": "TANK_2", "water_bbl_hr": 37, "lost_usd_hr": 250},
+      {"id": "WELL_7", "tank_id": "TANK_2", "water_bbl_hr": 42, "lost_usd_hr": 300},
+      {"id": "WELL_8", "tank_id": "TANK_2", "water_bbl_hr": 39, "lost_usd_hr": 280},
+      {"id": "WELL_9", "tank_id": "TANK_3", "water_bbl_hr": 50, "lost_usd_hr": 300},
+      {"id": "WELL_10", "tank_id": "TANK_3", "water_bbl_hr": 46, "lost_usd_hr": 420},
+      {"id": "WELL_11", "tank_id": "TANK_3", "water_bbl_hr": 44, "lost_usd_hr": 360},
+      {"id": "WELL_12", "tank_id": "TANK_3", "water_bbl_hr": 48, "lost_usd_hr": 250},
+      {"id": "WELL_13", "tank_id": "TANK_4", "water_bbl_hr": 30, "lost_usd_hr": 220},
+      {"id": "WELL_14", "tank_id": "TANK_4", "water_bbl_hr": 28, "lost_usd_hr": 210},
+      {"id": "WELL_15", "tank_id": "TANK_4", "water_bbl_hr": 33, "lost_usd_hr": 260},
+      {"id": "WELL_16", "tank_id": "TANK_4", "water_bbl_hr": 29, "lost_usd_hr": 230},
+      {"id": "WELL_17", "tank_id": "TANK_5", "water_bbl_hr": 43, "lost_usd_hr": 320},
+      {"id": "WELL_18", "tank_id": "TANK_5", "water_bbl_hr": 40, "lost_usd_hr": 290},
+      {"id": "WELL_19", "tank_id": "TANK_5", "water_bbl_hr": 36, "lost_usd_hr": 270},
+      {"id": "WELL_20", "tank_id": "TANK_5", "water_bbl_hr": 41, "lost_usd_hr": 300},
+      {"id": "WELL_21", "tank_id": "TANK_6", "water_bbl_hr": 39, "lost_usd_hr": 280},
+      {"id": "WELL_22", "tank_id": "TANK_6", "water_bbl_hr": 42, "lost_usd_hr": 310},
+      {"id": "WELL_23", "tank_id": "TANK_6", "water_bbl_hr": 37, "lost_usd_hr": 260},
+      {"id": "WELL_24", "tank_id": "TANK_6", "water_bbl_hr": 40, "lost_usd_hr": 290}
     ],
-    "disposal_wells": [
-      { "id": "SWD_1", "max_bbl_hr": 600 },
-      { "id": "SWD_2", "max_bbl_hr": 600 }
-    ],
+    "disposal_wells": [{"id": "SWD_1", "max_bbl_hr": 600}, {"id": "SWD_2", "max_bbl_hr": 520}],
     "trucks": [
-      { "id": "TRUCK_1", "capacity_bbl": 130, "minutes_to": { "TANK_1": 25, "TANK_2": 30, "TANK_3": 35, "TANK_4": 40, "TANK_5": 45, "TANK_6": 50 } },
-      { "id": "TRUCK_2", "capacity_bbl": 130, "minutes_to": { "TANK_1": 50, "TANK_2": 45, "TANK_3": 40, "TANK_4": 35, "TANK_5": 30, "TANK_6": 25 } }
-    ]
+      {
+        "id": "TRUCK_1",
+        "capacity_bbl": 130,
+        "minutes_to": {"TANK_1": 25, "TANK_2": 30, "TANK_3": 35, "TANK_4": 40, "TANK_5": 45, "TANK_6": 50},
+        "load_min": 20,
+        "haul_to_swd_min": 30
+      },
+      {
+        "id": "TRUCK_2",
+        "capacity_bbl": 130,
+        "minutes_to": {"TANK_1": 50, "TANK_2": 45, "TANK_3": 40, "TANK_4": 35, "TANK_5": 30, "TANK_6": 25},
+        "load_min": 20,
+        "haul_to_swd_min": 30
+      }
+    ],
+    "lead_min": {"SET_VALVE_manual": 20, "SET_VALVE_remote": 1, "CHOKE_WELL": 2, "SEND_TRUCK": 5, "SET_PUMP": 1},
+    "costs": {"truck_usd_hr": 150, "disposal_usd_bbl": 1.0, "well_restart_usd": 500}
   },
-  "initial_levels_pct": {
-    "TANK_1": 48.0, "TANK_2": 55.5, "TANK_3": 71.2,
-    "TANK_4": 42.0, "TANK_5": 60.3, "TANK_6": 51.7
-  },
+  "initial_levels_pct": {"TANK_1": 48.0, "TANK_2": 55.5, "TANK_3": 71.2, "TANK_4": 42.0, "TANK_5": 60.3, "TANK_6": 51.7},
   "failures": [
-    {
-      "asset_id": "PUMP_3",
-      "at_clock": "01:47",
-      "reason": "Pump tripped. No flow since 1:47 AM.",
-      "summary": "Pump 3 failed. Tank 3 is filling."
-    }
+    {"asset_id": "PUMP_3", "at_clock": "01:47", "reason": "Pump tripped. No flow since 1:47 AM.", "summary": "Pump 3 failed. Tank 3 is filling."}
   ]
 }

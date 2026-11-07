@@ -12,18 +12,39 @@ python -m venv .venv
 .venv/Scripts/python -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8000
 ```
 
-| Endpoint | Status |
+| Endpoint | What it does |
 |---|---|
-| `GET /api/field` | Done, from `backend/data/scenario.json` |
-| `GET /api/state` | Done. Tonight's failure: `PUMP_3` at 1:47 AM |
-| `POST /api/forecast` | Next |
-| `POST /api/plans`, `POST /api/plans/{id}/approve` | Later |
-| `GET /api/health` | Extra: server and SpacetimeDB sync status |
+| `GET /api/field` | Field definition, plus `lead_min`, `costs`, and `yards` when the scenario has them |
+| `GET /api/state` | Current readings and the incident. A tank with no reading is WARNING, never OK |
+| `POST /api/forecast` | Minute-by-minute replay of the action list. About 4 ms per run, 3 runs per call for the ±15% range |
+| `POST /api/plans` | Cheapest plans first (default 3), always at least one. About 0.2 s |
+| `POST /api/plans/{id}/approve` | Numbered steps (longest lead first) and a radio script. Pushes the steps to SpacetimeDB when it's on |
+| `POST /api/lastcall` | Mounted automatically when `lastcall/` is in the checkout. Uses this forecast. About 3 s |
+| `GET /api/health` | Extra: SpacetimeDB sync and Last Call status |
 | `POST /api/spacetime/sync` | Extra: re-push the state into SpacetimeDB |
 
-Tests: `.venv/Scripts/python -m pytest -q backend/tests`
+Tests: `.venv/Scripts/python -m pytest -q backend/tests`. They're pinned to `backend/data/scenario.json` (see `backend/tests/conftest.py`).
 
-Set `FREEBOARD_SCENARIO` to load a different scenario file with the same shape.
+### Which scenario
+
+`FREEBOARD_SCENARIO` if set, else `scenario/field.json` (Vinny's) once it's on main, else `backend/data/scenario.json`. Both file shapes load: `backend/app/scenario.py` converts the `scenario/` shape on load and never edits it.
+
+### The forecast model
+
+`backend/app/forecast.py`, one-minute steps from the current level:
+
+- **Wells** feed their tank at `water_bbl_hr` times the fraction kept by `CHOKE_WELL` (`1` untouched, `0` shut in).
+- **Pumps** hold their tank near `setpoint_pct`, up to `rate_bbl_hr`. A tripped pump can't be turned on. A closed discharge valve stops its pump.
+- **Disposal wells** cap the pumps that feed them at `max_bbl_hr`. Going over slows every pump on that well and adds a `SWD_AT_CAPACITY` event.
+- **Crossovers** move water from the fuller tank to the emptier one, up to `max_bbl_hr` (and `bbl_hr_per_pct` × level gap when given).
+- **Trucks** leave at `at_min`, drive `minutes_to`, load `capacity_bbl` over `load_min`, and haul for `haul_to_swd_min`. A busy truck starts late, with a warning.
+- **Shutdown**: at `shutdown_pct` every well on that tank goes offline. That adds a `SHUTDOWN_LEVEL` event with `wells_lost`, `t_min_low` (inflow +15%), and `t_min_high` (inflow -15%; `null` means later than the horizon).
+- **Cost**: trucking (whole trip at `usd_hr`), disposal of trucked barrels, lost production of choked and shut-in wells, plus `well_restart_usd` for each well a shutdown takes down.
+- **Bad actions** are dropped with a message in `warnings`, never a crash. Missing tank readings give `null` levels and a warning, never "safe".
+
+### The planner
+
+`backend/app/planner.py` looks at each tank that reaches shutdown, or would at +15% inflow. It tries the crossover (closed or open), zero to two trucks, and choking or shutting in the wells that lose the least money per barrel first. Each action starts after its `lead_min`. A plan has to keep every tank below shutdown. Plans that only add steps to a cheaper plan are dropped. `robust` says whether the plan still holds at +15% inflow. `unknown_tanks` lists tanks with no reading.
 
 ## SpacetimeDB (live shared state)
 
