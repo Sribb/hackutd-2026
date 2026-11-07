@@ -1,0 +1,209 @@
+<!doctype html>
+<!--
+  Field preview: open any field.glb from the generator, orbit it, click an asset to see its ID.
+  Serve the repo root over HTTP (browsers block modules and fetch on file://):
+    python3 -m http.server 8765
+  then open http://127.0.0.1:8765/blender/preview/  (add ?glb=../out/large/field.glb for another file,
+  or drop a .glb on the page). three.js 0.170.0 is vendored in ./vendor, so no CDN is needed.
+  This is a check tool for the generator. The real console lives in web/.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Field Preview</title>
+<style>
+  :root { --bg: #20252b; --panel: #15191e; --line: #2c333b; --text: #dde3ea; --dim: #8b96a3; --accent: #f2b33d; --bad: #c6403a; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font: 13px/1.4 system-ui, sans-serif; }
+  body { display: grid; grid-template-columns: 1fr 300px; height: 100vh; overflow: hidden; }
+  #view { position: relative; min-width: 0; }
+  #view canvas { display: block; width: 100%; height: 100%; }
+  #side { background: var(--panel); border-left: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; }
+  #side header { padding: 12px 14px; border-bottom: 1px solid var(--line); }
+  h1 { font-size: 14px; margin: 0 0 4px; }
+  .dim { color: var(--dim); }
+  #source { word-break: break-all; }
+  label.file { display: inline-block; margin-top: 8px; padding: 4px 10px; border: 1px solid var(--line); border-radius: 4px; cursor: pointer; }
+  label.file input { display: none; }
+  #picked { padding: 12px 14px; border-bottom: 1px solid var(--line); min-height: 64px; }
+  #picked .id { font: 600 18px/1.2 ui-monospace, monospace; color: var(--accent); }
+  #filter { margin: 10px 14px 6px; padding: 6px 8px; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 4px; }
+  #list { overflow: auto; padding: 0 6px 12px; flex: 1; }
+  #list h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); margin: 10px 8px 4px; }
+  #list button { display: block; width: 100%; text-align: left; background: none; border: 0; color: var(--text); padding: 3px 8px; border-radius: 3px; font: 12px ui-monospace, monospace; cursor: pointer; }
+  #list button:hover, #list button.on { background: #2b323a; }
+  #list button.on { color: var(--accent); }
+  #banner { position: absolute; top: 12px; left: 12px; right: 12px; padding: 10px 14px; background: var(--bad); color: #fff; border-radius: 4px; display: none; white-space: pre-wrap; z-index: 2; }
+  #status { position: absolute; bottom: 10px; left: 12px; color: var(--dim); pointer-events: none; }
+  #view.drop::after { content: "Drop a .glb to open it"; position: absolute; inset: 0; display: grid; place-items: center; background: rgba(0,0,0,.45); font-size: 18px; }
+  @media (max-width: 700px) { body { grid-template-columns: 1fr; grid-template-rows: 60vh 40vh; } #side { border-left: 0; border-top: 1px solid var(--line); } }
+</style>
+<script>
+  // Shown if the module below never starts (three.js missing, or the page was opened from disk).
+  function previewError(msg) {
+    var b = document.getElementById("banner");
+    if (b) { b.textContent = msg; b.style.display = "block"; }
+  }
+  window.addEventListener("error", function (e) { previewError("Preview error: " + (e.message || e)); });
+  setTimeout(function () {
+    if (window.previewReady) return;
+    previewError(location.protocol === "file:"
+      ? "Open this page over HTTP, not from disk. From the repo root run: python3 -m http.server 8765\nthen open http://127.0.0.1:8765/blender/preview/"
+      : "three.js did not load from ./vendor. Check that blender/preview/vendor/three.module.min.js exists.");
+  }, 5000);
+</script>
+<script type="importmap">
+  { "imports": { "three": "./vendor/three.module.min.js", "three/addons/": "./vendor/addons/" } }
+</script>
+</head>
+<body>
+<main id="view"><div id="banner" role="alert"></div><div id="status">Loading</div></main>
+<aside id="side">
+  <header>
+    <h1>Field Preview</h1>
+    <div class="dim" id="source"></div>
+    <label class="file">Open a .glb <input type="file" id="file" accept=".glb,model/gltf-binary"></label>
+  </header>
+  <section id="picked"><span class="dim">Click an asset in the field or in the list.</span></section>
+  <input id="filter" placeholder="Filter assets" aria-label="Filter assets">
+  <nav id="list" aria-label="Assets"></nav>
+</aside>
+<script type="module">
+import * as THREE from "three";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+
+window.previewReady = true;
+const view = document.getElementById("view"), statusEl = document.getElementById("status");
+const listEl = document.getElementById("list"), pickedEl = document.getElementById("picked");
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+view.appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x8c99a6);
+scene.add(new THREE.HemisphereLight(0xdfe8f0, 0x5a5048, 1.6));
+const sun = new THREE.DirectionalLight(0xffffff, 2.2);
+sun.position.set(-120, 200, 160);
+scene.add(sun);
+const camera = new THREE.PerspectiveCamera(45, 1, 0.5, 6000);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+let field = null, assets = [], picked = null, saved = [];
+
+function resize() {
+  const r = view.getBoundingClientRect();
+  renderer.setSize(r.width, r.height, false);
+  camera.aspect = r.width / Math.max(1, r.height);
+  camera.updateProjectionMatrix();
+}
+new ResizeObserver(resize).observe(view);
+
+function fail(msg) { previewError(msg); statusEl.textContent = ""; }
+
+function assetOf(obj) {
+  for (let o = obj; o; o = o.parent) if (o.userData && o.userData.asset_id) return o;
+  return null;
+}
+
+function frame(obj, close) {
+  const box = new THREE.Box3().setFromObject(obj), c = box.getCenter(new THREE.Vector3());
+  const size = Math.max(box.getSize(new THREE.Vector3()).length(), close ? 12 : 50);
+  controls.target.copy(c);
+  camera.position.copy(c).add(new THREE.Vector3(0.45, 0.55, 0.7).multiplyScalar(size * (close ? 1.1 : 0.75)));
+  camera.far = size * 20;
+  camera.updateProjectionMatrix();
+}
+
+function select(obj) {
+  for (const [m, mat] of saved) m.material = mat;
+  saved = [];
+  picked = obj;
+  listEl.querySelectorAll("button").forEach(b => b.classList.toggle("on", obj && b.dataset.id === obj.userData.asset_id));
+  if (!obj) { pickedEl.innerHTML = '<span class="dim">Click an asset in the field or in the list.</span>'; return; }
+  obj.traverse(m => {
+    if (!m.isMesh) return;
+    saved.push([m, m.material]);
+    m.material = m.material.clone();
+    if (m.material.emissive) m.material.emissive.set(0x7a4a00);
+  });
+  const u = obj.userData, p = obj.getWorldPosition(new THREE.Vector3());
+  pickedEl.innerHTML = `<div class="id"></div><div class="dim"></div>`;
+  pickedEl.querySelector(".id").textContent = u.asset_id;
+  pickedEl.querySelector(".dim").textContent =
+    `${u.kind || "asset"} at x ${p.x.toFixed(1)}, y ${(-p.z).toFixed(1)} m (blueprint plan coordinates)`;
+}
+
+function buildList(filter = "") {
+  const groups = {};
+  for (const a of assets) {
+    if (filter && !a.userData.asset_id.includes(filter.toUpperCase())) continue;
+    (groups[a.userData.kind || "other"] ||= []).push(a);
+  }
+  listEl.innerHTML = "";
+  for (const kind of Object.keys(groups).sort()) {
+    const h = document.createElement("h2");
+    h.textContent = `${kind.replace("_", " ")} (${groups[kind].length})`;
+    listEl.appendChild(h);
+    for (const a of groups[kind]) {
+      const b = document.createElement("button");
+      b.textContent = b.dataset.id = a.userData.asset_id;
+      b.classList.toggle("on", a === picked);
+      b.onclick = () => { select(a); frame(a, true); };
+      listEl.appendChild(b);
+    }
+  }
+}
+
+function show(gltf, label) {
+  if (field) scene.remove(field);
+  field = gltf.scene;
+  scene.add(field);
+  assets = [];
+  field.traverse(o => { if (o.userData && o.userData.asset_id) assets.push(o); });
+  assets.sort((a, b) => a.userData.asset_id.localeCompare(b.userData.asset_id, undefined, { numeric: true }));
+  picked = null;
+  select(null);
+  buildList(document.getElementById("filter").value);
+  frame(field, false);
+  document.getElementById("source").textContent = label;
+  statusEl.textContent = `${assets.length} assets`;
+  document.body.dataset.assets = assets.length;
+  if (!assets.length) fail(`${label} loaded, but it has no nodes with userData.asset_id. Is it a generator field.glb?`);
+}
+
+const loader = new GLTFLoader();
+function loadUrl(url) {
+  statusEl.textContent = `Loading ${url}`;
+  loader.load(url, g => show(g, url),
+    e => { if (e.total) statusEl.textContent = `Loading ${url} ${Math.round(100 * e.loaded / e.total)}%`; },
+    e => fail(`Could not load ${url}: ${e.message || e}.\nBuild one first, or pass ?glb=<path> or drop a .glb here.`));
+}
+function loadFile(file) {
+  file.arrayBuffer().then(buf => loader.parse(buf, "", g => show(g, file.name),
+    e => fail(`Could not read ${file.name}: ${e.message || e}`)));
+}
+
+document.getElementById("file").onchange = e => e.target.files[0] && loadFile(e.target.files[0]);
+document.getElementById("filter").oninput = e => buildList(e.target.value);
+view.ondragover = e => { e.preventDefault(); view.classList.add("drop"); };
+view.ondragleave = () => view.classList.remove("drop");
+view.ondrop = e => { e.preventDefault(); view.classList.remove("drop"); e.dataTransfer.files[0] && loadFile(e.dataTransfer.files[0]); };
+addEventListener("keydown", e => { if (e.key === "Escape") select(null); });
+
+const ray = new THREE.Raycaster(), down = new THREE.Vector2();
+renderer.domElement.addEventListener("pointerdown", e => down.set(e.clientX, e.clientY));
+renderer.domElement.addEventListener("pointerup", e => {
+  if (!field || down.distanceTo(new THREE.Vector2(e.clientX, e.clientY)) > 4) return;
+  const r = renderer.domElement.getBoundingClientRect();
+  ray.setFromCamera(new THREE.Vector2((e.clientX - r.left) / r.width * 2 - 1, -(e.clientY - r.top) / r.height * 2 + 1), camera);
+  const hit = ray.intersectObject(field, true).map(h => assetOf(h.object)).find(Boolean);
+  select(hit || null);
+});
+
+renderer.setAnimationLoop(() => { controls.update(); renderer.render(scene, camera); });
+resize();
+loadUrl(new URLSearchParams(location.search).get("glb") || "../field.glb");
+</script>
+</body>
+</html>
