@@ -1,0 +1,216 @@
+/* Freeboard Jarvis console (docs/JARVIS_CONSOLE.md §1). Uses the console tokens from style.css.
+   body.fb-console: full-bleed 3D under a 32 px status line; Jarvis is a right sidebar. */
+
+:root { --cs-side: max(340px, min(380px, 28vw)); --cs-red: var(--alarm); --cs-amber: var(--warning); --cs-green: #8fa36b; --cs-gray: #8d877d; }
+
+body.fb-console #side, body.fb-console #jarvisBtn, body.fb-console #jarvis, body.fb-console #handsBtn,
+body.fb-console #modelNote { display: none !important; }
+body.fb-console #app { display: grid; height: 100vh; grid-template-columns: minmax(0, 1fr) 0; grid-template-rows: 32px minmax(0, 1fr);
+  grid-template-areas: "status side" "stage side"; }
+body.fb-console.cs-open #app { grid-template-columns: minmax(0, 1fr) var(--cs-side); }
+body.fb-console #stage { grid-area: stage; min-height: 0; }
+body.fb-console .cs-status { grid-area: status; }
+body.fb-console .cs-side { grid-area: side; }
+
+/* ---------------------------------------------------------- status line ---- */
+.cs-status { display: flex; align-items: stretch; height: 32px; min-width: 0; overflow: hidden; background: var(--bg);
+  border-bottom: 1px solid var(--line); font: 12px/32px var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.cs-status > * { flex-shrink: 0; }
+.cs-brand { font: 400 13px/32px var(--display); letter-spacing: .3em; padding: 0 10px 0 12px; color: var(--ink); }
+.cs-status time { color: var(--ink-2); padding-right: 10px; }
+.cs-seg { all: unset; box-sizing: border-box; display: inline-flex; align-items: center; gap: 6px; padding: 0 10px; height: 32px;
+  border-left: 1px solid var(--line); color: var(--ink); cursor: pointer; font: 12px var(--mono); letter-spacing: .02em; min-width: 0; }
+.cs-seg::before, .cs-seg::after { content: none !important; }
+.cs-seg:hover { background: var(--surface-2); }
+.cs-seg:focus-visible { outline: 1px solid var(--ink-2); outline-offset: -2px; }
+.cs-seg .k { color: var(--muted); letter-spacing: .1em; font-size: 11px; }
+.cs-seg .v { display: inline-flex; align-items: center; gap: 6px; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+#csForecast { flex-shrink: 1; min-width: 160px; max-width: 46%; }
+#csForecast .t { overflow: hidden; text-overflow: ellipsis; }
+#csForecast.unknown .t { color: var(--cs-amber); }
+.cs-feed.red { color: var(--cs-red); }
+.cs-feed.amber { color: var(--cs-amber); }
+.cs-pill { color: var(--cs-amber); }
+.cs-pill[hidden], .cs-iso[hidden] { display: none; }
+.cs-iso { padding: 0 10px; border-left: 1px solid var(--line); color: var(--ink-2); }
+.cs-grow { flex: 1 1 auto; }
+.cs-jtab { color: var(--ink-2); position: relative; }
+.cs-jtab.open { color: var(--ink); background: var(--surface-2); }
+.cs-unread { display: inline-block; width: 7px; height: 7px; background: var(--cs-red); }
+.cs-unread[hidden] { display: none; }
+
+.cs-dot { display: inline-block; width: 8px; height: 8px; flex: none; background: var(--cs-gray); }
+.cs-dot.red { background: var(--cs-red); box-shadow: 0 0 6px rgba(255,75,31,.6); }
+.cs-dot.amber { background: var(--cs-amber); }
+.cs-dot.green { background: var(--cs-green); }
+.cs-dot.gray { background: var(--muted); }
+.cs-dot.hatched { background: repeating-linear-gradient(45deg, var(--cs-gray) 0 2px, transparent 2px 4px); outline: 1px solid var(--cs-gray); outline-offset: -1px; }
+
+/* Countdown bar: now -> shutdown on a 0-6 h scale; the low-high band is hatched. */
+.cs-cd { position: relative; display: inline-block; width: 100%; height: 10px; background: var(--surface-2); outline: 1px solid var(--line); flex: none; }
+.cs-cd.mini { width: 120px; height: 8px; }
+.cs-cd .fill { position: absolute; inset: 0 auto 0 0; background: var(--ink-2); }
+.cs-cd.soon .fill { background: var(--cs-red); }
+.cs-cd .band { position: absolute; top: -2px; bottom: -2px; background: repeating-linear-gradient(45deg, rgba(232,226,214,.55) 0 2px, transparent 2px 4px); }
+.cs-cd.hatched { background: repeating-linear-gradient(45deg, rgba(141,135,125,.45) 0 2px, transparent 2px 5px); }
+.cs-cd.hatched .fill { background: rgba(141,135,125,.5); }
+.cs-cd.none { opacity: .5; }
+
+/* Jarvis tab on the right edge (closed) */
+.cs-tab { all: unset; position: fixed; right: 0; top: calc(50% - 48px); width: 28px; height: 96px; z-index: 20; cursor: pointer;
+  background: var(--surface); border: 1px solid var(--line); border-right: 0; display: grid; place-items: center; }
+.cs-tab::before, .cs-tab::after { content: none !important; }
+.cs-tab span { writing-mode: vertical-rl; transform: rotate(180deg); font: 11px var(--mono); letter-spacing: .2em; text-transform: uppercase; color: var(--ink-2); }
+.cs-tab .cs-unread { position: absolute; top: 6px; left: 10px; }
+.cs-tab[hidden] { display: none; }
+body:not(.fb-console) .cs-tab, body:not(.fb-console) .cs-status, body:not(.fb-console) .cs-side { display: none !important; }
+
+/* -------------------------------------------------------------- sidebar ---- */
+.cs-side { display: flex; flex-direction: column; min-height: 0; height: 100vh; background: var(--surface); border-left: 1px solid var(--line); overflow: hidden; }
+.cs-side[hidden] { display: none; }
+.cs-sh { display: flex; align-items: center; gap: 10px; height: 32px; padding: 0 8px 0 12px; border-bottom: 1px solid var(--line); flex: none; font: 12px var(--mono); }
+.cs-sh b { font: 400 14px var(--display); letter-spacing: .2em; text-transform: uppercase; }
+.cs-live { display: inline-flex; align-items: center; gap: 4px; color: var(--ink-2); font-size: 11px; }
+.cs-icon { all: unset; cursor: pointer; width: 24px; height: 24px; display: grid; place-items: center; color: var(--ink-2); font: 14px var(--mono); }
+.cs-icon::before, .cs-icon::after { content: none !important; }
+.cs-icon:hover { color: var(--ink); background: var(--surface-2); }
+.cs-hands { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; color: var(--ink-2); font-size: 11px; letter-spacing: .1em; text-transform: uppercase; user-select: none; }
+.cs-hands input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+.cs-hands i { width: 26px; height: 14px; border: 1px solid var(--ink-2); position: relative; }
+.cs-hands i::after { content: ""; position: absolute; top: 2px; left: 2px; width: 8px; height: 8px; background: var(--ink-2); transition: left .15s; }
+.cs-hands input:checked + i { border-color: var(--ink); }
+.cs-hands input:checked + i::after { left: 14px; background: var(--ink); }
+.cs-hands input:focus-visible + i { outline: 1px solid var(--ink); outline-offset: 2px; }
+.cs-hands[data-state="live"] { color: var(--ink); }
+.cs-help { padding: 8px 12px; font: 11px/1.6 var(--mono); color: var(--ink-2); border-bottom: 1px solid var(--line); }
+.cs-help[hidden] { display: none; }
+.cs-help a { color: var(--ink); }
+
+.cs-stream { list-style: none; margin: 0; padding: 8px 12px; overflow-y: auto; flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; gap: 10px; overscroll-behavior: contain; }
+.cs-b { display: grid; gap: 5px; padding: 8px 10px; border-left: 2px solid var(--line); background: rgba(19,18,16,.55); font-size: 13px; line-height: 1.45; }
+.cs-b.frozen { opacity: .55; }
+.cs-b.frozen .cs-actions, .cs-b.frozen .cs-shelve { display: none; }
+.cs-b.flash { animation: csflash 1.2s ease-out; }
+@keyframes csflash { from { background: rgba(232,226,214,.16); } to { background: rgba(19,18,16,.55); } }
+.cs-b.a-W { border-left-color: var(--cs-red); }
+.cs-b.a-F { border-left-color: var(--ink-2); }
+.cs-b.a-F.unknown { border-left-color: var(--cs-gray); }
+.cs-b.a-P { border-left-color: var(--cs-green); }
+.cs-b.a-J { border-left-color: var(--ink); }
+.cs-b.a-you { border-left: 0; background: transparent; justify-self: end; max-width: 85%; text-align: right; color: var(--ink-2); padding: 2px 0; }
+.cs-b.a-note { border-left-color: var(--muted); background: transparent; color: var(--ink-2); font-size: 12px; }
+.cs-b.a-note.warn { border-left-color: var(--cs-amber); color: var(--cs-amber); }
+.cs-bh { display: flex; align-items: center; gap: 6px; font: 11px var(--mono); letter-spacing: .1em; color: var(--muted); }
+.cs-bh b { color: var(--ink-2); font-weight: 600; }
+.cs-bh time { font-variant-numeric: tabular-nums; }
+.cs-letter { display: inline-grid; place-items: center; width: 16px; height: 16px; font: 600 10px var(--mono); color: var(--bg); background: var(--ink-2); }
+.cs-letter.W { background: var(--cs-red); } .cs-letter.P { background: var(--cs-green); } .cs-letter.J { background: var(--ink); }
+.cs-tag { margin-left: auto; font-size: 10px; color: var(--muted); border: 1px solid var(--line); padding: 0 4px; letter-spacing: .06em; }
+.cs-tag.claude { color: var(--trying, #8fb8c8); }
+.cs-tag.error { color: var(--cs-amber); }
+.cs-text { margin: 0; }
+.cs-vis { display: flex; align-items: center; gap: 8px; font: 11px var(--mono); color: var(--ink-2); }
+.cs-vis .cs-cd { flex: 1; width: auto; }
+.cs-vlabel { white-space: nowrap; }
+.cs-pb { display: grid; grid-template-columns: 34px 1fr auto; gap: 4px 8px; align-items: center; width: 100%; font: 11px var(--mono); }
+.cs-pb .bar { height: 8px; background: var(--surface-2); position: relative; }
+.cs-pb .bar i { position: absolute; inset: 0 auto 0 0; }
+.cs-pb .fix { background: var(--cs-green); } .cs-pb .wait { background: var(--cs-red); }
+.cs-pb b { font-variant-numeric: tabular-nums; font-weight: 600; text-align: right; }
+.cs-chips, .cs-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.cs-chip { padding: 2px 8px; font-size: 11px; letter-spacing: .06em; text-transform: none; border: 1px solid var(--line); color: var(--ink); cursor: pointer; }
+.cs-chip::before { content: "[" !important; } .cs-chip::after { content: "]" !important; }
+.cs-chip:hover { border-color: var(--ink-2); }
+.cs-actions button { padding: 3px 8px; font-size: 10px; }
+.cs-shelve { display: grid; gap: 6px; font: 11px var(--mono); }
+.cs-shelve[hidden] { display: none; }
+.cs-shelve select, .cs-shelve input { background: var(--bg); color: var(--ink); border: 1px solid var(--line); font: 12px var(--mono); padding: 4px 6px; }
+.typing .cs-dots { margin: 0; display: flex; align-items: center; gap: 4px; color: var(--ink-2); font-size: 12px; min-height: 16px; }
+.typing .cs-dots i { width: 5px; height: 5px; background: var(--ink-2); animation: csdot 1s infinite ease-in-out; }
+.typing .cs-dots i:nth-child(2) { animation-delay: .15s; } .typing .cs-dots i:nth-child(3) { animation-delay: .3s; }
+@keyframes csdot { 0%, 80%, 100% { opacity: .25; } 40% { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .typing .cs-dots i { animation: none; } .cs-b.flash { animation: none; } }
+
+/* Borrowed classic panels (open_panel, plan walk, what-if) */
+.cs-drawer { flex: none; max-height: 45vh; overflow-y: auto; border-top: 1px solid var(--line); padding: 6px 12px 10px; }
+.cs-drawer[hidden] { display: none; }
+.cs-drawer header { display: flex; align-items: center; justify-content: space-between; }
+.cs-drawer .card { border: 0; padding: 0; background: transparent; }
+.cs-kicker { font: 11px var(--mono); letter-spacing: .12em; color: var(--muted); }
+
+/* ------------------------------------------------------------- fix card ---- */
+.cs-side > .cs-fix { flex: none; margin: 0 12px 8px; padding: 10px 12px; border: 1px solid var(--cs-amber); border-left-width: 3px; background: var(--bg); display: grid; gap: 6px; }
+.cs-side > .cs-fix[hidden] { display: none; }
+.cs-fix.SENDING { border-color: var(--ink-2); }
+.cs-fix.CONFIRMED { border-color: var(--cs-green); }
+.cs-fix.FAILED { border-color: var(--cs-red); }
+.cs-fix.UNCERTAIN { border-color: var(--cs-amber); background: rgba(201,161,74,.07); }
+.cs-fix.REJECTED, .cs-fix.DECIDED { border-color: var(--line); }
+.cs-fx-top { display: flex; gap: 8px; font: 11px var(--mono); letter-spacing: .1em; color: var(--muted); text-transform: uppercase; }
+.cs-fx-top b { margin-left: auto; color: var(--cs-amber); font-weight: 600; }
+.cs-fix.CONFIRMED .cs-fx-top b { color: var(--cs-green); }
+.cs-fx-text { font-weight: 600; font-size: 14px; }
+.cs-fx-why, .cs-fx-eff { font-size: 12px; color: var(--ink-2); line-height: 1.45; }
+.cs-fx-state { font-size: 13px; line-height: 1.45; }
+.cs-fx-state.good { color: var(--cs-green); } .cs-fx-state.bad { color: var(--cs-red); } .cs-fx-state.warn { color: var(--cs-amber); }
+.cs-fx-state b { font: 600 11px var(--mono); letter-spacing: .12em; margin-right: 6px; }
+.cs-fx-note { font-size: 12px; color: var(--cs-amber); }
+.cs-fx-note[hidden] { display: none; }
+.cs-row { display: flex; gap: 8px; align-items: center; }
+.cs-hold { flex: 1; min-height: 40px; touch-action: none; user-select: none; -webkit-user-select: none; }
+.cs-hold.holding { border-color: var(--alarm); }
+.cs-more { justify-self: start; font: 11px var(--mono); color: var(--ink-2); background: none; border: 0; cursor: pointer; text-decoration: underline; padding: 0; }
+
+/* ---------------------------------------------------------- quick + ask ---- */
+.cs-quick { flex: none; display: flex; flex-wrap: wrap; gap: 6px; padding: 0 12px 8px; }
+.cs-q { padding: 4px 8px; font-size: 10px; }
+.cs-ask { flex: none; display: flex; align-items: center; gap: 6px; padding: 8px 12px 12px; border-top: 1px solid var(--line); }
+.cs-ask input { flex: 1; min-width: 0; background: transparent; border: 0; border-bottom: 1px solid var(--line); color: var(--ink); font: 13px var(--mono); padding: 6px 0; outline: none; }
+.cs-ask input:focus { border-bottom-color: var(--ink-2); }
+.cs-send { padding: 4px 8px; }
+.cs-send::before, .cs-send::after { content: none !important; }
+.cs-selchip { display: inline-flex; align-items: center; gap: 4px; border: 1px solid var(--ink-2); padding: 1px 2px 1px 6px; font: 11px var(--mono); white-space: nowrap; }
+.cs-selchip[hidden] { display: none; }
+.cs-selchip button { all: unset; cursor: pointer; padding: 0 4px; color: var(--ink-2); }
+
+/* -------------------------------------------------------------- timebar ---- */
+/* Hidden by default; slides up when time is not now, on bottom-edge hover, T, or a FORECAST click. */
+body.fb-console .timebar { left: 0; right: 0; bottom: 0; padding: 4px 12px 6px; border-width: 1px 0 0; transform: translateY(105%); transition: transform .22s ease-out; z-index: 4; }
+body.fb-console.cs-tb-up .timebar { transform: none; }
+body.fb-console .timebar-row { gap: 10px; align-items: center; }
+body.fb-console .sky-ctl { display: none; bottom: 70px; }
+body.fb-console.cs-tb-up.cs-sky-open .sky-ctl { display: block; }
+.cs-tb-hot { position: absolute; left: 0; right: 0; bottom: 0; height: 10px; z-index: 3; }
+body:not(.fb-console) .cs-tb-hot, body:not(.fb-console) .cs-skybtn { display: none; }
+.cs-skybtn { font: 11px var(--mono); padding: 4px 10px; }
+body.fb-console .timebar .scenery-btn { font: 11px var(--mono); padding: 4px 10px; }
+body.fb-console #twonights { inset: 12px 14px 80px 14px; }
+
+/* ---------------------------------------------------------------- PIN ---- */
+.cs-pin { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; background: rgba(5,5,5,.72); }
+.cs-pin-card { width: min(340px, calc(100vw - 32px)); background: var(--surface); border: 1px solid var(--ink-2); padding: 16px; display: grid; gap: 10px; }
+.cs-pin-card p { margin: 0; font-size: 13px; color: var(--ink-2); }
+.cs-pin-card input { background: var(--bg); color: var(--ink); border: 1px solid var(--line); font: 18px var(--mono); padding: 8px; letter-spacing: .3em; }
+
+@media (max-width: 860px) {
+  body.fb-console #app, body.fb-console.cs-open #app { grid-template-columns: 1fr; grid-template-rows: 32px 60vh auto; grid-template-areas: "status" "stage" "side"; height: auto; }
+  .cs-side { height: auto; max-height: none; }
+}
+
+/* Jarvis open: the status line keeps Feed, Watch and Forecast in short form (the Planner bubble is beside it). */
+.cs-seg .short { display: none; }
+body.cs-open .cs-seg .full { display: none; }
+body.cs-open .cs-seg .short { display: inline; }
+body.cs-open #csPlan, body.cs-open .cs-status time, body.cs-open #csJarvisSeg { display: none; }
+body.cs-open #csForecast { max-width: none; flex-shrink: 1; }
+body.cs-open .cs-cd.mini { width: 72px; }
+
+/* The effect line loads after the card appears; reserve its room so the hold button never jumps under a finger. */
+.cs-fix.PENDING .cs-fx-eff { min-height: calc(3 * 1.45em); }
+
+/* One fixed row: a selection swapping the chips must never move the fix card above it. */
+.cs-quick { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; height: 32px; align-items: center; padding-bottom: 0; margin-bottom: 6px; }
+.cs-quick::-webkit-scrollbar { display: none; }
+.cs-q { flex: none; white-space: nowrap; }
+.cs-q { padding: 4px 6px; letter-spacing: .06em; }
+.cs-quick { gap: 4px; }

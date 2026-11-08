@@ -61,12 +61,13 @@ function holdEnded() {
 // letting go anywhere, losing focus, hiding the page, or the button leaving the page
 // (a redraw) cancels it. A plain click never commits.
 export function holdButton(btn, onCommit, ms = 1500) {
-  let t0 = 0, raf = 0, done = false, holding = false;
+  let t0 = 0, raf = 0, timer = 0, done = false, holding = false;
   const set = (p) => btn.style.setProperty("--p", p.toFixed(3));
   const finish = () => {
     if (!holding) return;
     holding = false;
     cancelAnimationFrame(raf);
+    clearTimeout(timer);
     btn.classList.remove("holding");
     window.removeEventListener("pointerup", stop, true);
     window.removeEventListener("pointercancel", stop, true);
@@ -74,11 +75,20 @@ export function holdButton(btn, onCommit, ms = 1500) {
     window.removeEventListener("blur", stop);
     document.removeEventListener("visibilitychange", stop);
   };
-  const tick = (now) => {
+  // The fill is drawn on animation frames; the commit is also checked on a clock timer, so a slow
+  // 3D frame never stretches the hold past `ms` (and never shortens it: both read the clock).
+  const due = () => {
+    if (!holding) return;
+    const left = ms - (performance.now() - t0);
+    if (left > 0) { timer = setTimeout(due, left + 1); return; }
+    tick(performance.now(), true);
+  };
+  const tick = (now, fromTimer = false) => {
     if (!holding) return;
     if (!btn.isConnected || btn.disabled) { stop(); return; } // redrawn or disabled mid-hold: never commit
     const p = Math.min(1, (now - t0) / ms);
     set(p);
+    if (fromTimer && p < 1) return;
     if (p >= 1) {
       done = true;
       finish();
@@ -95,6 +105,7 @@ export function holdButton(btn, onCommit, ms = 1500) {
     holding = true;
     activeHolds++;
     t0 = performance.now();
+    timer = setTimeout(due, ms + 1);
     btn.classList.add("holding");
     // Listen on the window too: a release that lands anywhere else still ends the hold.
     window.addEventListener("pointerup", stop, true);

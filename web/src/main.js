@@ -16,7 +16,12 @@ import * as liveFeed from "./live.js";
 import { mountTwoNights } from "./twonights.js";
 import { mountScenery } from "./scenery.js";
 import { mountInspect } from "./inspect.js";
-import { mountRemote } from "./remote/remote.js"; // #114: also puts the control token on POSTs and /ws
+import { installAuth, wsToken } from "./console/auth.js";
+import { mountConsole } from "./console/index.js";
+
+// Jarvis console (docs/JARVIS_CONSOLE.md) is the default screen; the old panels stay at ?layout=classic.
+const layout = new URLSearchParams(location.search).get("layout") === "classic" ? "classic" : "console";
+installAuth(); // X-Freeboard-Token on every POST (and the PIN on a 401), before anything talks to the backend
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
@@ -977,7 +982,8 @@ $("time").addEventListener("input", (e) => { tMin = Number(e.target.value); rend
 addEventListener("keydown", (e) => {
   if (e.target.tagName === "INPUT" && e.target.type !== "range") return;
   if (e.target.tagName === "INPUT") return;
-  if (e.key === "Escape") { if (walk) endWalk(); select(null); flyHome(); }
+  // Console: Esc resets the view only; an approved plan walk keeps going (spec §3 Reset).
+  if (e.key === "Escape") { if (ui) ui.reset(); else { if (walk) endWalk(); select(null); flyHome(); } }
 });
 
 // ---------------------------------------------------------------- pager ----
@@ -1007,7 +1013,7 @@ function mountPager() {
 }
 
 // ----------------------------------------------------------------- boot ----
-if (api.usingBackend) liveFeed.start(api.BASE);
+if (api.usingBackend) liveFeed.start(api.BASE, "web", wsToken);
 liveFeed.on("state", () => { if (data) { renderFeed(); render(); } });
 liveFeed.on("feed", () => { if (data) { renderFeed(); render(); } });
 mountUpload();
@@ -1031,7 +1037,7 @@ mountTwoNights({
   log: (text) => { shiftlog.add("whatif", text); renderLog(); },
   describe, nice, clockAt, usd,
 });
-mountJarvis({
+if (layout === "classic") mountJarvis({
   stage: $("stage"),
   selected: () => selectedId,
   focus: (id) => { if (ids.has(id)) { select(id, true); inspect.pointed(id); } },
@@ -1045,22 +1051,38 @@ mountJarvis({
     return c.toDataURL("image/png").split(",")[1];
   },
 });
-// Freeboard Remote (#114): the default screen, a column beside the 3D field. "Classic" brings back
-// the panels above. Everything lives in remote/; these hooks are its only door in.
-mountRemote({
-  app: $("app"),
+// Jarvis console (Track B): status line, agent stream, sidebar, fix card. Everything lives in
+// console/; these hooks are its only door in.
+const ui = layout === "console" ? mountConsole({
+  app: $("app"), stage: $("stage"), canvas, scene, camera, controls, renderer, BASE: api.BASE,
   ready: () => !!data,
+  data: () => data,
   stateClock: () => (data ? data.state.clock : null),
+  clockNow: () => shiftlog.clockNow(),
+  ids: () => [...ids],
   tanks: () => ((field && field.tanks) || []).map((t) => t.id),
-  tank: (id) => (field ? tankInfo(id) || null : null),
+  tankOf: (id) => { const p = ((field && field.pumps) || []).find((x) => x.id === id) || ((field && field.wells) || []).find((x) => x.id === id); return p ? p.tank_id : null; },
   blind: () => (data ? blindTanks() : []),
-  shutdown: () => (data ? shutdownOf(data.baseline) : null),
-  incident: () => (data ? data.state.incident : null),
   selected: () => selectedId,
+  select: (id) => select(id),
   focus: (id) => { if (ids.has(id)) { select(id, true); inspect.pointed(id, "jarvis"); } },
+  flyHome: () => flyHome(),
+  getTime: () => tMin,
+  setTime: (t) => { tMin = t; $("time").value = String(t); render(); },
+  getActions: () => actions.map((a) => ({ ...a })),
+  setActions: (list) => setActions(list),
+  walking: () => !!walk,
+  describe, nice, clockAt, usd,
   logged: () => renderLog(),
-  nice,
-});
+}) : null;
+if (layout === "classic") {
+  const back = document.createElement("button");
+  back.className = "upload-open";
+  back.textContent = "Console";
+  back.title = "Back to the Jarvis console";
+  back.onclick = () => { const u = new URL(location.href); u.searchParams.delete("layout"); location.href = u.toString(); };
+  document.querySelector("#side .brand-row").appendChild(back);
+}
 // Hand control drives the same hover, select, orbit and zoom the mouse does.
 mountHands({
   canvas, stage: $("stage"),
@@ -1128,6 +1150,7 @@ async function boot() {
   frame(model.root);
   buildFuses();
   inspect.ready(model.root);
+  if (ui) ui.ready(model.root);
   renderAll();
   window.__freeboard = { assets, select, viewAt: (t) => viewAt(t), missing, setActions, get actions() { return actions; } };
 }
@@ -1153,6 +1176,7 @@ renderer.setAnimationLoop(() => {
   }
   if (selBox) selBox.update();
   inspect.update(); // highlight lifts and dimming, after paint()
+  if (ui) ui.update(dt, t);
   renderer.render(scene, camera);
   inspect.overlay(t); // outlines on top of the frame
 });

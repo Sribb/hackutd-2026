@@ -8,7 +8,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "phone": "vite --host 0.0.0.0",
-    "demo": "node scripts/demo.mjs"
+    "demo": "node scripts/demo.mjs",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "@fontsource/azeret-mono": "5.3.0",
@@ -18,6 +19,7 @@
     "three": "0.170.0"
   },
   "devDependencies": {
+    "@playwright/test": "1.64.1",
     "vite": "5.4.11"
   }
 }

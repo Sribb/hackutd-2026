@@ -9,6 +9,12 @@
 
 let base = "";
 let role = "web";
+// The console passes auth.wsToken. The token goes in the FIRST message on the socket,
+// {"type":"auth","token":...}, never in the URL, so it can't land in an access log. Only if the
+// server refuses the socket for want of a token (close 1008 or 4401) does the next try fall
+// back to ?token= (older backends that only read the query).
+let tokenOf = () => "";
+let tokenInQuery = false;
 let ws = null, tries = 0, pollTimer = 0, lostTimer = 0;
 const subs = new Map(); // type -> Set(fn)
 
@@ -32,10 +38,11 @@ function emit(type, msg) {
   }
 }
 
-export function start(apiBase, as = "web") {
+export function start(apiBase, as = "web", token = null) {
   if (base || !apiBase) return;
   base = apiBase.replace(/\/$/, "");
   role = as;
+  if (typeof token === "function") tokenOf = token;
   poll();
   connect();
 }
@@ -86,11 +93,15 @@ async function healthConnectors() {
 
 function connect() {
   try {
-    ws = new WebSocket(base.replace(/^http/, "ws") + `/ws?role=${role}`);
+    const t = tokenOf();
+    const q = t && tokenInQuery ? `&token=${encodeURIComponent(t)}` : "";
+    ws = new WebSocket(base.replace(/^http/, "ws") + `/ws?role=${role}${q}`);
   } catch {
     return retry();
   }
   ws.onopen = () => {
+    const t = tokenOf();
+    if (t && !tokenInQuery) { try { ws.send(JSON.stringify({ type: "auth", token: t })); } catch { /* the reconnect sends it again */ } }
     tries = 0;
     live.connected = true;
     markLost(false);
@@ -106,8 +117,9 @@ function connect() {
       emit(msg.type, msg);
     }
   };
-  ws.onclose = () => {
+  ws.onclose = (ev) => {
     ws = null;
+    if (ev && (ev.code === 1008 || ev.code === 4401) && tokenOf() && !tokenInQuery) tokenInQuery = true;
     const was = live.connected;
     live.connected = false;
     // A brief blip is normal. After 4 s without the socket, say the feed is lost.
