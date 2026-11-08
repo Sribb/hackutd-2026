@@ -10,6 +10,7 @@ import { decode, holdButton } from "./fx.js";
 import * as shiftlog from "./shiftlog.js";
 import { mountUpload } from "./upload.js";
 import { mountHands } from "./hands.js";
+import { mountJarvis, jarvisSelectionChanged } from "./jarvis.js";
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
@@ -841,7 +842,9 @@ function flyHome() {
 // ------------------------------------------------------------ selection ----
 let selBox = null;
 function select(id, focus = false) {
+  const changed = id !== selectedId;
   selectedId = id;
+  if (changed) jarvisSelectionChanged();
   if (selBox) { scene.remove(selBox); selBox = null; }
   const a = id && assets.get(id);
   if (a && a.root) {
@@ -906,6 +909,20 @@ addEventListener("keydown", (e) => {
 
 // ----------------------------------------------------------------- boot ----
 mountUpload();
+mountJarvis({
+  stage: $("stage"),
+  selected: () => selectedId,
+  focus: (id) => { if (ids.has(id)) select(id, true); },
+  logged: () => renderLog(),
+  // A picture of the 3D view for "what am I looking at", at most 640 px wide (about 0.5 MB).
+  snapshot() {
+    renderer.render(scene, camera);
+    const k = Math.min(1, 640 / canvas.width);
+    const c = Object.assign(document.createElement("canvas"), { width: Math.round(canvas.width * k), height: Math.round(canvas.height * k) });
+    c.getContext("2d").drawImage(canvas, 0, 0, c.width, c.height);
+    return c.toDataURL("image/png").split(",")[1];
+  },
+});
 // Hand control drives the same hover, select, orbit and zoom the mouse does.
 mountHands({
   canvas, stage: $("stage"),

@@ -81,3 +81,13 @@ MediaPipe Hand Landmarker (`@mediapipe/tasks-vision` 1.1.1, Apache-2.0) runs in 
 The WASM runtime is served from the npm package at `/mediapipe/wasm`. The hand model loads from Google's model storage. To run with no network, save `hand_landmarker.task` as `web/public/mediapipe/hand_landmarker.task`, and it is used instead.
 
 On this MacBook Air, the model loads in 2.5 s and runs at 8.7 ms a frame, so the 30 fps camera is the limit.
+
+## Jarvis panel (#44)
+
+**Jarvis** (top right of the field) opens a side panel. It never replaces the console.
+
+- **Ask** about the field. The selected asset goes along as `selected_asset_ids`. **What am I looking at** also sends a 640 px PNG of the 3D view. `POST /api/jarvis` replies with text, `ui` focus directives (the camera flies there), and proposed fixes.
+- **Proposed fixes** need a press and hold to confirm (`POST /api/actions/{id}/confirm`), or Reject. Nothing reaches equipment without that. Confirmations, rejections, and new alerts go into the shift log.
+- **Alerts** come from `GET /api/alerts` and live over `/ws` (`alert`, `proposal`, `ui` messages). The button blinks red on a new alert. The socket reconnects with backoff.
+- A **pinch** in hand control opens Jarvis on that asset and asks what's going on with it.
+- A 503 from Jarvis (no matching rule and no API key on the server) shows its `detail` in the chat. Without a backend, the panel says so.
