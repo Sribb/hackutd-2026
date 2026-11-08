@@ -387,3 +387,406 @@ Upload a blueprint as multipart form field `file`. That can be a PNG, JPEG, WebP
 - `blueprint` has the same shape as `scenario/field.json`, plus `x` and `y` in meters where the plan shows a position. Each asset also carries `_ingest` with its original label, Claude's confidence, and the evidence.
 - `errors` block a build: duplicate IDs, bad IDs, or references to missing IDs. `review` items don't block a build, but the console should show them for a human to confirm or fill in.
 - Error statuses: 400 for a bad file, 413 for a file too large, 415 for an unsupported type, 422 when Claude declines or can't read it, 429 when rate limited, and 502 or 503 for server and API problems. The `detail` says what to do.
+
+## Dataset mode (EOG sponsor data)
+
+Everything under `/api/eog` serves the EOG track's sponsor datasets: the real network, its week of telemetry, and the events, plans and alerts built from them. Code: `backend/app/eog/`, where `api.py` is a thin layer over `service.py`, and detection, plans and the 3D layout come from `detect.py`, `plan.py` and `blueprint.py`. The routes above are unchanged.
+
+**Turning it on.** Start the backend with `FREEBOARD_EOG_DIR` set to a folder of datasets, such as a checkout of the sponsor repo. Every folder under it that holds `network.json`, `ops.json` and `telemetry.csv` is a dataset, and its id is its path under that folder, like `history/full_week`. `FREEBOARD_EOG_DATASET` picks the dataset shown at startup (an id, or a folder name such as `full_week`). Without it the backend picks `test`, then `history/full_week`, then the first dataset it finds. With `FREEBOARD_EOG_DIR` unset, every route answers 503 with one sentence that says how to turn it on.
+
+**Rules for every route**
+
+- **Times** are data time, never the server's clock. Each one comes as a pair: `onset` is ts_unix seconds (an integer) and `onset_ts` is the same moment in ISO 8601 UTC, like `2026-10-08T09:00:00Z`. Text such as "13:25" is UTC too, with the weekday added when it isn't on the day of `now`.
+- **`?at=`** Every GET takes an optional `at`: ts_unix seconds, or ISO 8601 (UTC unless it carries an offset). Numbers of 10^11 or more are read as milliseconds, which is what JavaScript's `Date.now()` gives. `at` is clamped into the dataset's range, and anything unreadable is a 422. Without `at`, a GET reads the data at the clock's cursor (`GET /api/eog/clock`). `datasets` and `clock` check `at` but always describe the real cursor.
+- **Every view starts with** `dataset`, `at`, `at_ts`, `now` and `now_ts`. `now` is the last telemetry row at or before `at`, and nothing after it is read, so time travel shows exactly what was known then.
+- **Errors** are `{"detail": "<one sentence>"}`. 503: dataset mode is off, the dataset can't be loaded, or a module the view needs (`detect.py`, `plan.py`) isn't merged yet. 404: an unknown dataset, event, facility, asset or metric. 422: bad input, and the sentence says what to fix.
+- **POST routes** need the operator token in `X-Freeboard-Token` when `backend/app/auth.py` is present and a token is configured: 401 without it, 403 for the phone token, 429 after too many wrong PINs. With no token configured they are open. If `auth.py` is present but can't be used, POST routes answer 503 and say why instead of opening. GET routes and the WebSocket only read, so they are always open. A POST body is a JSON object, an empty body counts as `{}`, and an unknown field is a 422.
+- **JSON** never holds NaN or Infinity. A number that isn't known is `null`, and a missing reading never makes an asset `OK`.
+- **Event ids** (`EV-0001`, ...) number the events in onset order within a view, so they hold as the cursor moves forward unless detection re-dates an onset. When you approve, send back the `at` of the payload the id came from.
+- **Statuses** are `OK`, `INSPECT`, `WARNING` and `ALARM`, least to most severe. `INSPECT` is new in dataset mode: a suspected leak or a worn pump that needs a person on site. The console picks its look. `OFFLINE` isn't used here, and a shut-in well is `ALARM`.
+
+### `GET /api/eog/datasets`
+
+```json
+{
+  "enabled": true,
+  "active": "history/snapshot_2026-10-08T1200",
+  "datasets": [{ "id": "history/full_week" }, { "id": "history/snapshot_2026-10-08T1200" }],
+  "clock": { "dataset": "history/snapshot_2026-10-08T1200", "at": 1791460800, "playing": false },
+  "warnings": []
+}
+```
+
+`clock` is the whole `GET /api/eog/clock` answer. `warnings` says when `FREEBOARD_EOG_DATASET` names no dataset. If the active dataset can't be loaded, `clock` is `null` and `error` says why.
+
+### `POST /api/eog/datasets/activate`
+
+Request: `{ "id": "history/full_week" }`. It switches the dataset for everyone and answers like `GET /api/eog/datasets`. The cursor moves to the new dataset's last row, paused, at the same speed. 404 for an unknown id. 422 if the folder can't be loaded, and the old dataset stays active.
+
+### `GET /api/eog/clock`
+
+```json
+{
+  "dataset": "history/snapshot_2026-10-08T1200",
+  "start": 1791158400, "start_ts": "2026-10-05T00:00:00Z",
+  "last": 1791460800, "last_ts": "2026-10-08T12:00:00Z",
+  "at": 1791460800, "at_ts": "2026-10-08T12:00:00Z",
+  "now": 1791460800, "now_ts": "2026-10-08T12:00:00Z",
+  "step_s": 300,
+  "playing": false,
+  "speed": 5.0,
+  "live": true
+}
+```
+
+- `at` is the cursor, and `now` is the last row at or before it. `live` is true while the cursor is on the last row.
+- `step_s` is the telemetry's row spacing, read from the file.
+- `speed` is data-minutes per real second, so 5 plays one 5-minute row a second. Autoplay pauses by itself at `last`.
+
+### `POST /api/eog/clock`
+
+Request: any of `{ "at": "2026-10-08T09:00:00Z", "play": true, "speed": 30 }`. `at` moves the cursor (clamped), `play` starts or pauses autoplay, and `speed` must be above 0 and at most 1440 (a day per second). It answers like `GET /api/eog/clock`, plus a `note` when `play` is asked for at the end of the data.
+
+### `GET /api/eog/network`
+
+Everything that doesn't change during the week, from `network.json` and `ops.json`.
+
+```json
+{
+  "dataset": "history/snapshot_2026-10-08T1200", "at": 1791460800, "at_ts": "2026-10-08T12:00:00Z",
+  "now": 1791460800, "now_ts": "2026-10-08T12:00:00Z",
+  "limits": { "warning_pct": 85.0, "shutdown_pct": 92.0 },
+  "prices": { "oil_per_bbl": 60.0, "gas_per_mcf": 3.0 },
+  "repair_hours": 6.0,
+  "trucking": { "truck_capacity_bbl": 150.0, "cost_per_trip": 905.0 },
+  "systems": [{
+    "id": "S1", "center": [31.85, -102.3], "truck_yard": [31.65, -102.6],
+    "disposal": { "id": "S1_DISPOSAL", "lat": 31.87, "lon": -102.295, "pressure_psi": 1050.0 },
+    "fleet_size": 2, "facility_ids": ["S1_FACILITY_A", "S1_FACILITY_B", "S1_FACILITY_C"]
+  }],
+  "facilities": [{
+    "id": "S1_FACILITY_A", "system": "S1", "lat": 31.912, "lon": -102.34,
+    "tank": { "id": "S1_TANK_A", "capacity_bbl": 1200.0, "warning_pct": 85.0, "shutdown_pct": 92.0,
+              "warning_bbl": 1020.0, "shutdown_bbl": 1104.0 },
+    "pump": { "id": "S1_PUMP_A", "max_flow_bpd": 3600.0, "start_level_pct": 70.0, "stop_level_pct": 30.0 },
+    "pipeline": { "id": "S1_PIPELINE_A", "max_bpd": 4000.0, "max_pressure_psi": 1700.0, "disposal_id": "S1_DISPOSAL" },
+    "response_min": 75.0, "cycle_min": 240.0,
+    "well_ids": ["S1_WELL_A1", "S1_WELL_A2", "S1_WELL_A3"], "baseline_water_bpd": 2400.0, "revenue_per_hour": 4125.0
+  }],
+  "wells": [{
+    "id": "S1_WELL_C2", "facility": "S1_FACILITY_C", "system": "S1", "baseline_water_bpd": 700.0,
+    "oil_bpd": 170.0, "gas_mcfd": 600.0, "revenue_per_day": 12000.0, "revenue_per_hour": 500.0,
+    "cost_per_bbl_avoided": 17.142857142857142
+  }],
+  "links": [
+    { "from": "S1_WELL_A1", "to": "S1_TANK_A", "kind": "water" },
+    { "from": "S1_TANK_A", "to": "S1_PUMP_A", "kind": "tank_outlet" },
+    { "from": "S1_PUMP_A", "to": "S1_PIPELINE_A", "kind": "discharge" },
+    { "from": "S1_PIPELINE_A", "to": "S1_DISPOSAL", "kind": "pipeline" }
+  ],
+  "layout": [{
+    "id": "S1_TANK_A", "kind": "tank", "system": "S1", "facility": "S1_FACILITY_A", "label": "S1 Tank A",
+    "lat": 31.912, "lon": -102.34, "latlon_from": "facility", "x_m": -42.67, "y_m": 123.86,
+    "links": ["S1_PUMP_A"], "fed_by": ["S1_WELL_A1", "S1_WELL_A2", "S1_WELL_A3"],
+    "blueprint_id": "TANK_S1_TANK_A", "node": "TANK_S1_TANK_A", "metrics": ["level_pct"], "synthetic": false
+  }],
+  "warnings": []
+}
+```
+
+- A facility's `revenue_per_hour` is what its wells earn in an hour, which is what a shut-in loses. A well's `cost_per_bbl_avoided` is its revenue per barrel of water it makes (`null` if it makes none).
+- `response_min` is the drive from the truck yard to the facility, and `cycle_min` one round trip after that.
+- `layout` is `blueprint.py`'s `field_assets`, as that module documents it: every asset (systems, facilities, tanks, pumps, pipelines, wells, disposal sites, truck yards and trucks) with its label, position (`lat`, `lon`, and `x_m`, `y_m` in meters for the 3D field), links and glb node. It is `null` until `blueprint.py` is merged. If it fails, it is `null` and `warnings` says why.
+
+### `GET /api/eog/state`
+
+Every asset's readings and status at `now`, keyed by asset id.
+
+```json
+{
+  "dataset": "history/snapshot_2026-10-08T1200", "at": 1791460800, "at_ts": "2026-10-08T12:00:00Z",
+  "now": 1791460800, "now_ts": "2026-10-08T12:00:00Z",
+  "limits": { "warning_pct": 85.0, "shutdown_pct": 92.0 },
+  "assets": {
+    "S2_PUMP_B": { "kind": "pump", "system": "S2", "facility": "S2_FACILITY_B", "status": "ALARM",
+                   "readings": { "discharge_psi": 1000.6, "flow_bpd": 0.0, "status": 2.0 },
+                   "events": ["EV-0011"], "reasons": ["Pump failure: the pump has stopped moving water."] },
+    "S2_TANK_B": { "kind": "tank", "system": "S2", "facility": "S2_FACILITY_B", "status": "ALARM",
+                   "readings": { "level_pct": 78.49 },
+                   "events": ["EV-0011"], "reasons": ["Its pump has failed, so the tank is filling."] },
+    "S5_PIPELINE_B": { "kind": "pipeline", "system": "S5", "facility": "S5_FACILITY_B", "status": "INSPECT",
+                       "readings": { "pressure_psi": 1038.7, "receive_flow_bpd": 2446.6 }, "events": ["EV-0010"],
+                       "reasons": ["Possible leak between the pump and the disposal site: send an inspector now."] }
+  },
+  "systems": { "S1": "OK", "S2": "ALARM", "S3": "INSPECT", "S4": "INSPECT", "S5": "INSPECT" },
+  "counts": { "OK": 95, "INSPECT": 6, "WARNING": 0, "ALARM": 9 },
+  "events": {
+    "EV-0011": { "category": "pump_failure", "system": "S2", "facility": "S2_FACILITY_B", "asset": "S2_PUMP_B",
+                 "onset": 1791450000, "onset_ts": "2026-10-08T09:00:00Z" }
+  },
+  "warnings": []
+}
+```
+
+- `kind` is `pump`, `tank`, `pipeline`, `well`, `facility` or `disposal`. `readings` holds every metric the telemetry has for the asset at `now`, `null` where that row is missing. `events` lists the ongoing events that touch the asset (a failed pump also touches its tank, wells and facility). `reasons` has a plain sentence for each status other than `OK`.
+- Pump: `ALARM` on a pump failure or a fault (status 2), `INSPECT` when it is wearing out, `WARNING` with no status reading.
+- Tank: `ALARM` at or above shutdown or while its pump is down, `WARNING` at or above the warning limit or with no level reading.
+- Pipeline: `INSPECT` on a suspected leak, `WARNING` when none of its readings came in.
+- Well: `ALARM` when shut in (status 0), `WARNING` with no status reading.
+- A facility is the worst of its parts, a system the worst of its facilities, and a disposal site `OK`.
+- The top-level `events` lists every ongoing event. The state view never fails because detection does: if `detect.py` is missing or raises, the statuses come from the readings alone and `warnings` says so.
+
+### `GET /api/eog/alerts`
+
+The ongoing events in SPEC's alerts-view order: pump failures first, soonest shutdown first (ties go to the higher lost revenue per hour), then leaks and worn pumps.
+
+```json
+{
+  "dataset": "history/snapshot_2026-10-08T1200", "at": 1791460800, "at_ts": "2026-10-08T12:00:00Z",
+  "now": 1791460800, "now_ts": "2026-10-08T12:00:00Z",
+  "count": 6,
+  "counts": { "pump_failure": 3, "pipeline_leak": 1, "pump_degradation": 2, "other": 0 },
+  "alerts": [{
+    "order": 1, "event_id": "EV-0011", "category": "pump_failure", "status": "ongoing",
+    "system": "S2", "facility": "S2_FACILITY_B", "asset": "S2_PUMP_B",
+    "onset": 1791450000, "onset_ts": "2026-10-08T09:00:00Z", "detected_at": 1791450000,
+    "confidence": 0.9, "evidence": ["Pump status 2 and zero flow since 09:00."], "urgent": true,
+    "title": "S2_PUMP_B failed: S2_TANK_B reaches shutdown at 13:25 (in 1 h 25 min)",
+    "countdown": {
+      "tank_id": "S2_TANK_B", "level_pct": 78.6, "hours_to_limit": { "p50": 1.42, "p10": 1.42, "p90": 1.42 },
+      "trips_at": 1791465900, "trips_at_ts": "2026-10-08T13:25:00Z",
+      "repair_end": 1791471600, "repair_end_ts": "2026-10-08T15:00:00Z",
+      "tripped": false, "lost_revenue_per_hour": 2450.0
+    },
+    "approval": null,
+    "action": {
+      "type": "plan", "summary": "1 truck, 1 trip (~$905)",
+      "actions": [{ "type": "dispatch_truck", "facility_id": "S2_FACILITY_B", "trucks": 1, "trips_per_truck": 1 }],
+      "cost": 905.0, "truck_cost": 905.0, "shut_in_cost": 0.0, "auto_shut_in_cost": 0.0,
+      "trips": false, "trip_at": null, "trip_at_ts": null, "peak_level_pct": 89.711,
+      "expires_at": 1791461640, "expires_at_ts": "2026-10-08T12:14:00Z", "shares_with": ["EV-0012", "EV-0013"]
+    }
+  }]
+}
+```
+
+- `countdown` is only on pump failures (`null` otherwise). `trips_at` is when the tank reaches shutdown if nobody acts, `null` when the repair comes first. `tripped` is true once the tank has reached shutdown and its wells are shut in.
+- `action` for a pump failure is its recommended plan, with `summary` "No plan is available yet." and no actions while there is none. `expires_at` is Last Call: the last start time at which the plan still works. For a leak or a worn pump, `action` is `{ "type": "field_inspection", "asset_id": "S5_PIPELINE_B", "summary": "Send an inspector to S5_PIPELINE_B." }`.
+- `urgent` is true for pump failures and leaks. `approval` is the recorded approval (see approve) or `null`.
+
+### `GET /api/eog/events`
+
+Every event up to `now` in SPEC's events.json shape, the file the track asks for. Ongoing pump failures carry their plan from `now`, and resolved ones the plan made at their onset.
+
+```json
+{
+  "dataset": "history/snapshot_2026-10-08T1200", "at": 1791460800, "at_ts": "2026-10-08T12:00:00Z",
+  "now": 1791460800, "now_ts": "2026-10-08T12:00:00Z",
+  "count": 13,
+  "events": [{
+    "event_id": "EV-0011", "system_id": "S2", "facility_id": "S2_FACILITY_B", "asset_id": "S2_PUMP_B",
+    "category": "pump_failure", "status": "ongoing",
+    "onset_ts": "2026-10-08T09:00:00Z", "onset_unix": 1791450000, "end_ts": null, "end_unix": null,
+    "confidence": 0.9, "evidence": ["Pump status 2 and zero flow since 09:00."],
+    "level_pct": 78.6, "hours_to_limit": { "p50": 1.42, "p10": 1.42, "p90": 1.42 },
+    "recommended_actions": [{ "type": "dispatch_truck", "facility_id": "S2_FACILITY_B", "trucks": 1, "trips_per_truck": 1 }],
+    "est_cost": 905.0
+  }]
+}
+```
+
+The field names are SPEC's (`system_id`, `onset_unix`), kept as SPEC writes them. `?download=1` sends only the list, as an `events.json` attachment.
+
+### `GET /api/eog/plans`
+
+`?mode=now`, the default: a plan from `now` for every ongoing pump failure, planned together per system so they share its trucks.
+
+```json
+{
+  "dataset": "history/snapshot_2026-10-08T1200", "at": 1791460800, "at_ts": "2026-10-08T12:00:00Z",
+  "now": 1791460800, "now_ts": "2026-10-08T12:00:00Z",
+  "mode": "now",
+  "plans": [{
+    "event": { "id": "EV-0011", "category": "pump_failure", "asset": "S2_PUMP_B", "level_pct": 78.6 },
+    "plan": {
+      "event_id": "EV-0011", "facility_id": "S2_FACILITY_B", "system": "S2",
+      "start": 1791460800, "start_ts": "2026-10-08T12:00:00Z",
+      "actions": [{ "type": "dispatch_truck", "facility_id": "S2_FACILITY_B", "trucks": 1, "trips_per_truck": 1 }],
+      "summary": "1 truck, 1 trip (~$905)",
+      "cost": 905.0, "truck_cost": 905.0, "shut_in_cost": 0.0, "auto_shut_in_cost": 0.0,
+      "trips": false, "trip_at": null, "trip_at_ts": null, "peak_level_pct": 89.711,
+      "trucks_free": 2, "fleet_size": 2, "shares_with": ["EV-0012", "EV-0013"],
+      "arrivals": [1791465000], "arrivals_ts": ["2026-10-08T13:10:00Z"], "busy_until": [1791479700],
+      "expires_at": 1791461640, "expires_at_ts": "2026-10-08T12:14:00Z",
+      "notes": ["shares S2's 2 trucks with EV-0012, EV-0013"]
+    },
+    "trucks_free": 1,
+    "alternatives": [{ "summary": "1 truck, 1 trip (~$905)", "cost": 905.0, "trips": false }],
+    "wait_curve": [{ "delay_min": 0, "start": 1791460800, "start_ts": "2026-10-08T12:00:00Z", "cost": 905.0,
+                     "summary": "1 truck, 1 trip (~$905)", "trucks": 1, "system_cost": 3108.33 }],
+    "approval": null
+  }],
+  "systems": [{ "system": "S2", "fleet_size": 2, "events": ["EV-0011", "EV-0012", "EV-0013"], "trucks_used": 2, "cost": 3108.33 }]
+}
+```
+
+- `event` is the whole Event from `backend/app/eog/model.py`: `id`, `category`, `system`, `facility`, `asset`, `onset`, `end`, `status`, `confidence`, `evidence`, `detected_at`, `level_at_onset_pct`, `level_pct`, `hours_to_limit`, `trips_at`, `repair_end`, `tripped`, `lost_revenue_per_hour`, plus `onset_ts`, `end_ts`, `trips_at_ts` and `repair_end_ts`. `plan` is the whole Plan from the same file.
+- The item's `trucks_free` is the system's fleet minus the trucks the joint plan gives the system's other failures. `alternatives` are plans in the same shape for this failure on its own with those trucks, cheapest first, and they include doing nothing.
+- `wait_curve` is Last Call, the price of waiting: for each 5-minute delay until the repair, what it costs to do nothing until then and follow the best plan from there (`cost` for this event, `system_cost` for its whole system).
+- `?mode=reference` is history mode: every pump failure up to `now`, each planned alone at its onset with the trucks still out on earlier plans, as the answer keys' `reference_action`. Its items are `{ "event", "plan", "approval" }`, and `trucks_used` is `null`.
+
+### `POST /api/eog/whatif`
+
+Replays one facility's ongoing pump failure from `now` until the repair, with the actions you give and with no action.
+
+Request:
+
+```json
+{
+  "facility_id": "S2_FACILITY_B",
+  "actions": [
+    { "type": "dispatch_truck", "trucks": 1, "trips_per_truck": 2 },
+    { "type": "shut_in_wells", "wells": ["S2_WELL_B1"], "start_after_min": 30 }
+  ],
+  "at": "2026-10-08T12:00:00Z"
+}
+```
+
+`actions` take the events.json action shapes (`dispatch_truck`, `shut_in_wells`, `field_inspection`, `none`): at most 20, all for this facility, and no more trucks in all than the system's fleet. A truck action's `facility_id` defaults to the request's. `at` is optional.
+
+Response:
+
+```json
+{
+  "dataset": "history/snapshot_2026-10-08T1200", "at": 1791460800, "at_ts": "2026-10-08T12:00:00Z",
+  "now": 1791460800, "now_ts": "2026-10-08T12:00:00Z",
+  "facility_id": "S2_FACILITY_B",
+  "event": { "id": "EV-0011", "category": "pump_failure", "asset": "S2_PUMP_B" },
+  "start": 1791460800, "level_pct": 78.6,
+  "repair_end": 1791471600, "repair_end_ts": "2026-10-08T15:00:00Z",
+  "actions": [
+    { "type": "dispatch_truck", "facility_id": "S2_FACILITY_B", "trucks": 1, "trips_per_truck": 2 },
+    { "type": "shut_in_wells", "wells": ["S2_WELL_B1"], "start_after_min": 30 }
+  ],
+  "result": {
+    "points": [[1791460800, 78.6], [1791461100, 79.3937]],
+    "trip_at": null, "peak_level_pct": 88.1238,
+    "truck_cost": 905.0, "shut_in_cost": 3093.75, "auto_shut_in_cost": 0.0, "cost": 3998.75,
+    "arrivals": [1791465000], "removed_bbl": 150.0,
+    "errors": ["Trip 2 of 2 would arrive after the repair ends, so it is left out."]
+  },
+  "baseline": {
+    "points": [[1791460800, 78.6], [1791461100, 79.3937]],
+    "trip_at": 1791465840, "peak_level_pct": 92.0,
+    "truck_cost": 0.0, "shut_in_cost": 0.0, "auto_shut_in_cost": 3902.85, "cost": 3902.85,
+    "arrivals": [], "removed_bbl": 0.0, "errors": []
+  },
+  "savings": -95.9
+}
+```
+
+- `level_pct` is where the replay starts: the planner's own de-noised level, so replaying the recommended actions gives the recommended plan's cost.
+- `result` and `baseline` come from `plan.py`'s replay. `points` are `[ts_unix, level_pct]` pairs, `trip_at` is when the tank reaches shutdown (`null` if it doesn't), and `errors` lists anything left out, such as a trip that would land after the repair.
+- `savings` is the baseline cost minus the result's, and it is negative when the actions cost more than doing nothing.
+- 422 when the facility has no ongoing pump failure at `now`, or no level to start from.
+
+### `GET /api/eog/series`
+
+A reading history for charts: `?asset_id=S2_TANK_B&metric=level_pct&from=...&to=...&max_points=500`.
+
+```json
+{
+  "dataset": "history/snapshot_2026-10-08T1200", "at": 1791460800, "at_ts": "2026-10-08T12:00:00Z",
+  "now": 1791460800, "now_ts": "2026-10-08T12:00:00Z",
+  "asset_id": "S2_TANK_B",
+  "from": 1791158400, "from_ts": "2026-10-05T00:00:00Z", "to": 1791460800, "to_ts": "2026-10-08T12:00:00Z",
+  "max_points": 6,
+  "metric": "level_pct",
+  "raw_points": 1009,
+  "points": [[1791159000, 70.76], [1791235800, 29.56], [1791327600, 29.68], [1791342900, 70.24], [1791373500, 29.74], [1791460800, 78.49]]
+}
+```
+
+- `from` and `to` take the same forms as `at`. They default to the dataset's start and to `now`, and nothing after `now` is shown.
+- `max_points` (2 to 20000, default 500) caps the points. Past it, the series is cut into buckets and each keeps its lowest and highest reading, so spikes survive. `raw_points` is the count before that. Missing rows are skipped.
+- Without `metric`, you get every metric of the asset: `metrics` maps each one to its points, and `raw_points` maps each one to its count.
+- 404 for an unknown asset or a metric it doesn't have.
+
+### `GET /api/eog/handoff`
+
+`?shift_hours=12` (1 to 168). A plain-English shift handoff that reads in about 30 seconds, built from the alerts, plans and events (no AI).
+
+```json
+{
+  "dataset": "history/snapshot_2026-10-08T1200", "at": 1791460800, "at_ts": "2026-10-08T12:00:00Z",
+  "now": 1791460800, "now_ts": "2026-10-08T12:00:00Z",
+  "shift_hours": 12.0, "shift_start": 1791417600, "shift_start_ts": "2026-10-08T00:00:00Z",
+  "lines": [
+    "Handoff Thu 2026-10-08 12:00 UTC: 3 pumps down, 3 inspections open.",
+    "1. S2_PUMP_B down since 09:00: S2_TANK_B 79%, shuts in at 13:25, 1 h 25 min left. Do: 1 truck, 1 trip (~$905), start by 12:14.",
+    "2. S2_PUMP_C down since 09:30: S2_TANK_C 69%, shuts in at 14:20, 2 h 20 min left. Do: shut in S2_WELL_C1 at +46 min, ~94 min before the trip (~$1,298), start by 12:46.",
+    "3. S2_PUMP_A down since 10:00: S2_TANK_A 68%, shuts in at 14:35, 2 h 35 min left. Do: 1 truck, 1 trip (~$905), start by 13:10.",
+    "Inspect: leak on S5_PIPELINE_B since 06:00, worn S3_PUMP_A since Wed 08:00 and 1 more.",
+    "Resolved this shift: S1_PUMP_C failure (ended 06:20) and 1 more.",
+    "Plans total $3,108."
+  ],
+  "text": "Handoff Thu 2026-10-08 12:00 UTC: 3 pumps down, 3 inspections open.\n1. S2_PUMP_B down since 09:00: ...",
+  "words": 120,
+  "read_s": 30,
+  "counts": { "failing": 3, "inspect": 3, "resolved": 2 },
+  "total_cost": 3108.33
+}
+```
+
+- `text` is the `lines` joined with newlines. `read_s` is the reading time at 240 words a minute.
+- Every failed pump is named: the first three in full, the rest on one "Also down:" line. The inspect and resolved lists end in "and N more" when they would pass the 30-second budget (120 words). The alerts view has the rest.
+- A plan someone approved reads "approved by Dana" instead of "start by 12:14". With nothing going on, the first line says "all clear".
+
+### `POST /api/eog/plans/{event_id}/approve`
+
+Request, both fields optional: `{ "by": "Dana", "at": 1791460800 }`. Send the `at` of the alerts or plans payload the id came from. With a token configured, the approver is the device the token belongs to, not the body's `by`.
+
+```json
+{
+  "dataset": "history/snapshot_2026-10-08T1200", "at": 1791460800, "at_ts": "2026-10-08T12:00:00Z",
+  "now": 1791460800, "now_ts": "2026-10-08T12:00:00Z",
+  "event_id": "EV-0011", "category": "pump_failure", "facility_id": "S2_FACILITY_B",
+  "summary": "1 truck, 1 trip (~$905)",
+  "actions": [{ "type": "dispatch_truck", "facility_id": "S2_FACILITY_B", "trucks": 1, "trips_per_truck": 1 }],
+  "cost": 905.0,
+  "expires_at": 1791461640, "expires_at_ts": "2026-10-08T12:14:00Z",
+  "steps": [
+    { "n": 1, "at": 1791460800, "at_ts": "2026-10-08T12:00:00Z", "asset_id": "S2_FACILITY_B",
+      "text": "Call 1 truck from the S2 truck yard to S2_FACILITY_B now (12:00), 1 trip per truck." },
+    { "n": 2, "at": 1791465000, "at_ts": "2026-10-08T13:10:00Z", "asset_id": "S2_FACILITY_B",
+      "text": "First load: 1 truck at S2_FACILITY_B at 13:10, hauling 150 bbl." },
+    { "n": 3, "at": 1791471600, "at_ts": "2026-10-08T15:00:00Z", "asset_id": "S2_PUMP_B",
+      "text": "The S2_PUMP_B repair is due at 15:00." }
+  ],
+  "radio_script": "Field, this is control. S2_PUMP_B at S2_FACILITY_B has been down since 09:00. S2_TANK_B is at 79 percent. With no action it shuts in at 13:25. Plan: 1 truck, 1 trip (~$905). ... This plan only works if it starts by 12:14. Read back when ready. Control out.",
+  "approval": {
+    "event_id": "EV-0011", "dataset": "history/snapshot_2026-10-08T1200", "category": "pump_failure",
+    "facility_id": "S2_FACILITY_B", "asset_id": "S2_PUMP_B", "onset": 1791450000,
+    "by": "Dana", "at": 1791460800, "at_ts": "2026-10-08T12:00:00Z",
+    "summary": "1 truck, 1 trip (~$905)", "actions": [{ "type": "dispatch_truck", "facility_id": "S2_FACILITY_B", "trucks": 1, "trips_per_truck": 1 }],
+    "cost": 905.0, "seq": 1
+  }
+}
+```
+
+- A pump failure approves its current plan. The steps call the trucks (each load arrives `response_min` after the call, then one every `cycle_min`), time each shut-in, and end with the repair. A leak or a worn pump approves an inspection, with one step.
+- The approval is kept in memory: it shows as `approval` on the event's alert and plan and in the handoff, it stays with its dataset when you switch, and a restart forgets it. It never changes the data, the events or the plans. Approving the same event again replaces it. `by` defaults to "operator".
+- 404 for an id that isn't in the view. 422 when the event has already resolved, or has no plan yet.
+
+### WebSocket `/api/eog/ws`
+
+A read-only push, so it needs no token.
+
+```json
+{ "type": "tick", "dataset": "history/full_week", "clock": { "at": 1791460800, "playing": true, "speed": 5.0 }, "alerts": [] }
+```
+
+- `clock` is the whole `GET /api/eog/clock` answer and `alerts` is the `alerts` list of `GET /api/eog/alerts`, both at the cursor.
+- A tick comes on connect and whenever something changes: a new data row while playing, any cursor move while paused, play, pause or speed, a dataset switch, a change to the dataset's files, or an approval. The server checks four times a second.
+- When the alerts can't be built, the tick still carries the clock, with `"alerts": null` and `"error": { "status": 503, "detail": "..." }`. A problem with the dataset itself arrives once as `{ "type": "error", "status": 503, "detail": "..." }` (500 for an internal error), and ticks resume when it clears. With dataset mode off, the socket sends that error and closes with code 1013.
+- Messages from the client are ignored.
