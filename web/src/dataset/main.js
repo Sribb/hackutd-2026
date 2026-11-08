@@ -421,7 +421,7 @@ function screenPool() {
         : `${Plain} (hour average) went off at the same time.`);
     } else if (ongoing) {
       lead = (at - e.seen) / 3600; // at least this much, and counting
-      ev.push(`${plainName[0].toUpperCase()}${plainName.slice(1)} (hour average) has not gone off yet; the screen saw it ${durationText(lead)} ago.`);
+      ev.push(`${plainName[0].toUpperCase()}${plainName.slice(1)} (hour average) has not gone off by ${fmtTime(at, true)} UTC; the screen saw it at ${fmtTime(e.seen, true)} UTC, ${durationText(lead)} earlier.`);
     } else ev.push(`${plainName[0].toUpperCase()}${plainName.slice(1)} (hour average) never went off before it ended.`);
     if (pumpSt === null) ev.push("No fresh reading from the pump now, so these are its last running readings. Not checked since.");
     else if (pumpSt !== 1) ev.push("The pump is not running now, so these are its last running readings.");
