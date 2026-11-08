@@ -13,6 +13,15 @@ Config: url, timeout_s (default 5), token_env (an environment variable holding a
 shared token: sent as "Authorization: Bearer <token>" on commands, and required as
 the X-Freeboard-Token header on pushed readings).
 
+Every pushed value goes through the same rules as the other field connectors
+(signalmap.SignalMap: the signal's scale and its config.signal_map rule). A value that
+isn't good (text that isn't a number on an analog signal, NaN, inf, out of range, a
+word that isn't on or off) is rejected and gives no reading, so the live layer only
+ever sees numbers for analog signals, True or False for running, and OPEN or CLOSED
+for position. A run word like TRIPPED or STOPPED becomes False. self.quality keeps the
+latest quality of every declared signal, good or not, so /api/state shows a rejected
+signal UNKNOWN at once instead of its last good value.
+
 Only FREEBOARD_CONN_ variables can be named in token_env, and url must be http or
 https on a host an operator allows (FREEBOARD_CONN_ALLOWED_HOSTS, see hosts.py). A
 blueprint that breaks either rule gets a ValueError here, so the registry shows the
@@ -29,7 +38,16 @@ import httpx
 from ..fieldmap import SIGNALS, FieldMap
 from .base import Connector, Reading
 from .hosts import check_url
+from . import signalmap as sm
 from .signalmap import check_env_names, env_secret
+
+
+def _echo(r: dict, error: str) -> dict:
+    """A rejected reading as the answer shows it: which signal, and why. The raw value is
+    left out, since NaN or inf can't go back as JSON."""
+    out = {k: r[k] for k in ("asset_id", "signal", "address") if isinstance(r.get(k), (str, int))}
+    out["error"] = error
+    return out
 
 
 class WebhookConnector(Connector):
@@ -45,6 +63,8 @@ class WebhookConnector(Connector):
         self.timeout = float(self.config.get("timeout_s", 5))
         self.transport = transport  # tests inject httpx.MockTransport
         self.by_address = {addr: key for key, addr in self.signals.items() if addr}
+        self.smap = sm.SignalMap(spec)
+        self.quality: dict[tuple, dict] = {}
         self._inbox: list[Reading] = []
         self._lock = threading.Lock()
         self.last_error: Optional[str] = None
@@ -65,11 +85,19 @@ class WebhookConnector(Connector):
             elif (r.get("asset_id"), r.get("signal")) in self.signals:
                 key = (r["asset_id"], r["signal"])
             if key is None or key[1] not in SIGNALS or "value" not in r:
-                rejected.append({**r, "error": "not a signal this connector declares in the blueprint"})
+                rejected.append(_echo(r, "not a signal this connector declares in the blueprint"))
                 continue
+            mapped = self.smap.apply(key[0], key[1], r["value"])
             with self._lock:
-                self._inbox.append(self.reading(key[0], key[1], r["value"]))
-            accepted.append(f"{key[0]}.{key[1]}")
+                self.quality[key] = {"quality": mapped.quality, "detail": mapped.detail, "t": round(self.now(), 3)}
+                if mapped.good:
+                    self._inbox.append(self.reading(key[0], key[1], mapped.value))
+                else:   # never a value nobody can use, and never the last good one left waiting
+                    self._inbox = [x for x in self._inbox if (x["asset_id"], x["signal"]) != key]
+            if mapped.good:
+                accepted.append(f"{key[0]}.{key[1]}")
+            else:
+                rejected.append(_echo(r, f"{mapped.quality}: {mapped.detail}"))
         return {"accepted": accepted, "rejected": rejected}
 
     def read(self) -> list[Reading]:

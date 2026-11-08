@@ -11,6 +11,12 @@ approved since it was activated.
 are the truth, not the simulator:
 - a well's water rate is its live flow reading, so a confirmed choke or shut-in counts.
   A missing or stale reading keeps the design rate: never assume less water than we know.
+  So does a flow that can't be right (NaN, infinite, not a number, or more than
+  FLOW_NOISE_BBL_HR below zero), with a warning; it is never read as a shut-in well.
+- the simulator's readings never count for an asset a field connector declares. The
+  registry gives the simulator every signal no field connector declares, so a pump whose
+  field connector reports only `running` still has a simulated flow; when the real run
+  signal goes bad, that pump is unknown (off in the forecast, with a warning), not running.
 - a pump that reads not running counts as off from its first reading, before its trip
   alarm is confirmed, so the forecast never shows a tank as safe in that gap. Its run
   reading comes first, then its flow (over 10% of its rate means running).
@@ -107,6 +113,7 @@ def live_of(app) -> Optional[object]:
 GOOD = "good"
 LEVEL_SLACK_PCT = 0.5   # sensor noise past 0 or 100 that is clamped instead of dropped
 SHOWN = ("level_pct", "running", "flow_bbl_hr", "position")   # values /api/state shows as readings
+FLOW_NOISE_BBL_HR = 1.0  # a well flow this far below zero is meter noise (read as 0); further is a broken meter
 
 
 def usable_level(v) -> Optional[float]:
@@ -127,7 +134,7 @@ def bad_quality(live) -> dict[tuple, dict]:
     """{(asset_id, signal): {"connector", "quality", "detail", "t"}} for every signal a field
     connector reports as not good right now (its `quality` dict, #126). `t` is the live
     minute the connector set that quality, or None. Connectors without a quality dict (the
-    simulator, the webhook) report nothing here."""
+    simulator) report nothing here."""
     out: dict[tuple, dict] = {}
     for c in getattr(getattr(live, "registry", None), "connectors", None) or []:
         q = getattr(c, "quality", None)
@@ -152,12 +159,40 @@ def bad_quality(live) -> dict[tuple, dict]:
     return out
 
 
+def field_assets(live) -> set:
+    """Every asset a field connector (anything but the simulator) declares a signal of."""
+    registry = getattr(live, "registry", None)
+    sim = getattr(registry, "sim", None)
+    out = set()
+    for c in getattr(registry, "connectors", None) or []:
+        if c is sim:
+            continue
+        out |= {aid for aid, _ in (getattr(c, "signals", None) or {})}
+    return out
+
+
+def _simulated(live, asset_id: str, signal: str) -> bool:
+    """True when the latest reading came from the simulator for an asset a field connector
+    declares. The registry gives the simulator every signal no field connector declares, so
+    a field pump that reports only `running` still gets a simulated flow. That flow says
+    nothing about the real pump, so it never stands in for a run reading that went bad."""
+    registry = getattr(live, "registry", None)
+    sim = getattr(registry, "sim", None)
+    if sim is None:
+        return False
+    r = (getattr(live, "latest", None) or {}).get((asset_id, signal))
+    return bool(r) and r.get("source") == getattr(sim, "id", None) and asset_id in field_assets(live)
+
+
 def _fresh(live, asset_id: str, signal: str, bad: Optional[dict] = None):
-    """The latest reading, or None when there is none, it's stale, or its connector says
-    its quality isn't good (`bad`: bad_quality(live), worked out here when not given)."""
+    """The latest reading, or None when there is none, it's stale, its connector says its
+    quality isn't good (`bad`: bad_quality(live), worked out here when not given), or the
+    simulator made it up for an asset a field connector declares."""
     if live.detector.is_stale(asset_id, signal):
         return None
     if (asset_id, signal) in (bad_quality(live) if bad is None else bad):
+        return None
+    if _simulated(live, asset_id, signal):
         return None
     return live.value(asset_id, signal)
 
@@ -251,10 +286,18 @@ def live_scenario(live) -> dict:
         flow = _fresh(live, w["id"], "flow_bbl_hr")
         if flow is None:
             continue
-        try:
-            w["water_bbl_hr"] = max(0.0, float(flow))
-        except (TypeError, ValueError):
-            pass
+        x = None
+        if not isinstance(flow, bool):
+            try:
+                x = float(flow)
+            except (TypeError, ValueError):
+                x = None
+        if x is None or not math.isfinite(x) or x < -FLOW_NOISE_BBL_HR:
+            # A broken meter is not a shut-in well: keep the design rate, the worst case.
+            notes.append(f"{nice(w['id'])} reads a flow that can't be right ({_shown(flow)}), so the forecast "
+                         f"keeps its design rate of {nice_rate(w.get('water_bbl_hr'))}. Check it in the field.")
+            continue
+        w["water_bbl_hr"] = max(0.0, x)
 
     tanks = {t["id"] for t in sc["field"]["tanks"]}
     pumps = {p["id"] for p in sc["field"]["pumps"]}
@@ -286,6 +329,13 @@ def live_scenario(live) -> dict:
                          f"{tank}. Check it in the field.")
     sc["live_assumptions"] = notes
     return sc
+
+
+def nice_rate(v) -> str:
+    try:
+        return f"{float(v):g} bbl/hr"
+    except (TypeError, ValueError):
+        return "unknown"
 
 
 def _shown(v) -> str:

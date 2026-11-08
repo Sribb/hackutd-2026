@@ -6,6 +6,9 @@ One clock (#42, now.py): /api/state, /api/forecast, /api/plans, approve, Last Ca
 the SpacetimeDB mirror all start from the same moment. With the live layer mounted that
 is the live field (its clock, readings, and what people confirmed); otherwise it's the
 active scenario plus the plans approved on it.
+
+uvicorn's own request log never shows a token: log_redact.py masks ?token= (and any
+other secret-looking query parameter) on the uvicorn loggers.
 """
 from __future__ import annotations
 
@@ -24,7 +27,7 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from . import history, now, origin_guard, spacetime_sync
+from . import history, log_redact, now, origin_guard, spacetime_sync
 from .connectors import extra as _extra_connectors  # noqa: F401 - registers OPC UA, Sparkplug B (#126)
 
 try:   # SpacetimeDB v2 mirror (#126): alerts, proposals, connectors, one apply_batch per tick
@@ -37,6 +40,7 @@ from .planner import approve, make_plans
 from .scenario import field_payload, load_scenario, state_payload
 
 log = logging.getLogger("freeboard")
+log_redact.install()   # uvicorn logs /ws?token=...; the filter masks the token (#126 round 2)
 SCENARIO = load_scenario()
 _plans: dict[str, dict] = {}   # plan id -> plan, from the latest /api/plans calls
 now.set_static(SCENARIO)

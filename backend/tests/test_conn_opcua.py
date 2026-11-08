@@ -311,7 +311,8 @@ def test_restamped_static_value_stays_fresh(fake):
             conn.read()
             time.sleep(0.1)
         assert conn.quality[("PUMP_6", "running")]["quality"] == "good", conn.quality[("PUMP_6", "running")]
-        assert any(r["signal"] == "running" and r["value"] is True for r in conn.read())
+        # Each restamp is a new notification, so a new reading comes (a held value is never re-read).
+        wait_for(lambda: any(r["signal"] == "running" and r["value"] is True for r in conn.read()))
     finally:
         conn.close()
 

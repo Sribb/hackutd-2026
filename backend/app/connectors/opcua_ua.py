@@ -20,23 +20,26 @@ Rules this module keeps:
 - Security. SignAndEncrypt with Basic256Sha256 unless config says otherwise.
   security_mode "None" is allowed only with allow_insecure: true and an endpoint on
   127.0.0.1 or localhost. The client certificate and key are files whose paths come
-  from FREEBOARD_CONN_ variables. server_cert_path_env pins the server certificate;
-  without it the client takes the certificate the server lists for its endpoint, and
+  from FREEBOARD_CONN_ variables. server_cert_path_env pins the server certificate.
+  An endpoint off this machine needs it, unless config says allow_unpinned_server_cert:
+  true; without a pin the client takes whatever certificate the endpoint shows, and
   status() says the certificate is not pinned.
 - Values. A notification is used only when its StatusCode is Good and its
   SourceTimestamp (or ServerTimestamp, when the server sends no source time) is no
   older than max_age_s (default 300 s). Bad or Uncertain status, an old timestamp, or
   a value its signal_map rule rejects gives no reading, and self.quality says why.
   Monitored items use the StatusValueTimestamp trigger, so a server that restamps an
-  unchanged value still sends it. While the session is healthy, the last good value of
-  each signal is read again on every read(); its age is checked against the device
-  timestamp (or its arrival time, when it came with none) each time, so it goes stale
-  on its own. It is also read again for at most stale_after_min live minutes after it
-  arrived (default 5, the blueprint's usual sensors.stale_after_min; set it to that
-  value or less). max_age_s is wall time, and at FREEBOARD_SPEED 0.25 the default 300 s
-  is 75 live minutes, so without this cap a tag the server stopped updating, still Good
-  and never restamped, would show as fresh through the whole incident. After the cap
-  the signal turns stale (quality "stale") and gives no reading until a new value comes.
+  unchanged value still sends it. Each notification gives one reading, stamped with the
+  live minute read() hands it on. A value is never handed on again: the live layer
+  measures staleness from the last real update, so a tag the server stopped updating
+  (still Good, never restamped) gets SENSOR_STALE at stale_after_min, the same moment
+  /api/state shows it UNKNOWN. The connector still watches the last good value of each
+  signal: once its device timestamp (or its arrival time, when it came with none) is
+  older than max_age_s, or stale_after_min live minutes (default 5, the blueprint's
+  usual sensors.stale_after_min; set it to that value or less) have passed since it
+  arrived, its quality turns "stale" until a new value comes. max_age_s is wall time,
+  and at FREEBOARD_SPEED 0.25 the default 300 s is 75 live minutes, which is why the
+  live-minute cap is there too.
 - A good value's quality turns good when read() hands it on, not when it arrives, so an
   asset never shows the value from before a bad period as fresh while the new one waits.
 - Hosts. The endpoint host must be one an operator allows (FREEBOARD_CONN_ALLOWED_HOSTS,
@@ -93,11 +96,23 @@ def _short(e: BaseException, config: Optional[dict] = None) -> str:
         if isinstance(key, str) and key.endswith("_env") and var:
             value = sm.env_secret(config, key[:-4])
             if value and len(value) >= 3:
-                text = text.replace(value, f"${var}")
+                text = _redact(text, value, f"${var}")
     name = type(e).__name__
     if not text:
         return name
     return f"{name}: {text[:160]}"
+
+
+def _redact(text: str, value: str, tag: str) -> str:
+    """text with every spelling of `value` an error message can carry replaced by `tag`:
+    as written, as repr() shows it (an OSError prints its filename with doubled
+    backslashes on Windows), and with either kind of slash."""
+    forms = {value, repr(value)[1:-1], value.replace("\\", "/"), value.replace("/", "\\")}
+    forms |= {f.replace("\\", "\\\\") for f in list(forms)}
+    for form in sorted(forms, key=len, reverse=True):
+        if len(form) >= 3:
+            text = text.replace(form, tag)
+    return text
 
 
 class OpcUaConnector(Connector):
@@ -133,6 +148,12 @@ class OpcUaConnector(Connector):
                     raise ValueError(f"security_mode {self.mode} needs config {key} (a FREEBOARD_CONN_ variable "
                                      f"holding a file path)")
         check_host(self.host, "config endpoint host")
+        if (self.mode != "None" and self.host not in LOCAL_HOSTS and not cfg.get("server_cert_path_env")
+                and cfg.get("allow_unpinned_server_cert") is not True):
+            raise ValueError("an endpoint off this machine needs config server_cert_path_env (a FREEBOARD_CONN_ "
+                             "variable holding the server certificate's path), so the session is encrypted to "
+                             "the real server and not to whoever answers; set allow_unpinned_server_cert: true "
+                             "only to accept any certificate the endpoint shows")
         self.username = cfg.get("username")
         if self.username is not None and (not isinstance(self.username, str) or not self.username):
             raise ValueError("config username must be a non-empty string")
@@ -199,10 +220,10 @@ class OpcUaConnector(Connector):
                     self._mark(key, sm.STALE, f"no new value from the server for {now_min - arrived:.1f} live "
                                               f"minutes (stale_after_min {self.hold_live_min:g})")
                     continue
+                # Checked, never handed on again: a re-read would carry a fresh t and keep
+                # the detector from seeing that the server stopped updating.
                 mapped = self.smap.apply(key[0], key[1], raw, age_s=self._age(src))
-                if mapped.good:
-                    out.append(self.reading(key[0], key[1], mapped.value))
-                else:
+                if not mapped.good:
                     self._held.pop(key, None)
                     self._mark(key, mapped.quality, mapped.detail)
         return out

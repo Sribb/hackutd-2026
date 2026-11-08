@@ -238,6 +238,7 @@ def test_demo_blueprint_against_the_fakes(monkeypatch, tmp_path):
         app = SimpleNamespace(state=SimpleNamespace(live=lf))
 
         def step():
+            fakes.step(0.0)        # starts the story once the host is online; the OPC UA values turn good
             lf.step(0.01)
 
         wait_for(lambda: lf.latest.get(("TANK_6", "level_pct"), {}).get("source") == "CONN_OPCUA"

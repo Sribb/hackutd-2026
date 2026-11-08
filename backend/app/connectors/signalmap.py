@@ -245,6 +245,9 @@ MA_MAX = 20.5
 MA_SPAN = (4.0, 20.0)
 
 DEFAULT_MAX_AGE_S = 60.0      # oldest device timestamp accepted, unless config says otherwise
+# The lowest value a signal can take when its rule gives no range. A flow a little below
+# zero is meter noise; well below it is a broken meter, never a shut-in well (#126 round 2).
+DEFAULT_FLOOR = {"flow_bbl_hr": -1.0}
 
 M_PER_FT = 0.3048
 # Each unit times its factor is the live layer's unit. 1 bbl = 42 US gal; 1 m3 =
@@ -402,6 +405,7 @@ def parse_rule(signal: str, rule: Any) -> Rule:
     bbl_day, m3_h, l_s; pressure: psi, kpa, bar, mpa; level: pct, or ft, in, m with
     `height_ft` or `height_m`, the liquid height that reads 100%; motor_amps: a); and
     `range` ([lo, hi] in the live layer's unit, checked last; outside is OUT_OF_RANGE).
+    With no `range`, a flow below DEFAULT_FLOOR (-1 bbl/hr) is OUT_OF_RANGE.
     `running` takes `invert`. `position` takes `invert`, or `open_values` and
     `closed_values` together (then any other value is BAD). Every signal takes
     `max_age_s`. Keys starting with "_" are comments; any other key is an error,
@@ -527,6 +531,9 @@ def _map_analog(signal: str, raw: Any, rule: Rule, scale: Any) -> Mapped:
     if rule.range is not None and not rule.range[0] <= v <= rule.range[1]:
         lo, hi = rule.range
         return Mapped(None, OUT_OF_RANGE, f"{_amount(v, signal)} is outside its range, {lo:g} to {hi:g}")
+    floor = DEFAULT_FLOOR.get(signal)
+    if rule.range is None and floor is not None and v < floor:
+        return Mapped(None, OUT_OF_RANGE, f"{_amount(v, signal)} is below {floor:g}: a flow can't run backwards")
     return Mapped(v, GOOD)
 
 

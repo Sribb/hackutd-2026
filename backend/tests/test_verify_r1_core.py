@@ -118,15 +118,22 @@ def test_one_clock_takes_no_impossible_level_as_real(raw):
     conn(lf, "CONN_HOOK").push([{"asset_id": "TANK_5", "signal": "level_pct", "value": raw}])
     lf.step(0.5)
     a = now.state(app_)["assets"]["TANK_5"]
-    # Never OK. A reading past the shutdown level already put it in ALARM, which stays ALARM
-    # (the mirror's rule too).
-    assert a["status"] == ("ALARM" if raw > 90 else "UNKNOWN") and a["level_pct"] is None, a
-    assert a["last_level_pct"] == raw or (math.isnan(raw) and math.isnan(a["last_level_pct"]))
-    assert "not a usable percentage" in a["reason"]
     n = now.get(app_)
     assert n.scenario["initial_levels_pct"]["TANK_5"] is None
-    assert any("Tank 5" in w for w in n.scenario["live_assumptions"])
-    assert any("Tank 5" in w for w in build_plant(n.scenario).warnings)
+    assert any("Tank 5" in w or "TANK_5" in w for w in build_plant(n.scenario).warnings)
+    if not math.isfinite(raw):
+        # Round 2: the webhook runs values through signalmap, so NaN and inf never reach the
+        # live layer. The connector reports the signal bad, which is UNKNOWN at once.
+        assert a["status"] == "UNKNOWN" and a["level_pct"] is None, a
+        assert a["quality"] == {"level_pct": "bad"} and "not a finite number" in a["reason"]
+        assert lf.value("TANK_5", "level_pct") is None
+    else:
+        # Never OK. A reading past the shutdown level already put it in ALARM, which stays ALARM
+        # (the mirror's rule too).
+        assert a["status"] == ("ALARM" if raw > 90 else "UNKNOWN") and a["level_pct"] is None, a
+        assert a["last_level_pct"] == raw
+        assert "not a usable percentage" in a["reason"]
+        assert any("Tank 5" in w for w in n.scenario["live_assumptions"])
     plans = make_plans(n.scenario, base_actions=list(n.actions), plant=n.plant)["plans"]
     assert all("TANK_5" in p.get("unknown_tanks", []) for p in plans)
     assert spacetime_mirror.level(raw) is None      # the mirror and /api/state agree

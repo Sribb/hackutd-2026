@@ -27,8 +27,9 @@ certificate paths to put in the connector's environment. It never prints the
 password. In a test:
 
     fake = start()                       # handle; fake.endpoint, fake.client_cert, fake.password
+    fake = start(initial={"TANK_6.Level": 50.0}, initial_quality="waiting")   # served from the first session
     fake.set("TANK_6.Level", 42.0)       # change a value
-    fake.set_quality("TANK_6.Level", "bad")
+    fake.set_quality("TANK_6.Level", "bad")   # good, bad, uncertain, comm_lost, waiting
     fake.set_age("TANK_6.Level", 900)    # stamp its SourceTimestamp 15 minutes ago
     fake.writes                          # [{"node", "name", "value", "variant", "t"}] from clients
     fake.write_delay_s = 3               # answer client writes late (the write still lands)
@@ -72,7 +73,7 @@ COMMANDS = {
 PUMP_RATE = 220.0
 WELL_RATE = 38.0
 QUALITY = {"good": "Good", "bad": "BadSensorFailure", "uncertain": "UncertainLastUsableValue",
-           "comm_lost": "BadNoCommunication"}
+           "comm_lost": "BadNoCommunication", "waiting": "BadWaitingForInitialData"}
 
 
 def free_port() -> int:
@@ -126,7 +127,8 @@ class FakeOpcUa:
     def __init__(self, port: Optional[int] = None, workdir: Optional[str] = None, password: Optional[str] = None,
                  fill_pct_per_s: float = 0.02, tick_s: float = 0.2, write_delay_s: float = 0.0,
                  drain_pct_per_s: Optional[float] = None, pump_rate: Optional[float] = None, well_rate: Optional[float] = None,
-                 min_level_pct: float = 0.0, auto_levels: bool = True) -> None:
+                 min_level_pct: float = 0.0, auto_levels: bool = True, initial: Optional[dict] = None,
+                 initial_quality: str = "good") -> None:
         self.port = port or free_port()
         self.endpoint = f"opc.tcp://127.0.0.1:{self.port}/freeboard/"
         self.workdir = Path(workdir) if workdir else Path(tempfile.mkdtemp(prefix="freeboard-opcua-"))
@@ -145,7 +147,11 @@ class FakeOpcUa:
         self.server_cert, self.server_key = paths["server_cert"], paths["server_key"]
         self.client_cert, self.client_key = paths["client_cert"], paths["client_key"]
         self.values = {k: v for k, (_, v) in {**READS, **COMMANDS}.items()}
-        self.quality = {k: "good" for k in self.values}
+        unknown = sorted(set(initial or {}) - set(self.values))
+        if unknown:
+            raise ValueError(f"no variable {', '.join(unknown)} in the fake")
+        self.values.update(initial or {})
+        self.quality = {k: (initial_quality if k in READS else "good") for k in self.values}
         self.age_s = {k: 0.0 for k in self.values}        # how old the stamped SourceTimestamp is
         self.writes: list[dict] = []
         self._lock = threading.Lock()
@@ -219,7 +225,9 @@ class FakeOpcUa:
         idx = await server.register_namespace(NS_URI)
         folder = await server.nodes.objects.add_folder(idx, "Field")
         self._nodes = {}
-        for name, (vt, value) in {**READS, **COMMANDS}.items():
+        for name, (vt, _default) in {**READS, **COMMANDS}.items():
+            with self._lock:
+                value = self.values[name]          # the configured value, never the default
             var = await folder.add_variable(ua.NodeId(name, idx), name, ua.Variant(value, getattr(ua.VariantType, vt)))
             if name in COMMANDS:
                 await var.set_writable()
@@ -246,6 +254,10 @@ class FakeOpcUa:
         server.subscribe_server_callback(CallbackType.PostWrite, on_write)
         server.subscribe_server_callback(CallbackType.PreWrite, slow_answer)
         async with server:
+            # Publish once before anyone can connect, so the first value a client sees is
+            # the configured one with its quality and a fresh timestamp.
+            self._model(0.0)
+            await self._publish(ua)
             self._ready.set()
             last = time.monotonic()
             while not self._stopping.is_set():

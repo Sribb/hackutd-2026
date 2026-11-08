@@ -11,7 +11,9 @@ sync the Recorder notes each signal a connector reports as not good (now.bad_qua
 and stores a null at the minute the connector said so, the same moment /api/state turns
 the asset UNKNOWN. So a null point is a SENSOR_STALE period, a period the connector did
 not vouch for (comm_lost, bad, out of range, ...), however short, or a time before the
-first reading. Such a period is always null: the last value is never carried forward
+first reading. A tank level is recorded through now.usable_level, the rule /api/state
+uses, so a level /api/state refuses (NaN, infinite, -20 %, 130 %) is null here as well,
+and a point at time t shows what /api/state showed at t. Such a period is always null: the last value is never carried forward
 into it, and a number never stands in for a reading nobody has. The next good reading
 ends it.
 
@@ -86,7 +88,7 @@ class Recorder:
                 for t, v in reversed(hist):   # newest first; stop at what we already have
                     if t <= last:
                         break
-                    fresh.append((float(t), v))
+                    fresh.append((float(t), _recorded(key, v)))
                 buf = self._series.get(key)
                 if fresh:
                     if buf is None:
@@ -134,6 +136,15 @@ class Recorder:
     def keys(self) -> set:
         with self._lock:
             return set(self._series)
+
+
+def _recorded(key: tuple, v):
+    """A reading as the history keeps it. A tank level goes through now.usable_level, the
+    rule /api/state uses, so a level /api/state refuses (NaN, -20 %, 130 %) is the null
+    marker here too, never an empty or overflowing tank on the trend."""
+    if key[1] == "level_pct":
+        return now.usable_level(v)
+    return v
 
 
 _recorder = Recorder()

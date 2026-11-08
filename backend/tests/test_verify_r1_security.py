@@ -194,8 +194,9 @@ def test_opcua_held_value_runs_out_after_the_live_stale_window(monkeypatch):
     conn.notify("ns=2;s=TANK_6.Level", NS(StatusCode=None, Value=NS(Value=48.0), SourceTimestamp=now,
                                           ServerTimestamp=now))
     assert [r["value"] for r in conn.read()] == [48.0]
-    clock["t"] = 4.9                              # still inside stale_after_min (5): held and re-read
-    assert [r["value"] for r in conn.read()] == [48.0]
+    clock["t"] = 4.9                              # still inside stale_after_min (5): held, still good
+    assert conn.read() == [], "round 2: a held value is never handed on again with a fresh t"
+    assert conn.quality[("TANK_6", "level_pct")]["quality"] == "good"
     clock["t"] = 8.0                              # 8 live minutes with no new value, seconds of wall time
     assert conn.read() == [], "a frozen tag outlived the live stale window"
     assert conn.quality[("TANK_6", "level_pct")]["quality"] == "stale"

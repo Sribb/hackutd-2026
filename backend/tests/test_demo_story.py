@@ -58,10 +58,11 @@ def test_demo_starts_calm_with_only_the_scripted_pump_3_trip(monkeypatch, tmp_pa
         path.write_text(json.dumps(bp), encoding="utf-8")
         lf = LiveField(load_scenario(path), bp)
 
-        # Nothing moves before the backend's host is online; then the story starts.
+        # Nothing moves before the backend's host is online; then the story starts. The story
+        # stays at minute 0 until both connectors have delivered their first readings.
         end = time.monotonic() + 15
         while time.monotonic() < end:
-            fakes.step(STEP_MIN)
+            fakes.step(0.0)
             lf.step(0.0)
             if (fakes.t_min is not None
                     and lf.latest.get(("TANK_6", "level_pct"), {}).get("source") == "CONN_OPCUA"

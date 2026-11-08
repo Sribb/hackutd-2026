@@ -1,12 +1,17 @@
 """Start every fake the connectors demo needs, on 127.0.0.1 only. No real equipment.
 
     python -m backend.fakes [--opcua-port 4840] [--sparkplug-port 1886] [--workdir DIR]
+                            [--backend http://127.0.0.1:8000]
 
 It starts the fake OPC UA server (backend/fakes/opcua.py) and a fake Sparkplug B edge
 node with its own MQTT broker (backend/fakes/sparkplug.py), the two connectors that
 backend/data/samples/connectors_demo.json declares. Then it prints the environment
-variables to export in the backend's shell before starting it. The ports in the demo
-blueprint are 4840 and 1886; with other ports, change the blueprint to match.
+variables to export in the backend's shell before starting it, with
+FREEBOARD_SCENARIO=backend/data/samples/connectors_demo.json so the backend starts on the
+demo blueprint. Started on any other field, the backend would run that field's own story
+first (scenario/field.json trips PUMP_3 at 01:47 too), and activating the demo blueprint
+later keeps the live clock, so the console would show two PUMP_3 trips. The ports in the
+demo blueprint are 4840 and 1886; with other ports, change the blueprint to match.
 
 The OPC UA login password comes from FREEBOARD_CONN_OPCUA_PASSWORD when it is set, and
 is then not printed. When it is not set, the fake makes up a throwaway password for this
@@ -14,10 +19,16 @@ run and prints it in the export line, since it opens nothing but this local fake
 Certificates go to --workdir, or to a temp dir that is deleted when this stops.
 Ctrl+C stops everything.
 
-The story. The fakes play the demo blueprint's night on the live clock
-(FREEBOARD_SPEED live minutes per real second, 0.25 by default, the backend's own
-speed). Nothing moves until the backend's Sparkplug host comes online on the broker,
-which happens when the demo blueprint is activated. That moment is live minute 0. Then:
+The story. The fakes play the demo blueprint's night on the backend's own live clock:
+about once a second they read `t` from GET {backend}/api/live/state and move by the live
+minutes it moved. So a speed change (POST /api/live/sim), a pause, or an advance moves
+the fake tanks exactly as far as the detector expects. While the backend can't be
+reached the story waits; nothing moves on wall time. Nothing moves either until the
+backend's Sparkplug host comes online on the broker, which happens when the backend
+starts on the demo blueprint (or when it is activated). That moment is live minute 0.
+Until then the OPC UA fake answers every variable with BadWaitingForInitialData, so the
+console shows the TANK_6 line UNKNOWN rather than a running pump over a tank that isn't
+moving. Then:
 - TANK_3 starts at the blueprint's initial level (71.76 %) and TANK_6 at its own (50 %).
 - A running pump with its valve open drains its tank at (wells in - pump rate), which is
   what the detector expects, so both lines start calm.
@@ -39,7 +50,8 @@ import secrets
 import shutil
 import time
 from pathlib import Path
-from typing import Optional
+import urllib.request
+from typing import Callable, Optional
 
 from backend.fakes import opcua, sparkplug
 
@@ -87,25 +99,49 @@ def _speed() -> float:
     return v if v > 0 else 0.25
 
 
+def backend_clock(url: str, timeout_s: float = 0.5) -> Callable[[], Optional[float]]:
+    """A function that returns the backend's live minute (`t` from GET /api/live/state),
+    or None when the backend can't be reached or answers without one."""
+    endpoint = url.rstrip("/") + "/api/live/state"
+
+    def clock() -> Optional[float]:
+        try:
+            with urllib.request.urlopen(endpoint, timeout=timeout_s) as r:
+                t = json.loads(r.read().decode("utf-8")).get("t")
+        except Exception:  # noqa: BLE001 - a backend that is starting, stopping, or busy
+            return None
+        if isinstance(t, bool) or not isinstance(t, (int, float)) or t != t:
+            return None
+        return float(t)
+
+    return clock
+
+
 class DemoFakes:
     """The running fakes. step() plays the story, stop() stops them all and removes a
-    temp certificate dir."""
+    temp certificate dir.
+
+    `clock`, when given, returns the backend's live minute (see backend_clock()); step()
+    with no dt_min then moves the story by what that clock moved. Without it, step() with
+    no dt_min moves by real time times `speed` (tests pass dt_min themselves)."""
 
     def __init__(self, opcua_port: int = 4840, sparkplug_port: int = 1886, workdir: Optional[str] = None,
                  password: Optional[str] = None, period_s: float = 1.0, blueprint: Optional[dict] = None,
-                 speed: Optional[float] = None) -> None:
+                 speed: Optional[float] = None, clock: Optional[Callable[[], Optional[float]]] = None) -> None:
         self.password_generated = not password
         self.temp_workdir = workdir is None
         self.story = st = Story(blueprint or json.loads(DEMO_BLUEPRINT.read_text(encoding="utf-8")))
         self.speed = speed or _speed()
+        self.clock = clock
+        self._last_clock: Optional[float] = None
         # The OPC UA fake's levels move only in step(), on the live clock, so its rates
         # are percent per live minute here.
         self.opcua = opcua.start(port=opcua_port or None, workdir=workdir,
                                  password=password or secrets.token_urlsafe(16),
                                  fill_pct_per_s=st.fill["TANK_6"], drain_pct_per_s=st.drain["TANK_6"],
                                  pump_rate=st.pump_rate["PUMP_6"], well_rate=st.well_1,
-                                 min_level_pct=st.low_pct["TANK_6"], auto_levels=False)
-        self.opcua.set("TANK_6.Level", st.start_pct["TANK_6"])
+                                 min_level_pct=st.low_pct["TANK_6"], auto_levels=False,
+                                 initial={"TANK_6.Level": st.start_pct["TANK_6"]}, initial_quality="waiting")
         devices = copy.deepcopy(DEMO_DEVICES)
         devices["PLC_1"]["TANK_3/Level"] = ("Float", st.start_pct["TANK_3"])
         devices["PLC_1"]["PUMP_3/Flow"] = ("Float", st.pump_rate["PUMP_3"])
@@ -150,17 +186,32 @@ class DemoFakes:
         return False
 
     def start_story(self) -> None:
-        """Make now live minute 0, without waiting for a host."""
+        """Make now live minute 0, without waiting for a host. The OPC UA values turn good."""
         if self.t_min is None:
             self.t_min = 0.0
+            for name in opcua.READS:
+                self.opcua.set_quality(name, "good")
+
+    def _elapsed(self, dt_min: Optional[float]) -> float:
+        """Live minutes since the last step: dt_min when given, else what the backend's
+        clock moved (0 while it can't be read, or if it went back), else wall time."""
+        wall = time.monotonic()
+        last_wall, self._last_wall = self._last_wall, wall
+        if dt_min is not None:
+            return dt_min
+        if self.clock is not None:
+            t = self.clock()
+            if t is None:
+                return 0.0                     # keep the last reading; move on from it later
+            last, self._last_clock = self._last_clock, t
+            return 0.0 if last is None else max(0.0, t - last)
+        return 0.0 if last_wall is None else (wall - last_wall) * self.speed
 
     def step(self, dt_min: Optional[float] = None) -> None:
-        """Move the story on by dt_min live minutes (by default, the real time since the
-        last call times the speed). Before a host comes online nothing moves."""
-        wall = time.monotonic()
-        if dt_min is None:
-            dt_min = 0.0 if self._last_wall is None else (wall - self._last_wall) * self.speed
-        self._last_wall = wall
+        """Move the story on by dt_min live minutes (by default, what the backend's live
+        clock moved since the last call, or real time times the speed without a clock).
+        Before a host comes online nothing moves."""
+        dt_min = self._elapsed(dt_min)
         if self.t_min is None:
             if self.host_online():
                 self.start_story()
@@ -204,18 +255,21 @@ def main(argv: Optional[list] = None) -> None:
     ap.add_argument("--sparkplug-port", type=int, default=1886, help="port of the fake MQTT broker")
     ap.add_argument("--workdir", default=None, help="where to keep the OPC UA certificates (default: a temp dir)")
     ap.add_argument("--period", type=float, default=1.0, help="seconds between Sparkplug data reports")
+    ap.add_argument("--backend", default="http://127.0.0.1:8000",
+                    help="the backend whose live clock the story follows (GET /api/live/state)")
     a = ap.parse_args(argv)
-    fakes = DemoFakes(a.opcua_port, a.sparkplug_port, a.workdir, os.environ.get(opcua.PASSWORD_ENV), a.period)
+    fakes = DemoFakes(a.opcua_port, a.sparkplug_port, a.workdir, os.environ.get(opcua.PASSWORD_ENV), a.period,
+                      clock=backend_clock(a.backend))
     print(f"fake OPC UA server   {fakes.opcua.endpoint} (SignAndEncrypt, username {fakes.opcua.username})")
     print(f"fake Sparkplug B     edge node FREEBOARD/EDGE_1, device PLC_1, broker mqtt://127.0.0.1:{fakes.sparkplug.port}")
-    print("Export these in the backend's shell, then start it and activate "
-          "backend/data/samples/connectors_demo.json:")
+    print("Export these in the backend's shell, then start it (it starts on the demo blueprint):")
+    print(f"  export FREEBOARD_SCENARIO='{DEMO_BLUEPRINT.relative_to(DEMO_BLUEPRINT.parents[3]).as_posix()}'")
     for k, v in fakes.env().items():
         print(f"  export {k}='{v}'")
     if not fakes.password_generated:
         print(f"  ({opcua.PASSWORD_ENV} is already set; it is not printed)")
     trip = fakes.story.trip_at_min
-    print(f"The story starts when the backend connects (speed {fakes.speed:g} live min per second)"
+    print(f"The story starts when the backend connects and follows its live clock ({a.backend})"
           + (f"; PUMP_3 trips {trip:g} live minutes later." if trip is not None else "."))
     print("Ctrl+C stops the fakes.", flush=True)
     try:
