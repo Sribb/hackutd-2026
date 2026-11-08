@@ -143,6 +143,15 @@ export function makeNotifier(H) {
     return null;
   }
 
+  // "between 2:40 am and 2:56 am, ", or one time when both ends print the same (EOG data often
+  // has p10 = p90), and nothing when that one time is the shutdown time itself.
+  function band(sd) {
+    if (sd.low == null || sd.high == null) return "";
+    const lo = clockOf(sd.low), hi = clockOf(sd.high);
+    if (lo !== hi) return `between ${esc(lo)} and ${esc(hi)}, `;
+    return lo === clockOf(sd.at) ? "" : `at ${esc(lo)}, `;
+  }
+
   // The plan to show: the brief's cheapest robust plan (the Planner's, the status line's),
   // only once the plans have been re-read since a new alert (else it could be the last incident's).
   function planFor() {
@@ -164,7 +173,7 @@ export function makeNotifier(H) {
     const unknown = (H.unknown && H.unknown()) || [];
     const sdHtml = sd
       ? `<p class="gn-sd"><b>${esc(H.nice(sd.tank))} reaches shutdown at ${esc(clockOf(sd.at))}</b>${left == null ? "" : left <= 0 ? ", now" : `, in <b>${esc(inMin(left))}</b>`}.${sd.wells ? ` ${sd.wells} well${sd.wells === 1 ? "" : "s"} go${sd.wells === 1 ? "es" : ""} down with it.` : ""}</p>
-        <p class="gn-src">${sd.low != null && sd.high != null ? `between ${esc(clockOf(sd.low))} and ${esc(clockOf(sd.high))}, ` : ""}from ${esc(sd.src)}${a.clock ? `, alert raised ${esc(clockOf(toMin(a.clock)))}` : ""}</p>`
+        <p class="gn-src">${band(sd)}from ${esc(sd.src)}${a.clock ? `, alert raised ${esc(clockOf(toMin(a.clock)))}` : ""}</p>`
       : `<p class="gn-sd">${esc(pretty(a.consequence) || (unknown.length ? `no shutdown time: no fresh reading from ${unknown.map(H.nice).join(", ")}. treat it as unknown, not safe.` : "no shutdown forecast for this alert."))}</p>`;
     let fixHtml;
     if (plan && plan.total_usd != null) {
