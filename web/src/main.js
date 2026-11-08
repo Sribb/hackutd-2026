@@ -574,7 +574,7 @@ function minutesSinceData() {
 const passed = (min) => Number.isFinite(min) && minutesSinceData() > min;
 const sinceRead = () => `forecast made from the ${clockAt(0)} readings`;
 // Where a fresh plan comes from: approving re-scores on the live state when the backend runs plans.
-const rescore = () => (runsOn() ? "Holding to approve re-scores a plan on the live state first." : "Ask Jarvis for a plan from the live state.");
+const rescore = () => { const r = runsOn(); return r === true ? "Holding to approve re-scores a plan on the live state first." : r === false ? "Ask Jarvis for a plan from the live state." : ""; };
 
 function renderIncident() {
   const inc = data.state.incident;
@@ -608,7 +608,7 @@ function renderIncident() {
       ? ` The forecast said nothing keeps every well online after ${pnr.clock}, and that time has passed.`
       : ` At the forecast inflow, nothing keeps every well online after ${pnr.clock}.`;
     last = passed(best.expires_min)
-      ? `<div class="lastcall"><b>Last Call passed at ${best.expires_clock}:</b> the cheapest plan (${usd(best.cost.total_usd)}) no longer works as planned (${sinceRead()}). ${rescore()}${pnrText}</div>`
+      ? `<div class="lastcall"><b>Last Call passed at ${best.expires_clock}:</b> the cheapest plan (${usd(best.cost.total_usd)}) no longer works as planned (${sinceRead()}).${rescore() ? ` ${rescore()}` : ""}${pnrText}</div>`
       : `<div class="lastcall"><b>Last Call:</b> the cheapest plan (${usd(best.cost.total_usd)}) only works if you start by
       <b>${best.expires_clock}</b>.${hot}${pnrText}</div>`;
   }
@@ -813,7 +813,7 @@ function renderPlans() {
     if (!allPlans && !show.has(i)) return "";
     const dl = deadlineFor(p);
     const hold = p.robust === true ? "Holds even if inflow runs 15% high" : p.robust === false ? "Holds at the forecast inflow, not at +15%" : "";
-    const stamp = [dl ? (passed(dl.min) ? `Start-by time ${dl.clock} has passed${runsOn() ? ": approving re-scores it first" : ""}` : `Start by ${dl.clock}`) : "", hold].filter(Boolean).join(" · ");
+    const stamp = [dl ? (passed(dl.min) ? `Start-by time ${dl.clock} has passed${runsOn() === true ? ": approving re-scores it first" : ""}` : `Start by ${dl.clock}`) : "", hold].filter(Boolean).join(" · ");
     // An approved plan whose run was cancelled or failed can be approved again.
     const mine = approved && approved.plan.id === p.id && !approved.ended;
     const endedHere = approved && approved.plan.id === p.id && approved.ended;
@@ -1110,7 +1110,12 @@ function handoffText() {
   };
 
   head(1, `OPEN ALARMS${src}`);
-  if (!open.length) L.push(blindTanks().length ? "  None, but some tanks have no reading (see 3). Not all clear." : "  None.");
+  const st = alarms.loadState();
+  if (st.error && !st.loadedOnce && !alarms.derived()) L.push(`  Not checked: the alarm list did not load (${st.error}). Not all clear.`);
+  else {
+    if (st.error && !alarms.derived()) L.push(`  As of the last good read (the list is not refreshing: ${st.error}).`);
+    if (!open.length) L.push(blindTanks().length ? "  None, but some tanks have no reading (see 3). Not all clear." : "  None.");
+  }
   for (const a of open) {
     L.push(`  ${a.priority || a.severity}  ${nice(a.asset_id || "")}: ${a.message}${cons(a)}`);
     const tags = [a.related_count ? `+${a.related_count} related` : "", a.acked ? `acked${a.acked_by ? ` by ${a.acked_by}` : ""}` : "NOT ACKED", a.usd_at_risk ? `${usd(a.usd_at_risk)} at risk` : ""].filter(Boolean);
@@ -1159,7 +1164,7 @@ function handoffText() {
   if (lc && lc.options && lc.options.length) {
     const o = lc.options[0], pnr = lc.point_of_no_return;
     L.push(passed(o.expires_min)
-      ? `  Last Call passed at ${o.expires_clock}: the cheapest plan (${usd(o.cost.total_usd)}) no longer works as planned (${sinceRead()}). ${rescore()}`
+      ? `  Last Call passed at ${o.expires_clock}: the cheapest plan (${usd(o.cost.total_usd)}) no longer works as planned (${sinceRead()}).${rescore() ? ` ${rescore()}` : ""}`
       : `  Last Call: the cheapest plan (${usd(o.cost.total_usd)}) only works if started by ${o.expires_clock}.`);
     if (pnr) L.push(passed(pnr.t_min) ? `  The point of no return (${pnr.clock}) has passed: the forecast had no plan keeping every well online after it.` : `  After ${pnr.clock}, nothing keeps every well online.`);
   } else if (lc && lc.status) L.push(`  Last Call: ${lc.headline || lc.status}.`);
@@ -1186,7 +1191,7 @@ function handoffText() {
 
   // Levels as they read right now (live readings win over the boot snapshot), stamped,
   // so the next crew never acts on a number that was stale when it was written (#104).
-  L.push("", `TANK LEVELS as of ${shiftlog.clockNow()}${liveFeed.live.available ? (liveFeed.live.lostSince ? " (live feed LOST: last known values)" : " (live)") : ` (snapshot from ${dataAt})`}`);
+  L.push("", `TANK LEVELS as of ${shiftlog.clockNow()}${liveFeed.live.available ? (liveFeed.live.lostSince ? " (live feed LOST: last known values)" : " (live)") : (dataAt && dataAt !== "boot" ? ` (snapshot from ${dataAt})` : " (snapshot from when the console opened)")}`);
   for (const t of field.tanks || []) {
     const s = nowView[t.id] || {};
     if (isBlind(s) && s.status !== "NO_DATA") L.push(`  ${nice(t.id)}: NO FRESH READING${s.level_pct != null ? ` (last ${s.level_pct.toFixed(1)}%)` : ""}${s.status === "ALARM" ? ", still in ALARM" : ""}. Not safe until checked.`);
@@ -1367,7 +1372,7 @@ function mountPager() {
       <div class="pager-qr">${svg}</div>
       <p>Scan with a phone on this Wi-Fi. It buzzes on every alert, and a fix can be confirmed from it with a press and hold.</p>
       <code>${esc(url.split("#")[0])}</code>
-      ${local ? `<p class="note">This address only works on this laptop. Start with <b>npm run demo</b> to get a Wi-Fi address.</p>` : ""}
+      ${local ? `<p class="note">This address only works on this laptop. Start with <b>npm run demo:lan</b> to get a Wi-Fi address.</p>` : ""}
       ${pt ? `<p class="muted">This QR carries a phone token (never shown as text): that phone can confirm, reject and acknowledge, nothing else.</p>`
         : `<p class="muted">No control token: anyone on this network can confirm. Start with npm run demo to get one.</p>`}
       <button>Close</button></div>`;
@@ -1568,7 +1573,7 @@ async function boot() {
     log: (text) => { shiftlog.add("alarm", text); renderLog(); },
   });
   // #126 security log: refused requests (wrong tokens, writes from another site). Its own card.
-  mountSecurity($("security"), api.usingBackend ? api.BASE : "", (text) => { shiftlog.add("alarm", text); renderLog(); });
+  mountSecurity($("security"), api.usingBackend ? api.BASE : "", (text) => { shiftlog.add("alarm", text); renderLog(); }, () => shiftlog.clockNow());
   // #75 plan runs: the run panel under the plans. It feeds the handoff's approved plan.
   mountRuns($("run"), {
     base: api.usingBackend ? api.BASE : "",
@@ -1633,7 +1638,14 @@ renderer.setAnimationLoop(() => {
   inspect.overlay(t); // outlines on top of the frame
 });
 
-boot().catch((e) => {
+// ?fresh starts a new shift log, crew list and burst line once. Every module has read it by
+// now: drop it from the address bar so a reload mid-shift keeps the log.
+boot().then(() => {
+  try {
+    const u = new URL(location.href);
+    if (u.searchParams.has("fresh")) { u.searchParams.delete("fresh"); history.replaceState(null, "", u.pathname + u.search + u.hash); }
+  } catch { /* leave the address as it is */ }
+}).catch((e) => {
   const l = $("loading");
   console.error(e);
   if (!l) return;

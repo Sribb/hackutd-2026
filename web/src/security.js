@@ -32,7 +32,8 @@ const AUTH_KINDS = new Set(["auth_failed", "forbidden_role", "cross_site"]);
 let base = "";
 let box = null;
 let status = "idle";        // idle | ok | stale (read before, failing now) | absent (404) | error | offline
-let lastOkAt = 0;
+let lastOkAt = 0, lastOkClock = ""; // when the log last answered: wall time, and the shift clock then
+let clockFn = null;
 let skew = 0;               // server clock minus this browser's, in ms
 let dateSeen = false;       // skew came from the server's Date header
 let events = new Map();     // `${id}@${first_t}` -> event (the larger count wins until the next GET)
@@ -102,6 +103,7 @@ async function load() {
     else if (newest() > Date.now() + skew) skew = newest() - Date.now(); // never measure from a clock behind the newest event
     status = "ok";
     lastOkAt = Date.now();
+    lastOkClock = clockFn ? clockFn() : hhmm(lastOkAt);
   } catch {
     status = status === "ok" || status === "stale" ? "stale" : "error";
   }
@@ -112,7 +114,7 @@ function line(e) {
   const ago = minsAgo(e.last_t || e.first_t);
   const n = e.count > 1 ? ` ×${e.count}` : "";
   return `<li class="sec-ev ${isAttempt(e) ? "w" : ""}"><span class="sec-k">${esc(kindWord(e.kind))}${n}</span>
-    <span class="sec-p">${esc(e.method || "")} ${esc(e.path || "")}</span>
+    <span class="sec-p">${esc(e.method || "")} ${esc(e.path || "(no path)")}</span>
     <span class="sec-c">${esc(e.client || "unknown")}</span><time>${ago == null ? "" : ago < 1 ? "now" : `${ago} min ago`}</time></li>`;
 }
 
@@ -137,12 +139,19 @@ function draw() {
   const a = assess([...events.values()]);
   if (status === "ok") noteBurst(a);
   // Nothing in the last hour (or no log here): no card. The handoff still says which.
+  // A log that stopped answering always shows, even with nothing recent: an empty card
+  // must never look like "no refused requests".
+  if (status === "stale" && !a.recent.length) {
+    box.hidden = false;
+    box.innerHTML = `<div class="kicker">Refused requests</div><div class="sec-head hot">Security log not answering since ${esc(lastOkClock)}. Not checked since then.</div>`;
+    return;
+  }
   if ((status !== "ok" && status !== "stale") || !a.recent.length) { box.hidden = true; box.innerHTML = ""; return; }
   box.hidden = false;
   const head = a.burst
     ? `${a.writes10} refused write${a.writes10 === 1 ? "" : "s"} in 10 min: commands without the operator token, or from another site. Nothing was sent.`
     : `${a.total} refused request${a.total === 1 ? "" : "s"} in the last hour. Nothing was sent.`;
-  const stale = status === "stale" ? `<div class="sec-head hot">Security log not answering since ${esc(hhmm(lastOkAt))}. These are the events as of then.</div>` : "";
+  const stale = status === "stale" ? `<div class="sec-head hot">Security log not answering since ${esc(lastOkClock)}. These are the events as of then.</div>` : "";
   box.innerHTML = `<div class="kicker">Refused requests</div>${stale}
     <div class="sec-head ${a.burst ? "hot" : ""}" ${a.burst && status === "ok" ? 'role="alert"' : ""}>${esc(head)}</div>
     <button class="link" data-sec-toggle>${open ? "Hide" : "Show"} ${a.recent.length} event${a.recent.length === 1 ? "" : "s"}</button>
@@ -159,7 +168,7 @@ export function securityLines() {
   if (status === "error") return ["  Not checked: the security log did not answer."];
   const all = [...events.values()];
   const L = [];
-  if (status === "stale") L.push(`  Not checked since ${hhmm(lastOkAt)}: the security log stopped answering. As of then:`);
+  if (status === "stale") L.push(`  Not checked since ${lastOkClock}: the security log stopped answering. As of then:`);
   if (!all.length) { L.push("  No refused requests logged since the server started."); return L; }
   const a = assess(all);
   const byKind = {};
@@ -167,14 +176,18 @@ export function securityLines() {
   L.push(`  ${Object.entries(byKind).map(([k, n]) => `${kindWord(k)}: ${n}`).join("; ")}. Nothing was sent by any of them.`);
   if (a.burst) L.push(`  ${a.writes10} refused writes in the last 10 min: check who has the console and the phone.`);
   const last = all.filter(isAttempt).sort((x, y) => (ms(y.last_t) || 0) - (ms(x.last_t) || 0))[0];
-  if (last) L.push(`  Latest refused write: ${last.method || ""} ${last.path} from ${last.client || "unknown"}, ${minsAgo(last.last_t) ?? "?"} min ago.`);
+  if (last) L.push(`  Latest refused write: ${last.method || ""} ${last.path || "(no path)"} from ${last.client || "unknown"}, ${minsAgo(last.last_t) ?? "?"} min ago.`);
   return L;
 }
 
 // log(text): optional, writes one shift-log line when a burst of refused writes starts.
-export function mountSecurity(el, apiBase, log) {
+// clock(): optional, the shift clock ("2:14 AM") for "not answering since".
+export function mountSecurity(el, apiBase, log, clock) {
   box = el;
   logFn = typeof log === "function" ? log : null;
+  clockFn = typeof clock === "function" ? clock : null;
+  // ?fresh starts a new shift log: a burst from the rehearsal must not stop the new log's line.
+  try { if (new URLSearchParams(location.search).has("fresh")) sessionStorage.removeItem("freeboard.secburst"); } catch { /* private mode */ }
   base = (apiBase || "").replace(/\/$/, "");
   if (!base) { status = "offline"; return; }
   load();

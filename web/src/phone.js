@@ -7,7 +7,7 @@ import "@fontsource/azeret-mono/400.css";
 import "@fontsource/azeret-mono/600.css";
 import "./phone.css";
 import * as liveFeed from "./live.js";
-import { authFetch } from "./auth.js";
+import { authFetch, token } from "./auth.js";
 import { holdButton, afterHold, isHolding } from "./fx.js";
 
 const $ = (id) => document.getElementById(id);
@@ -51,13 +51,17 @@ async function call(path, body) {
   return out;
 }
 
+let noFeed = false;
 async function load() {
   try {
     const [a, p] = await Promise.all([call("/api/alerts"), call("/api/actions")]);
     for (const x of a.alerts || []) alerts.set(x.id, x);
     for (const x of p.proposals || []) proposals.set(x.id, x);
     loadError = "";
+    noFeed = false;
   } catch (e) {
+    // A backend without an alerts feed (404) is reachable; it just can't page anyone.
+    noFeed = e.status === 404;
     loadError = e.message || "no answer";
   }
   draw();
@@ -123,7 +127,9 @@ function draw() {
   // Active alerts first, newest first; resolved ones (active: false) sink and dim.
   const list = [...alerts.values()].sort((a, b) => (a.active === false) - (b.active === false)
     || (String(b.t) > String(a.t) ? 1 : String(b.t) < String(a.t) ? -1 : 0)).slice(0, 12);
-  const down = deaf()
+  const down = noFeed
+    ? `<p class="ph-down" role="alert">This backend has no alerts feed, so this phone can't page you. Watch the console.</p>`
+    : deaf()
     ? `<p class="ph-down" role="alert">Can't reach the backend. Alerts are NOT being received.${loadError ? ` <span>(${esc(loadError)})</span>` : ""}</p>`
     : "";
   $("phAlerts").innerHTML = down + (list.length
@@ -156,7 +162,7 @@ function draw() {
   });
   $("phProps").querySelectorAll("[data-reject]").forEach((b) => { b.onclick = () => decide(b.dataset.reject, "reject"); });
   $("phProps").querySelectorAll("[data-confirm]").forEach((b) => holdButton(b, () => decide(b.dataset.confirm, "confirm"), 1500));
-  $("phFoot").innerHTML = `Backend ${esc(BASE)} · no login (demo only)`;
+  $("phFoot").innerHTML = `Backend ${esc(BASE)} · ${token() ? "phone token: confirm, reject and ack only" : "no control token (demo only)"}`;
 }
 
 // A sent command is never shown as done until the connector says so (SENDING), and one with no

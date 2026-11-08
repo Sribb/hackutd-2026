@@ -441,6 +441,8 @@ const api = {
   recent,
   flood: () => recent() > FLOOD,
   derived: () => derived,
+  // For the handoff: never "None" when the list never loaded.
+  loadState: () => ({ loadedOnce, error: loadError }),
   minutesLeft,
   shelfLeft,
   on: (fn) => { subs.add(fn); return () => subs.delete(fn); },

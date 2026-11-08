@@ -17,7 +17,7 @@ let authed = false, authTimer = 0;
 let sentAuth = "", rejected = "";
 let lastMsgAt = 0, ticks = 0;  // a socket that ticks state every second and then goes quiet is lost
 let lastStateAt = 0, pongSeen = false; // per socket: the last state message, and whether it answers ping
-let stateStopped = false; // the last socket was replaced for pongs without state: the next must tick
+let stateStopped = false, pollT = null; // the last socket was replaced for pongs without state: the next must tick
 const subs = new Map(); // type -> Set(fn)
 
 export const live = {
@@ -89,7 +89,9 @@ async function poll() {
       if (!live.connectors.length) await healthConnectors();
       // The REST poll works even while the socket is down. Not when the server's tick has
       // stopped: the poll then reads the same frozen field, which is no sign of life.
-      if (!(stateStopped && live.connected && !live.paused)) markLost(false);
+      // Clear it only once the field's clock has moved since the last poll.
+      if (!(stateStopped && !live.paused) || (typeof live.t === "number" && live.t !== pollT)) { stateStopped = false; markLost(false); }
+      pollT = live.t;
       emit("state", live);
     } else if (r.status === 404) {
       return; // this backend has no live layer yet; stay quiet and don't mark anything

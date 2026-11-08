@@ -177,11 +177,17 @@ function crewHtml() {
   const t = nowT();
   if (!crew.size || t == null) return "";
   const html = `<div class="run-crew"><div class="run-offer-k">People out</div>${[...crew.entries()].map(([k, c]) => {
-    if (c.last > t + 1) c.last = c.since = t; // the live clock went back (backend restart): count from now
+    // The live clock went back: the backend restarted while this person was out. Their clock
+    // restarts from now, and the row asks for a check-in with them at once.
+    if (c.last > t + 1) {
+      c.last = c.since = t;
+      c.restarted = true;
+      hooks.log(`Server restarted while ${c.who} was at ${hooks.nice(c.asset)}: check in with them now.`);
+    }
     const due = c.last + CHECK_MIN, late = Math.floor(t - due);
     if (late >= 0 && !c.missed) { c.missed = true; hooks.log(`MISSED CHECK-IN: ${c.who} at ${hooks.nice(c.asset)}. Call them; send backup if no answer.`); }
     return `<div class="crew-row ${late >= 0 ? "late" : ""}"><span>${esc(c.who)} at ${esc(hooks.nice(c.asset))}</span>
-      <span class="crew-due">${late >= 0 ? `MISSED CHECK-IN ${late < 1 ? "just now" : `${late} min ago`}. Call them.` : `check in by ${esc(hooks.clockIn(due - t))}`}</span>
+      <span class="crew-due">${late >= 0 ? `MISSED CHECK-IN ${late < 1 ? "just now" : `${late} min ago`}. Call them.` : c.restarted ? "Server restarted: check in with them now." : `check in by ${esc(hooks.clockIn(due - t))}`}</span>
       <span class="plan-btns"><button data-checkin="${esc(k)}">Checked in</button><button data-back="${esc(k)}">Back in</button></span></div>`;
   }).join("")}</div>`;
   saveCrew(); // after any MISSED CHECK-IN flag is set, so a reload doesn't log it twice
@@ -220,7 +226,7 @@ function draw() {
   });
   box.querySelectorAll("[data-checkin]").forEach((b) => { b.onclick = () => {
     const c = crew.get(b.dataset.checkin), t = nowT();
-    if (c && t != null) { c.last = t; c.missed = false; hooks.log(`${c.who} checked in at ${hooks.nice(c.asset)}.`); }
+    if (c && t != null) { c.last = t; c.missed = false; c.restarted = false; hooks.log(`${c.who} checked in at ${hooks.nice(c.asset)}.`); }
     saveCrew();
     draw();
   }; });
@@ -384,8 +390,9 @@ export async function execute(plan, opts = {}) {
 }
 
 export function currentRun() { return run; }
-// Synchronous: a backend that hasn't said "no plan runs" (404). Approving then re-scores on the live state.
-export const runsOn = () => !!base && supported !== false;
+// Synchronous: true when GET /api/runs answered (approving re-scores on the live state), false
+// with no backend or a 404, null while that isn't known yet.
+export const runsOn = () => (!base ? false : supported);
 // For the handoff: who is still out, and when they last checked in.
 export function peopleOut() {
   const t = nowT();
