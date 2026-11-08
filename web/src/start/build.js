@@ -1,10 +1,15 @@
 // "your 3D model is being generated": a slow, full-screen replay of the field being built,
-// ported from blender/preview/generate.js (the generation replay) for the start page. Same
-// steps and the same model (/field.glb, the demo field the console opens on): the ground,
-// road and pads fade in, the equipment rises type by type, then the pipe runs sweep across.
-// Every count shown comes from the nodes in field.glb. Only the timing is slowed down.
+// ported from blender/preview/generate.js (the generation replay) for the start page. The model
+// is the one the judge then lands on in the console:
+//   dataset mode (GET /api/field says mode "dataset", or GET /api/dataset names a folder)
+//       the judges' own EOG system, /api/dataset/field.glb?system=<id> (#162): the system of
+//       the current incident in /api/state, else the first system, the console's own rule
+//   otherwise  /field.glb, the demo field the console opens on
+// The ground, road and pads fade in, the equipment rises type by type, then the pipe runs sweep
+// across. Every count shown comes from the nodes in that glb. Only the timing is slowed down.
 //
-//   const film = await loadFilm(hostEl)   loads three.js and the model, starts rendering
+//   const film = await loadFilm(hostEl)   picks and loads the model, starts rendering
+//   film.source                           { url, dataset, system } of the model it shows
 //   await film.play(onCaption)            runs the replay; onCaption(text) for each step
 //   film.finish()                         jump to the built field (reduced motion, skip)
 //   film.dispose()
@@ -25,6 +30,32 @@ const TYPES = [  // build order, the words used in captions, and the marker ring
 ];
 const KIND_BY_PREFIX = { TANK: "tank", PUMP: "pump", VALVE: "valve", WELL: "well", SWD: "disposal_well", LOADOUT: "loadout", YARD: "yard", TRUCK: "truck" };
 const FOG = 0x0b0f16;
+
+// Which model to replay. A backend that can't be read means no dataset mode: the demo field.
+const getJson = async (path) => { const r = await fetch(path); if (!r.ok) throw new Error(`${path} ${r.status}`); return r.json(); };
+const sysIds = (list) => (list || []).map((x) => (typeof x === "string" ? x : x && x.id)).filter(Boolean);
+export async function pickModel() {
+  const [field, state] = await Promise.all([getJson("/api/field").catch(() => null), getJson("/api/state").catch(() => null)]);
+  let dataset = !!(field && field.mode === "dataset");
+  let systems = dataset ? sysIds(field.systems) : [];
+  if (!dataset) {
+    const ds = await getJson("/api/dataset").catch(() => null);
+    dataset = !!(ds && ds.folder);
+    if (dataset) systems = sysIds((await getJson("/api/eog/network").catch(() => ({}))).systems);
+  }
+  if (!dataset) return { url: "/field.glb", dataset: false, system: null };
+  if (!systems.length && field) systems = [...new Set((field.tanks || []).map((t) => t.system_id).filter(Boolean))];
+  // The incident's system: its asset's system_id in /api/field, else its id's prefix (S4_PUMP_C -> S4).
+  const root = state && state.incident && state.incident.root_asset_id;
+  const all = field ? ["tanks", "pumps", "wells", "pipelines", "disposal_wells", "trucks"].flatMap((k) => field[k] || []) : [];
+  const a = root && all.find((x) => x.id === root);
+  const tank = a && a.tank_id && (field.tanks || []).find((t) => t.id === a.tank_id);
+  const prefix = root && /^([A-Za-z0-9]+)_/.exec(root);
+  const bySys = (a && a.system_id) || (tank && tank.system_id) || (prefix && systems.includes(prefix[1]) ? prefix[1] : null);
+  const system = systems.includes(bySys) ? bySys : systems[0] || null;
+  if (!system) throw new Error("dataset mode is on, but the dataset names no system to build");
+  return { url: `/api/dataset/field.glb?system=${encodeURIComponent(system)}`, dataset: true, system };
+}
 
 function classify(root) {  // same rules as generate.js
   const name = root.name || "", kind = root.userData?.kind;
@@ -72,8 +103,9 @@ export async function loadFilm(host) {
   resize();
 
   // ---- the model ----
+  const source = await pickModel();
   const draco = new DRACOLoader().setDecoderPath("/draco/");
-  const gltf = await new GLTFLoader().setMeshoptDecoder(MeshoptDecoder).setDRACOLoader(draco).loadAsync("/field.glb");
+  const gltf = await new GLTFLoader().setMeshoptDecoder(MeshoptDecoder).setDRACOLoader(draco).loadAsync(source.url);
   const groups = {};
   for (const root of [...gltf.scene.children]) {
     const g = classify(root);
@@ -153,7 +185,7 @@ export async function loadFilm(host) {
     tweens = []; waiters = [];
     reset();
 
-    say(`reading the blueprint: ${assets} pieces of equipment found`);
+    say(`reading the blueprint${source.system ? ` for ${source.system.toLowerCase()}` : ""}: ${assets} pieces of equipment found`);
     await wait(3200); if (!alive()) return;
 
     say("laying out the ground, the lease road and the pads");
@@ -215,7 +247,7 @@ export async function loadFilm(host) {
   });
 
   return {
-    play, finish, assets,
+    play, finish, assets, source,
     built: () => built,
     dispose() {
       runId++;

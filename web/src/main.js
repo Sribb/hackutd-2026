@@ -636,7 +636,7 @@ function minutesSinceData() {
 const passed = (min) => Number.isFinite(min) && minutesSinceData() > min;
 const sinceRead = () => `forecast made from the ${clockAt(0)} readings`;
 // Where a fresh plan comes from: approving re-scores on the live state when the backend runs plans.
-const rescore = () => { const r = runsOn(); return r === true ? "Holding to approve re-scores a plan on the live state first." : r === false ? "Ask Jarvis for a plan from the live state." : ""; };
+const rescore = () => { const r = runsOn(); return r === true ? "Holding to approve re-scores a plan on the live state first." : r === false ? "Ask gaia for a plan from the live state." : ""; };
 
 function renderIncident() {
   const inc = data.state.incident;
@@ -647,8 +647,10 @@ function renderIncident() {
   const wellsAtRisk = ev ? (field.wells || []).filter((w) => w.tank_id === ev.asset_id).length : 0;
   let countdown = "";
   if (ev) {
-    const range = ev.t_min_low != null
-      ? ` <span class="muted">(${clockAt(ev.t_min_low)} to ${ev.t_min_high == null ? "later" : clockAt(ev.t_min_high)})</span>` : "";
+    // The band, or its one time when both ends are the same minute (nothing if that is t_min's).
+    const lo = ev.t_min_low != null ? clockAt(ev.t_min_low) : null, hi = ev.t_min_high == null ? "later" : clockAt(ev.t_min_high);
+    const band = lo == null ? "" : lo !== hi ? `${lo} to ${hi}` : lo !== clockAt(ev.t_min) ? lo : "";
+    const range = band ? ` <span class="muted">(${band})</span>` : "";
     const left = Math.max(0, Math.round(ev.t_min - minutesSinceData()));
     const late = Math.round(minutesSinceData() - ev.t_min);
     // data-decode on the headline only: decode() sets textContent, which would flatten the range's styling.
@@ -1628,7 +1630,7 @@ if (layout === "classic") {
   const back = document.createElement("button");
   back.className = "upload-open";
   back.textContent = "Console";
-  back.title = "Back to the Jarvis console";
+  back.title = "Back to the gaia console";
   back.onclick = () => { const u = new URL(location.href); u.searchParams.delete("layout"); location.href = u.toString(); };
   document.querySelector("#side .brand-row").appendChild(back);
 }
