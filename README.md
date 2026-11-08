@@ -1,8 +1,8 @@
-# Freeboard (working name)
+# Gaia
 
 A 3D night-shift console for salt water operations in an oil field. Built for HackUTD 2026.
 
-Freeboard is the room left at the top of a tank. It is the margin an operator is running out of.
+Its working name was Freeboard, the room left at the top of a tank: the margin an operator is running out of. That name still appears in code, such as `FREEBOARD_TOKEN`. How the gaia AI works: [AGENTS.md section 7](AGENTS.md#7-gaia-the-product-and-its-ai).
 
 **Start here, then go to your area:**
 - Backend: [docs/BACKEND.md](docs/BACKEND.md)
