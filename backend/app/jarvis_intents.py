@@ -98,35 +98,17 @@ async def _explain(jarvis, aid: str, t: str, ctx: dict, text: str) -> str:
 
 
 async def _status(jarvis, ctx: dict) -> str:
+    """jarvis.py's "What's failing?" (CF-11: P1 roots, related counts, blind tanks), plus the
+    lost feeds it doesn't name yet. Never "all quiet" while a feed is lost."""
     live = jarvis.live
-    res = T.list_alerts(live)
-    rows = [r for r in res["alerts"] if r["shelved_until_t"] is None]
-    shelved = len(res["alerts"]) - len(rows)
-    unknown, lost = res["unknown_tanks"], T.lost_feeds(live)
-    caveat = ""
+    reply = await jarvis._status(ctx)
+    lost = [c for c in T.lost_feeds(live) if c["id"] not in reply]
     if lost:
-        caveat += f" Lost the link to {', '.join(c['id'] for c in lost)}, so its assets are unknown."
-    if unknown and not any(r["kind"] == "SENSOR_STALE" and r["asset_id"] in unknown for r in rows):
-        caveat += (f" {names_of_tanks(unknown)} no fresh reading, so treat "
-                   f"{'it' if len(unknown) == 1 else 'them'} as unknown, not safe.")
-    tail = f" {shelved} shelved." if shelved else ""
-    if not rows:
-        if unknown:
-            await jarvis._focus(unknown[0], ctx)
-        head = f"No active alarms at {live.fmap.clock_text(live.t)}." if not (unknown or lost) else \
-            f"No alarms at {live.fmap.clock_text(live.t)}, but I can't vouch for everything."
-        return (head + caveat + tail).strip()
-    await jarvis._focus(rows[0]["asset_id"], ctx)
-    parts = []
-    for r in rows[:2]:
-        extra = f" (+{r['related_count']} related)" if r["related_count"] else ""
-        parts.append(f"{r['priority']}: {r['message']}{extra}")
-    more = f" {len(rows) - 2} more open." if len(rows) > 2 else ""
-    return (" ".join(parts) + more + caveat + tail).strip()
-
-
-def names_of_tanks(ids: list) -> str:
-    return f"{T.names_of(ids)} {'has' if len(ids) == 1 else 'have'}"
+        clock = live.fmap.clock_text(live.t)
+        reply = reply.replace(f"All quiet at {clock}. No active alerts.", f"No active alarms at {clock}.")
+        reply += (f" Lost the link to {', '.join(c['id'] for c in lost)}, so I can't vouch for "
+                  f"what it reads. Treat those assets as unknown, not safe.")
+    return reply.strip()
 
 
 def _minutes(t: str) -> Optional[float]:
@@ -416,6 +398,12 @@ async def match(jarvis, text: str, selected: Optional[list], ctx: dict) -> Optio
                  r"until shutdown|time to shutdown", s):
         aid = asset_in(jarvis, t, selected, allow_it=True)
         tank = aid if aid in live.fmap.tanks else None
+        if tank is None:
+            # CF-11's countdown, worded with its sources. A fixed question, so nothing else in the
+            # sentence ("... if I send truck 1") can reach _rules' proposals.
+            out = await jarvis._rules("time left", selected, ctx)
+            if out is not None:
+                return out
         res = await jarvis.run_tool("get_countdown", {"tank_id": tank}, ctx)
         target = (res["countdown"] or {}).get("asset_id") or (res["unknown_tanks"][0] if res["unknown_tanks"] else None)
         if target:

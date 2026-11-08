@@ -232,10 +232,13 @@ def lost_feeds(live: LiveField) -> list[dict]:
 
 
 def blind_text(unknown: list) -> str:
+    """CF-11's sentence for tanks Jarvis can't see (jarvis.no_current_reading), first in any answer."""
     if not unknown:
         return ""
-    return (f"I can't vouch for {names_of(unknown)}: no fresh level reading, so treat "
-            f"{'it' if len(unknown) == 1 else 'them'} as at risk and check in person. ")
+    from .jarvis import no_current_reading   # late: jarvis.py imports this module
+    many = len(unknown) > 1
+    return (no_current_reading(names_of(unknown), "tank", many=many)
+            + f" Treat {'them' if many else 'it'} as at risk and check in person. ")
 
 
 def _first_shutdown(fc: dict, tank: Optional[str] = None) -> Optional[dict]:
@@ -256,19 +259,31 @@ def countdown_of(live: LiveField, fc: dict, unknown: list, tank: Optional[str] =
               "t_min_high": hi, "high_clock": None if hi is None else clock_at(now, hi),
               "wells_lost": list(ev.get("wells_lost") or []), "consequence_t": round(live.t + ev["t_min"], 2)}
     others = [w for w in fc.get("warnings", []) if not any(w.upper().startswith(t + " ") for t in unknown)]
-    warn = (others[0] + " ") if others else ""
+    warn = (" It also warns: " + others[0]) if others else ""
     if cd:
-        text = blind_text(unknown) + warn + ev["text"]
+        says = forecast_says(live, ev["text"], ev["t_min"])
     elif tank and tank in unknown:
-        text = blind_text(unknown) + warn
+        says = ""
     elif tank:
-        text = blind_text(unknown) + warn + f"{name(tank)} doesn't reach shutdown in the next 6 hours if nothing changes."
+        says = forecast_says(live, f"{name(tank)} doesn't reach shutdown in the next 6 hours if nothing changes.")
     elif unknown:
-        text = blind_text(unknown) + warn + ("No tank with a fresh reading reaches shutdown in the next 6 hours "
-                                             "if nothing changes.")
+        says = forecast_says(live, "no tank with a fresh reading reaches shutdown in the next 6 hours if nothing changes.")
     else:
-        text = warn + "No tank reaches shutdown in the next 6 hours if nothing changes."
-    return {"clock": now, "countdown": cd, "unknown_tanks": list(unknown), "text": text.strip()}
+        says = forecast_says(live, "no tank reaches shutdown in the next 6 hours if nothing changes.")
+    text = blind_text(unknown) + says + (warn if says else "")
+    return {"clock": now, "as_of": live.fmap.clock_text(live.t), "countdown": cd, "unknown_tanks": list(unknown),
+            "text": text.strip()}
+
+
+def forecast_says(live: LiveField, text: str, t_min: Optional[float] = None) -> str:
+    """CF-11's wording (jarvis._forecast_says): 'The forecast at 1:52 AM says ... That's 55 min from now.'"""
+    line = f"The forecast at {live.fmap.clock_text(live.t)} says {text.strip()}"
+    if not line.endswith("."):
+        line += "."
+    if t_min is not None:
+        mins = int(round(t_min))
+        line += " That's now." if mins <= 0 else f" That's {mins} min from now."
+    return line
 
 
 def _plan_row(p: Optional[dict]) -> Optional[dict]:
@@ -746,11 +761,8 @@ def _tool(name_: str, description: str, props: Optional[dict] = None) -> dict:
 
 _ASSET = {"asset_id": {"type": "string"}}
 TOOLS = [
+    # list_alerts is jarvis.py's (CF-11, root-cause groups); list_alerts() below is the rules' flat view.
     _tool("get_state", "The live clock, connector status, status counts, unknown tanks, and the open incident."),
-    _tool("list_alerts", "Alerts with priority, root cause, related count, minutes to consequence, dollars at "
-          "risk, acked, and shelved_until. group=true folds related alarms under their root.",
-          {"active_only": {"type": ["boolean", "null"]}, "priority": {"type": ["string", "null"], "enum": ["P1", "P2", "P3", None]},
-           "group": {"type": ["boolean", "null"]}}),
     _tool("get_countdown", "The first tank shutdown if nobody acts (asset, clock, low/high, wells lost), the "
           "unknown tanks, and a sentence to say. Unknown tanks come first. tank_id narrows it to one tank.",
           {"tank_id": _NULL_STR}),
@@ -833,9 +845,6 @@ async def run(jarvis, tool: str, args: dict, ctx: dict) -> Any:
         return await emit(live, d, ctx, reason=str(args.get("reason") or ""))
     if tool == "get_state":
         return get_state(live)
-    if tool == "list_alerts":
-        return list_alerts(live, active_only=args.get("active_only") is not False,
-                           priority=args.get("priority"), group=args.get("group") is not False)
     if tool == "get_countdown":
         sc, fc = await baseline(jarvis)
         tank = str(args.get("tank_id") or "").upper() or None

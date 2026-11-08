@@ -23,6 +23,7 @@ from backend.app.scenario import load_scenario
 
 OP, PH, PIN = "op-secret-1", "phone-secret-2", "4321"
 NEVER = ("all quiet", "all clear", "every tank")
+BLIND5 = "I have no current reading for Tank 5, so I can't say it's safe."   # CF-11 (the spec said "I can't vouch")
 
 
 @pytest.fixture(autouse=True)
@@ -89,7 +90,7 @@ def test_stale_tank_5_comes_first_and_is_never_called_safe():
     assert c.post("/api/live/faults", json={"asset_id": "TANK_5", "type": "SENSOR_STALE"}).status_code == 200
     assert c.post("/api/live/sim", json={"advance_min": 6}).status_code == 200
     left = c.post("/api/jarvis", json={"message": "time left"}).json()
-    assert left["source"] == "rules" and left["reply"].startswith("I can't vouch for Tank 5"), left["reply"]
+    assert left["source"] == "rules" and left["reply"].startswith(BLIND5), left["reply"]
     for q in ("time left", "what's failing", "status", "how long"):
         reply = c.post("/api/jarvis", json={"message": q}).json()["reply"]
         assert not any(bad in reply.lower() for bad in NEVER), (q, reply)
@@ -101,7 +102,7 @@ def test_stale_tank_5_comes_first_and_is_never_called_safe():
     assert level["stale"] is True and level["age_min"] >= 5
     assert "TANK_5" in res["stale"]
     brief = c.get("/api/jarvis/brief").json()
-    assert brief["unknown_tanks"] == ["TANK_5"] and brief["countdown_text"].startswith("I can't vouch for Tank 5")
+    assert brief["unknown_tanks"] == ["TANK_5"] and brief["countdown_text"].startswith(BLIND5)
 
 
 def test_no_alarms_with_an_unknown_tank_is_not_all_clear():
@@ -111,7 +112,7 @@ def test_no_alarms_with_an_unknown_tank_is_not_all_clear():
     for a in list(live.detector.active.values()):   # say the stale alert was shelved
         a["shelved_until_t"] = live.t + 30
     reply = run(j.handle("what's failing"))["reply"]
-    assert "can't vouch" in reply and "Tank 5" in reply and "1 shelved" in reply, reply
+    assert reply.startswith(BLIND5) and "1 shelved" in reply, reply
     assert not any(bad in reply.lower() for bad in NEVER), reply
 
 
@@ -388,21 +389,21 @@ def test_state_alerts_and_countdown_tools():
     live, j = field()
     st = run(j.run_tool("get_state", {}, {}))
     assert st["incident"]["asset_id"] == "PUMP_3" and st["feed_ok"] and st["status_counts"]["ALARM"] >= 2
-    al = run(j.run_tool("list_alerts", {"active_only": None, "priority": None, "group": None}, {}))
+    al = T.list_alerts(live)
     assert al["priority_source"] == "forecast" and al["alerts"][0]["priority"] == "P1"
     assert al["alerts"][0]["minutes_to_consequence"] and al["alerts"][0]["usd_at_risk"] > 0
-    assert run(j.run_tool("list_alerts", {"priority": "P3"}, {}))["alerts"] == []
+    assert T.list_alerts(live, priority="P3")["alerts"] == []
     cd = run(j.run_tool("get_countdown", {}, {}))
     assert cd["countdown"]["asset_id"] == "TANK_3" and len(cd["countdown"]["wells_lost"]) == 4
-    assert cd["countdown"]["low_clock"] and cd["text"].startswith("Tank 3 reaches shutdown")
+    assert cd["countdown"]["low_clock"] and cd["text"].startswith("The forecast at ") and "Tank 3 reaches shutdown" in cd["text"]
 
 
 def test_list_alerts_groups_related_alarms_under_the_root():
     live, j = field()
     for _ in range(80):     # let Tank 3 climb into its high alarms
         live.step(1.0)
-    grouped = run(j.run_tool("list_alerts", {}, {}))["alerts"]
-    flat = run(j.run_tool("list_alerts", {"group": False}, {}))["alerts"]
+    grouped = T.list_alerts(live)["alerts"]
+    flat = T.list_alerts(live, group=False)["alerts"]
     root = next(a for a in grouped if a["kind"] == "PUMP_TRIP")
     assert root["related_count"] >= 1 and len(flat) > len(grouped)
     assert all(a["root_id"] is None or a["root_id"] not in {x["id"] for x in grouped} for a in grouped)

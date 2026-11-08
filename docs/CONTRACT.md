@@ -475,7 +475,7 @@ Response 200:
 
 Spec: [JARVIS_CONSOLE.md](JARVIS_CONSOLE.md) section 5. Code: `backend/app/jarvis_tools.py` (tools, directives, brief), `backend/app/jarvis_intents.py` (deterministic phrases), `backend/app/parts_catalog.py`.
 
-**Routes, cheapest first.** `POST /api/jarvis` runs the deterministic intents first, then the older rules, and only then Claude. The intents run before the open-ended check, so "why is tank 3 rising" stays `source: "rules"` with a key set, and the pinch's `status of <ID>` answers about that asset. `JARVIS_MODE=llm` skips both. The phrases and their expected results are in `scenario/jarvis_phrases.json`, run by pytest and by the web's Playwright suite.
+**Routes, cheapest first.** `POST /api/jarvis` runs the deterministic intents first, then the older rules, and only then Claude. The intents run before the open-ended check, so "why is tank 3 rising" stays `source: "rules"` with a key set, and the pinch's `status of <ID>` answers about that asset. `JARVIS_MODE=llm` skips both. For what's failing, time left, the plans, and one asset's status the intents reuse the rules' own answers (CF-11 wording, with sources and ages). The phrases and their expected results are in `scenario/jarvis_phrases.json`, run by pytest and by the web's Playwright suite.
 
 **Directive** (in the reply's `ui[]`, and broadcast on `/ws` as `type: "ui"` with a `seq`):
 
@@ -504,7 +504,7 @@ Spec: [JARVIS_CONSOLE.md](JARVIS_CONSOLE.md) section 5. Code: `backend/app/jarvi
 | Tool | Args | Returns |
 |---|---|---|
 | `get_state` | | `clock`, `connectors`, `feed_ok`, `lost_feeds`, `status_counts`, `unknown_tanks`, `active_alerts`, `incident` |
-| `list_alerts` | `active_only` (true), `priority`, `group` (true) | `alerts` with `priority`, `root_id`, `related_count`, `related_ids`, `minutes_to_consequence`, `usd_at_risk`, `acked`, `shelved_until`; `priority_source` (`forecast`, or `derived` for alerts without CF-7 fields); `unknown_tanks`, `feed_ok`. Shelved alerts sort last. |
+| `list_alerts` | | jarvis.py's (CF-11, see `POST /api/jarvis` above): the root-cause groups. The spec's `active_only`, `priority`, `group` args are not there yet. |
 | `get_countdown` | `tank_id` | `countdown` (`{asset_id, name, minutes, t_min, clock, t_min_low, low_clock, t_min_high, high_clock, wells_lost, consequence_t}` or null), `unknown_tanks`, `text` (unknown tanks first) |
 | `compare_whatif` | `actions` | `before` / `after` (`{shutdown, shutdowns, cost_usd}`), `gained_min`, `unknown_tanks`, `warnings`, `text` |
 | `get_plans` | `robust_only` (new, optional) | as before; `robust_only: true` keeps the robust plans |
@@ -536,7 +536,7 @@ Not exposed to Jarvis: sim speed, pause, faults, connector config, blueprint act
   "countdown": { "asset_id": "TANK_3", "name": "Tank 3", "minutes": 59, "t_min": 59.2, "clock": "2:47 AM",
                  "t_min_low": 49.0, "low_clock": "2:37 AM", "t_min_high": 70.5, "high_clock": "2:58 AM",
                  "wells_lost": ["WELL_9", "WELL_10", "WELL_11", "WELL_12"], "consequence_t": 62.95 },
-  "countdown_text": "Tank 3 reaches shutdown at 2:47 AM, give or take 10 minutes. 4 wells go down with it.",
+  "countdown_text": "The forecast at 1:48 AM says Tank 3 reaches shutdown at 2:47 AM, give or take 10 minutes. 4 wells go down with it. That's 59 min from now.",
   "unknown_tanks": [],
   "plans": { "cheapest": { "id": "plan_d272415f", "summary": "...", "actions": [...], "total_usd": 2189, "robust": false, "keeps_running": true, "cannot_save": [] },
              "robust":   { "id": "plan_0c2dee49", "summary": "...", "actions": [...], "total_usd": 3282, "robust": true, "keeps_running": true, "cannot_save": [] } },
@@ -545,7 +545,7 @@ Not exposed to Jarvis: sim speed, pause, faults, connector config, blueprint act
   "feed_ok": true }
 ```
 
-- `countdown` is null when nothing shuts down in 6 hours; `countdown_text` then says so, naming unknown tanks first ("I can't vouch for Tank 5: ..."). `plans.cheapest` / `plans.robust` are null when no plan with steps is needed. `do_nothing_usd` is the baseline forecast's `cost.total_usd`.
+- `countdown` is null when nothing shuts down in 6 hours; `countdown_text` then says so, naming unknown tanks first ("I have no current reading for Tank 5, so I can't say it's safe. ...", CF-11's sentence). `plans.cheapest` / `plans.robust` are null when no plan with steps is needed. `do_nothing_usd` is the baseline forecast's `cost.total_usd`.
 - Sent on `/ws` after an alert is raised or resolved, after a confirmed proposal, after a blueprint reload, and every 5 live minutes; and once to each new socket right after its first `state` (when one has been computed). Not computed while no socket is connected. The GET is always computed fresh.
 - **Last Call** (seconds of work) is computed only when an incident opens (a new root ALARM) or another lane calls `app.state.live.brief_feed.plan_approved()`. The brief goes out at once with `last_call_pending: true`, then again with `last_call` filled (the `get_last_call` shape). `minutes_left` there is as of `last_call.computed_t`; subtract `state.t - computed_t`.
 
