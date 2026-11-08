@@ -52,7 +52,7 @@ def alerts_payload(ds: Dataset, view: Dataset, acks: Optional[dict] = None,
             "category": cat, "system_id": a["system"], "facility_id": a["facility"],
             "severity": "ALARM" if cat == "pump_failure" else "WARNING",
             "message": a["title"] + ".", "t": iso(a["onset"]), "clock": hhmm(ds, a["onset"]), "active": True,
-            "root_id": None, "priority": "P2" if cat == "pipeline_leak" else "P3",
+            "root_id": None, "priority": "P3",          # the live rule: no shutdown consequence is P3
             "minutes_to_consequence": None, "minutes_to_consequence_low": None, "consequence": None,
             "consequence_asset_id": None, "consequence_clock": None, "consequence_t": None, "usd_at_risk": 0,
             "shelved_until": None, "shelved_until_t": None, "shelve_reason": None, "shelved_by": None, "shelved_t": None,
