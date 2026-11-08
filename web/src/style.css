@@ -335,3 +335,5 @@ button { white-space: nowrap; }
   #twonights .tn-usd { font-size: 26px; }
 }
 @media (prefers-reduced-motion: reduce) { #twonights .tn-log li { transition: none; } }
+/* The replay owns the stage while it runs; the Sky box (#85) comes back on close. */
+body.two-nights .sky-ctl { display: none; }
