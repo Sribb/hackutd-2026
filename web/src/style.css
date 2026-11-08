@@ -275,6 +275,7 @@ button { white-space: nowrap; }
 
 /* ---- live IoT layer (#54) ---- */
 .status.UNKNOWN { color: var(--ink-2); }
+.status.DISPLAY { color: var(--ink-3, #6f6a61); } .status.DISPLAY i { background: transparent; border: 1px solid var(--ink-3, #6f6a61); }
 .status.UNKNOWN i { background: repeating-linear-gradient(45deg, var(--ink-2) 0 1.5px, transparent 1.5px 3px); border: 1px solid var(--ink-2); }
 .bar .fill.UNKNOWN { background: repeating-linear-gradient(45deg, #6b675f 0 3px, #2a2825 3px 6px); }
 .vouch { margin-top: 8px; font-size: 12px; color: var(--warning); line-height: 1.5; }

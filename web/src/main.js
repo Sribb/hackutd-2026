@@ -103,7 +103,20 @@ function idFor(obj) {
   return null;
 }
 
+// Blueprint equipment (#47): separators, flares, compressors... built into the glb but not
+// in /api/field. Clickable for its ID and type, never forecast and never shown as OK.
+const equipment = new Map();
+const EQUIPMENT_NAMES = { SEPARATOR: "Separator", HEATER_TREATER: "Heater treater", FLARE: "Flare", COMPRESSOR: "Compressor",
+  LACT: "LACT unit", METER_RUN: "Meter run", OTHER: "Other equipment" };
+
 function indexModel(root) {
+  root.traverse((o) => {
+    const u = o.userData || {};
+    if (u.kind === "equipment" && o.name && !ids.has(o.name)) {
+      equipment.set(o.name, { type: u.equipment_type || "OTHER", label: u.label || "", model: u.model || "generic" });
+      ids.add(o.name);
+    }
+  });
   root.traverse((o) => {
     if (!o.isMesh) return;
     o.castShadow = o.receiveShadow = true;
@@ -370,6 +383,7 @@ function viewAt(t) {
   for (const id of ids) {
     const s = data.state.assets[id];
     // A yard has no sensor, so no reading is normal there. Anything else without one is NO DATA.
+    if (equipment.has(id)) { view[id] = { status: "DISPLAY" }; continue; }
     view[id] = s ? { ...s } : /^YARD_/.test(id) ? { status: "OK" } : { status: "NO_DATA" };
     // Live IoT reading (#54) beats the snapshot. Stale is UNKNOWN, never OK.
     const r = liveFeed.reading(id);
@@ -449,7 +463,7 @@ function toggle(opt) {
 
 // ------------------------------------------------------------------- UI ----
 function statusTag(s) {
-  const label = s === "NO_DATA" ? "NO DATA" : s;
+  const label = s === "NO_DATA" ? "NO DATA" : s === "DISPLAY" ? "NOT MONITORED" : s;
   // (UNKNOWN = a stale live sensor. It renders hatched, never like OK.)
   return `<span class="status ${s}"><i></i>${label}</span>`;
 }
@@ -493,6 +507,12 @@ function renderSelected(view) {
   const s = view[selectedId] || { status: "NO_DATA" };
   const rows = [];
   const add = (k, v) => v != null && v !== "" && rows.push(`<dt>${k}</dt><dd>${v}</dd>`);
+  const eq = equipment.get(selectedId);
+  if (eq) {
+    add("Type", esc(EQUIPMENT_NAMES[eq.type] || eq.type.replace(/_/g, " ").toLowerCase()));
+    add("Label", eq.label ? esc(eq.label) : null);
+    if (eq.model === "placeholder") add("Model", "Placeholder box. No 3D model for this type yet.");
+  }
   const tank = tankInfo(selectedId);
   if (tank) {
     add("Level", s.level_pct != null ? `${s.level_pct.toFixed(1)}%` : null);
@@ -520,7 +540,8 @@ function renderSelected(view) {
   const fuse = data.lc && data.lc.assets && data.lc.assets[selectedId];
   if (fuse && fuse.useful_until_min != null) add("Can help until", fuse.useful_until_clock);
 
-  const reason = s.status === "NO_DATA" ? "No reading for this asset. It is not treated as safe." : s.reason || "";
+  const reason = eq ? "Display only. No sensor or forecast covers this equipment, so the console makes no claim about it."
+    : s.status === "NO_DATA" ? "No reading for this asset. It is not treated as safe." : s.reason || "";
   const opts = options(selectedId);
   const current = actions.find((a) => a.asset_id === selectedId);
   const buttons = opts.map((o, i) => {
@@ -961,7 +982,8 @@ function hoverAt(clientX, clientY) {
   tag.style.top = `${e.clientY - r.top}px`;
   const s = lastView[id] || {};
   const parts = [id];
-  if (s.status && s.status !== "OK") parts.push(s.status === "NO_DATA" ? "NO DATA" : s.status);
+  if (equipment.has(id)) parts.push((EQUIPMENT_NAMES[equipment.get(id).type] || "equipment").toLowerCase() + ", not monitored");
+  else if (s.status && s.status !== "OK") parts.push(s.status === "NO_DATA" ? "NO DATA" : s.status);
   const f = fuses.get(id);
   if (f && f.burn.visible) parts.push(`can help until ${data.lc.assets[id].useful_until_clock}`);
   tag.textContent = parts.join(" · ");
