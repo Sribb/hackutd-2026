@@ -29,8 +29,10 @@ even after a reconnect.
 Never falsely safe. When the link drops, every declared signal's quality becomes
 comm_lost and nothing waiting from before is handed on. A controller can answer
 while its program has stopped; config.heartbeat_tag names a counter the program
-changes every scan, and when it stays the same for heartbeat_s seconds the
-connector withholds every value and says the controller looks dead.
+changes every scan. After every connect the connector withholds every value until
+it has seen the heartbeat change, and when it stays the same for heartbeat_s
+seconds the connector withholds every value again and says the controller looks
+dead. A heartbeat that isn't a number (or is NaN) counts as unreadable.
 
 config fake: true swaps LogixDriver for backend/fakes/enip.py's RemoteLogix, which
 talks to a simulated controller on 127.0.0.1 over a small JSON protocol with the
@@ -43,6 +45,7 @@ config must still name a FREEBOARD_CONN_ variable, or the connector is unavailab
 """
 from __future__ import annotations
 
+import math
 import re
 import threading
 import time
@@ -95,6 +98,34 @@ def tag_value(tag: str, typ: Any, kind: str, value: Any) -> Any:
     if typ in FLOAT_TYPES:
         return 1.0 if value else 0.0
     raise ValueError(f"tag {tag} is {typ}; write to a BOOL, integer, or REAL tag")
+
+
+def typed_value(drv: Any, tag: str, kind: str, value: Any) -> Any:
+    """The confirmed value in the type the driver knows for `tag`. ValueError when it
+    can't be sent: an unknown tag, a structure, a type that doesn't fit. pycomm3 looks
+    the type up in the tag list it uploaded on connect, so a failed lookup there is a
+    config problem; only an OSError (the simulated controller's socket) means the link
+    failed, and that one is raised as it is."""
+    if BIT.fullmatch(tag):
+        return tag_value(tag, "BOOL", kind, value)
+    try:
+        info = drv.get_tag_info(tag)
+    except OSError:
+        raise
+    except Exception as e:  # noqa: BLE001 - pycomm3 raises RequestError for an unknown tag
+        raise ValueError(f"couldn't look up tag {tag}: {type(e).__name__}: {e}") from e
+    typ = info.get("data_type") if isinstance(info, dict) else None
+    return tag_value(tag, typ, kind, value)
+
+
+def _beat(value: Any) -> Any:
+    """A heartbeat value that can be compared with the last one, or None. NaN never
+    equals itself, so it would look like a heartbeat that changes on every poll."""
+    if isinstance(value, bool) or isinstance(value, int):
+        return value
+    if isinstance(value, float) and math.isfinite(value):
+        return value
+    return None
 
 
 class _Write:
@@ -160,7 +191,9 @@ class EnipConnector(Connector):
 
             def make() -> Any:
                 drv = pycomm3.LogixDriver(path, init_program_tags=programs)
-                drv.socket_timeout = self.timeout_s
+                # pycomm3 1.2.14's socket_timeout setter stores the value under a misspelled
+                # key that open() never reads, so set the key open() does read.
+                drv._cfg["socket_timeout"] = self.timeout_s
                 return drv
             self._make = make
             self.where = f"Logix controller at {path}"
@@ -278,39 +311,56 @@ class EnipConnector(Connector):
                 pass
 
     def _poll_loop(self, drv: Any) -> None:
-        hb_last: Any = object()
-        hb_seen = time.monotonic()
+        # The heartbeat starts untrusted on every connect: a controller whose program has
+        # stopped still answers, so its values count only once the heartbeat has changed.
+        hb = {"last": None, "seen": None, "since": time.monotonic()}
         next_poll = 0.0
         while not self._stop.is_set():
             self._do_writes(drv)
             now = time.monotonic()
             if now >= next_poll:
                 next_poll = now + self.poll_s
-                hb_last, hb_seen = self._poll(drv, hb_last, hb_seen)
+                self._poll(drv, hb)
             self._wake.wait(max(0.0, next_poll - time.monotonic()))
             self._wake.clear()
 
-    def _poll(self, drv: Any, hb_last: Any, hb_seen: float) -> tuple[Any, float]:
+    def _heartbeat_problem(self, by_tag: dict, hb: dict) -> Optional[tuple[str, str]]:
+        """(quality, why) when the heartbeat says the values can't be trusted, else None."""
+        r = by_tag.get(self.heartbeat_tag)
+        value = None if r is None or getattr(r, "error", None) else _beat(getattr(r, "value", None))
+        now = time.monotonic()
+        tag = self.heartbeat_tag
+        if value is None:
+            return sm.COMM_LOST, f"controller heartbeat {tag} can't be read as a number"
+        if hb["last"] is not None and value != hb["last"]:
+            hb["seen"] = now
+        hb["last"] = value
+        if hb["seen"] is None:
+            waited = now - hb["since"]
+            if waited > self.heartbeat_s:
+                return sm.COMM_LOST, (f"controller heartbeat {tag} has not changed in {waited:.0f} s "
+                                      f"since connecting; the program looks stopped")
+            return sm.UNCERTAIN, f"connected; waiting for controller heartbeat {tag} to change"
+        if now - hb["seen"] > self.heartbeat_s:
+            return sm.COMM_LOST, f"controller heartbeat {tag} stopped changing {now - hb['seen']:.0f} s ago"
+        return None
+
+    def _poll(self, drv: Any, hb: dict) -> None:
         if not self.tags:
-            return hb_last, hb_seen
+            return
         result = drv.read(*self.tags)
         results = result if isinstance(result, list) else [result]
         by_tag = {getattr(r, "tag", None): r for r in results}
         if self.heartbeat_tag:
-            hb = by_tag.get(self.heartbeat_tag)
-            value = getattr(hb, "value", None) if hb is not None and not getattr(hb, "error", None) else None
-            now = time.monotonic()
-            if value is not None and value != hb_last:
-                hb_last, hb_seen = value, now
-            if value is None or now - hb_seen > self.heartbeat_s:
-                why = (f"controller heartbeat {self.heartbeat_tag} can't be read" if value is None else
-                       f"controller heartbeat {self.heartbeat_tag} stopped changing {now - hb_seen:.0f} s ago")
+            problem = self._heartbeat_problem(by_tag, hb)
+            if problem is not None:
+                quality, why = problem
                 why += f"; values from {self.where} withheld"
                 self._set(False, why)
                 for aid, sig in self.signals:
-                    self.inbox.put(aid, sig, sm.Mapped(None, sm.COMM_LOST, why))
-                    self._mark(aid, sig, sm.COMM_LOST, why)
-                return hb_last, hb_seen
+                    self.inbox.put(aid, sig, sm.Mapped(None, quality, why))
+                    self._mark(aid, sig, quality, why)
+                return
         self._set(True, f"connected to {self.where}, polling {len(self.tags)} tags every "
                         f"{self.poll_s * 1000:g} ms")
         for (aid, sig), tag in self.signals.items():
@@ -325,7 +375,6 @@ class EnipConnector(Connector):
                 mapped = self.smap.apply(aid, sig, r.value)
             self.inbox.put(aid, sig, mapped)
             self._mark(aid, sig, mapped.quality, mapped.detail or "")
-        return hb_last, hb_seen
 
     def _do_writes(self, drv: Any) -> None:
         while True:
@@ -335,11 +384,14 @@ class EnipConnector(Connector):
                 w = self._writes.pop(0)
                 if w.state != "queued":
                     continue
+                if not self._up:      # the heartbeat died after send() took it
+                    w.state = "cancelled"
+                    w.result = {"ok": False, "detail": f"not sent: {self._detail}"}
+                    w.done.set()
+                    continue
                 w.state = "sending"
             try:
-                info = None if BIT.fullmatch(w.tag) else drv.get_tag_info(w.tag)
-                typ = info.get("data_type") if isinstance(info, dict) else None
-                value = tag_value(w.tag, typ, w.kind, w.value)
+                value = typed_value(drv, w.tag, w.kind, w.value)
             except ValueError as e:
                 w.result = {"ok": False, "detail": f"not sent: {e}"}
                 w.done.set()

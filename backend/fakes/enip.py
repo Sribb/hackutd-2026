@@ -9,10 +9,11 @@ so its polling, value rules, and confirmed writes run without any CIP traffic. T
 wire protocol itself is exercised only against real hardware (cpppo, the usual
 EtherNet/IP simulator, is GPL, so it is not used here).
 
-    python -m backend.fakes.enip [--port 0]      # prints the endpoint, runs until Ctrl+C
+    python -m backend.fakes.enip [--port 0] [--animate 0.5]   # prints the endpoint, runs until Ctrl+C
 
 In tests, start() returns a handle: set() and set_error() change a tag's value or
-make its reads fail, freeze_heartbeat() makes the controller look dead, writes lists
+make its reads fail, freeze_heartbeat() makes the controller look dead, animate()
+makes Tank6_Level fill while Pump6 is off and drain while it runs, writes lists
 every write received, write_delay_s holds write replies back (an acknowledgement
 that never comes in time), and stop() / restart() take the controller off and back
 on the same port.
@@ -123,6 +124,18 @@ class Controller:
         if not self.heartbeat_frozen and "Heartbeat" in self.tags:
             self.tags["Heartbeat"]["value"] = int((time.monotonic() - self._t0) * 20)
 
+    def drift(self, tank: str, pump: str, delta: float) -> None:
+        """Move `tank` up by delta while `pump` is off and down while it runs, within
+        0..100. A stopped program (frozen heartbeat) updates nothing."""
+        with self._lock:
+            if self.heartbeat_frozen or tank not in self.tags or pump not in self.tags:
+                return
+            level = self.tags[tank]["value"]
+            if isinstance(level, bool) or not isinstance(level, (int, float)):
+                return
+            level += -delta if self.tags[pump]["value"] else delta
+            self.tags[tank]["value"] = float(min(100.0, max(0.0, level)))
+
     def read_one(self, tag: str) -> Tag:
         with self._lock:
             self._heartbeat()
@@ -222,6 +235,9 @@ class FakeLogix:
         self._lock = threading.Lock()
         self._server: Optional[_Server] = None
         self._thread: Optional[threading.Thread] = None
+        self._animation: Optional[tuple] = None
+        self._animator: Optional[threading.Thread] = None
+        self._anim_stop = threading.Event()
 
     @property
     def endpoint(self) -> str:
@@ -242,6 +258,25 @@ class FakeLogix:
         """A frozen heartbeat is a controller that answers but stopped scanning."""
         self.controller.heartbeat_frozen = frozen
 
+    def animate(self, rate_pct_s: float = 0.5, every_s: float = 0.5, tank: str = "Tank6_Level",
+                pump: str = "Program:Main.Pump6_Run") -> None:
+        """Make `tank` fill at rate_pct_s percent a second while `pump` is off and drain
+        while it runs, for a demo that moves. stop() ends it; restart() picks it up again."""
+        self._animation = (rate_pct_s, every_s, tank, pump)
+        self._start_animator()
+
+    def _start_animator(self) -> None:
+        if self._animation is None or (self._animator is not None and self._animator.is_alive()):
+            return
+        rate, every, tank, pump = self._animation
+        self._anim_stop = stop = threading.Event()
+
+        def run() -> None:
+            while not stop.wait(every):
+                self.controller.drift(tank, pump, rate * every)
+        self._animator = threading.Thread(target=run, name=f"fake-enip-animate-{self.port}", daemon=True)
+        self._animator.start()
+
     def _track(self, conn: socket.socket, add: bool) -> None:
         with self._lock:
             (self._conns.add if add else self._conns.discard)(conn)
@@ -253,10 +288,14 @@ class FakeLogix:
         self._thread = threading.Thread(target=self._server.serve_forever, kwargs={"poll_interval": 0.05},
                                         name=f"fake-enip-{self.port}", daemon=True)
         self._thread.start()
+        self._start_animator()
         return self
 
     def stop(self) -> None:
         """Stop listening and drop every open connection, like a controller losing power."""
+        self._anim_stop.set()
+        if self._animator is not None:
+            self._animator.join(timeout=2)
         server, self._server = self._server, None
         if server is not None:
             server.shutdown()
@@ -350,8 +389,12 @@ class RemoteLogix:
 def main() -> None:
     ap = argparse.ArgumentParser(description="Simulated Logix controller (no CIP; 127.0.0.1 only)")
     ap.add_argument("--port", type=int, default=0, help="TCP port on 127.0.0.1 (default: a free one)")
+    ap.add_argument("--animate", type=float, default=0.0, metavar="PCT_PER_S",
+                    help="Tank6_Level fills at this rate while Pump6 is off and drains while it runs")
     args = ap.parse_args()
     fake = start(args.port)
+    if args.animate > 0:
+        fake.animate(rate_pct_s=args.animate)
     print(f"fake EtherNet/IP controller (simulated, no CIP) at {fake.endpoint}", flush=True)
     print("tags: " + ", ".join(sorted(fake.controller.tags)), flush=True)
     try:

@@ -334,3 +334,153 @@ def test_real_driver_path_reports_unreachable_controller():
         assert all(q["quality"] == "comm_lost" for q in conn.quality.values())
     finally:
         conn.close()
+
+
+# ---------- review round 1 ----------
+
+def test_a_frozen_heartbeat_at_connect_withholds_values(fake):
+    """A controller whose program is stopped answers with frozen values. Its heartbeat
+    must be seen to change before anything it says counts, also right after (re)connect."""
+    fake.freeze_heartbeat(True)
+    lf = live_with(spec_for(fake.port, heartbeat_s=5))
+    conn = conn_of(lf)
+    try:
+        wait_for(lambda: fake.controller.reads >= 3, timeout=3)
+        for _ in range(15):
+            lf.step(0.02)
+            time.sleep(0.03)
+        assert not reading_of(lf, "TANK_6", "level_pct")
+        assert conn.status()["available"] is False
+        assert all(q["quality"] != "good" for q in conn.quality.values())
+        res = conn.send({"type": "SET_VALVE", "asset_id": "VALVE_D_6", "value": "CLOSED"})
+        assert res["ok"] is False and fake.writes == []
+        fake.freeze_heartbeat(False)
+        wait_for(lambda: reading_of(lf, "TANK_6", "level_pct"), step=step(lf))
+        assert conn.status()["available"] is True
+    finally:
+        lf.registry.close()
+
+
+@pytest.mark.parametrize("bad", [float("nan"), [1, 2], "x"])
+def test_a_heartbeat_that_is_not_a_number_counts_as_unreadable(fake, bad):
+    """NaN never equals itself, so it would look like a heartbeat changing every poll."""
+    fake.freeze_heartbeat(True)
+    fake.set("Heartbeat", bad)
+    lf = live_with(spec_for(fake.port, heartbeat_s=5))
+    conn = conn_of(lf)
+    try:
+        wait_for(lambda: fake.controller.reads >= 3, timeout=3)
+        for _ in range(10):
+            lf.step(0.02)
+            time.sleep(0.03)
+        assert not reading_of(lf, "TANK_6", "level_pct")
+        assert conn.status()["available"] is False
+    finally:
+        lf.registry.close()
+
+
+def test_a_write_taken_just_before_the_heartbeat_died_is_not_sent(fake, live):
+    """send() checked the link was up, then the heartbeat check withheld the controller
+    before the I/O thread got to the write: it must not go out."""
+    from backend.app.connectors.enip import _Write
+    conn = conn_of(live)
+    wait_for(lambda: conn.status()["available"])
+    fake.freeze_heartbeat(True)
+    try:
+        wait_for(lambda: not conn.status()["available"], timeout=5)
+        w = _Write("SET_VALVE", "Valve6_Cmd", False)
+        with conn._lock:
+            conn._writes.append(w)
+        conn._wake.set()
+        assert w.done.wait(2)
+        assert w.result["ok"] is False and "not sent" in w.result["detail"]
+        assert fake.writes == []
+    finally:
+        fake.freeze_heartbeat(False)
+
+
+def test_real_driver_gets_the_configured_socket_timeout():
+    """pycomm3 1.2.14's socket_timeout setter stores under a misspelled key, so setting it
+    does nothing; the connector has to set the value open() reads."""
+    import socket
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    conn = EnipConnector(spec_for(port, fake=False, timeout_s=2.5), None, lambda: 0.0)
+    try:
+        drv = conn._make()
+        assert drv._cfg["socket_timeout"] == 2.5
+    finally:
+        conn.close()
+
+
+def test_a_tag_lookup_failure_is_not_sent_and_keeps_the_link(fake, live, monkeypatch):
+    """A command tag the controller doesn't know is a config problem, not a lost link:
+    the write is refused and the other signals keep flowing."""
+    wait_for(lambda: conn_status(live)["status"] == "connected", step=step(live))
+    conn = conn_of(live)
+    opens = []
+    real_open = fake_enip.RemoteLogix.open
+    real_info = fake_enip.RemoteLogix.get_tag_info
+
+    def counting_open(self):
+        opens.append(1)
+        return real_open(self)
+
+    def info(self, tag):
+        if tag == "Pump6_Cmd":
+            raise RuntimeError("Tag doesn't exist - Pump6_Cmd")     # what pycomm3 raises
+        return real_info(self, tag)
+    monkeypatch.setattr(fake_enip.RemoteLogix, "open", counting_open)
+    monkeypatch.setattr(fake_enip.RemoteLogix, "get_tag_info", info)
+    res = conn.send({"type": "SET_PUMP", "asset_id": "PUMP_6", "value": "OFF"})
+    assert res["ok"] is False and "not sent" in res["detail"] and "Pump6_Cmd" in res["detail"]
+    time.sleep(0.4)
+    assert opens == [] and conn.status()["available"] is True
+    assert conn.quality[("TANK_6", "level_pct")]["quality"] == "good"
+    assert fake.writes == []
+
+
+def test_type_lookup_against_real_pycomm3_tag_table():
+    """typed_value() against pycomm3's own LogixDriver.get_tag_info, with a tag table shaped
+    like the one pycomm3 uploads on connect (no controller needed for the lookup)."""
+    pycomm3 = pytest.importorskip("pycomm3")
+    from backend.app.connectors.enip import typed_value
+    drv = pycomm3.LogixDriver("127.0.0.1/0")
+    drv._tags = {
+        "Valve6_Cmd": {"tag_name": "Valve6_Cmd", "data_type": "BOOL", "tag_type": "atomic", "dim": 0},
+        "Pump6_Speed": {"tag_name": "Pump6_Speed", "data_type": "DINT", "tag_type": "atomic", "dim": 0},
+        "Levels": {"tag_name": "Levels", "data_type": "REAL", "tag_type": "atomic", "dim": 1,
+                   "dimensions": [4, 0, 0]},
+        "Program:Main.Pump6_Cmd": {"tag_name": "Pump6_Cmd", "data_type": "BOOL", "tag_type": "atomic"},
+        "Motor": {"tag_name": "Motor", "tag_type": "struct",
+                  "data_type": {"name": "MOTOR_UDT", "internal_tags": {
+                      "Cmd": {"data_type": "BOOL", "tag_type": "atomic"},
+                      "Choke": {"data_type": "REAL", "tag_type": "atomic"}}}},
+    }
+    assert typed_value(drv, "Valve6_Cmd", "SET_VALVE", False) is False
+    assert typed_value(drv, "Pump6_Speed", "SET_PUMP", True) == 1
+    assert typed_value(drv, "Levels[2]", "SET_PUMP", True) == 1.0
+    assert typed_value(drv, "Program:Main.Pump6_Cmd", "SET_PUMP", True) is True
+    assert typed_value(drv, "Motor.Cmd", "SET_PUMP", False) is False
+    assert typed_value(drv, "Motor.Choke", "CHOKE_WELL", 0.4) == 0.4
+    assert typed_value(drv, "Pump6_Speed.3", "SET_PUMP", True) is True
+    with pytest.raises(ValueError):
+        typed_value(drv, "Motor", "SET_PUMP", True)            # a whole structure
+    with pytest.raises(ValueError, match="No_Such_Tag"):
+        typed_value(drv, "No_Such_Tag", "SET_PUMP", True)      # pycomm3 raises RequestError
+    with pytest.raises(ValueError):
+        typed_value(drv, "Pump6_Speed", "CHOKE_WELL", 0.5)
+
+
+def test_fake_animation_moves_the_tank_and_stops(fake):
+    fake.set("Tank6_Level", 40.0)
+    fake.set("Program:Main.Pump6_Run", False)
+    fake.animate(rate_pct_s=20.0, every_s=0.02)
+    wait_for(lambda: fake.controller.read_one("Tank6_Level").value > 41.0, timeout=3)
+    fake.set("Program:Main.Pump6_Run", True)
+    high = fake.controller.read_one("Tank6_Level").value
+    wait_for(lambda: fake.controller.read_one("Tank6_Level").value < high, timeout=3)
+    fake.stop()
+    assert not fake._animator.is_alive()
