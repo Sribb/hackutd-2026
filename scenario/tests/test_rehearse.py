@@ -251,6 +251,8 @@ def test_everything_passes_and_fills_every_live_value():
     bad = [r for r in out["results"] if r["result"] != "PASS"]
     assert not bad, bad
     assert out["ok"]
+    two = out["live"].pop(rehearse.LIVE_TWO_NIGHTS)
+    assert two.startswith("$") and two.endswith("apart"), two   # e.g. "$6,586 and 4 wells apart"
     assert out["live"] == {
         rehearse.LIVE_EVENT: BASE_EVENT["text"],
         rehearse.LIVE_BEFORE_AFTER: "Tank 3 shutdown moves from 2:47 AM to 5:23 AM, and the bill from $7,250 to $4,520",
@@ -325,7 +327,7 @@ def test_fill_replaces_only_known_placeholders():
 def test_every_placeholder_in_demo_md_is_one_rehearse_fills():
     keys = rehearse.placeholders(rehearse.DEMO.read_text(encoding="utf-8"))
     known = {rehearse.LIVE_EVENT, rehearse.LIVE_BEFORE_AFTER, rehearse.LIVE_ROBUST, rehearse.LIVE_NOTHING,
-             rehearse.LIVE_EXPIRY}
+             rehearse.LIVE_EXPIRY, rehearse.LIVE_TWO_NIGHTS}
     assert set(keys) <= known, set(keys) - known
 
 
