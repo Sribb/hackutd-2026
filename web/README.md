@@ -115,6 +115,16 @@ The page picks its backend in this order: `?api=http://<laptop-ip>:8000` (rememb
 
 **No login.** Anyone on the same network who opens the page can confirm a fix. That's fine for the demo, not for a real field.
 
+## Day and night (#85)
+
+`src/sky.js` lights the field for the time of day. Field clock mode (the default) uses the big clock plus the forecast slider, so the demo opens at night and dragging the slider from 1:47 AM to 7:47 AM walks through astronomical, nautical and civil twilight into sunrise (7:14 AM at Mentone in early November). The **Sky** box above the time bar can also pin a time (Sunrise, Noon, Sunset, Dusk, Midnight, or the slider) or play a whole day in 40 seconds. It never changes the scenario clock.
+
+- The sun uses NOAA's solar position equations, and the moon uses the short lunar series from Meeus, *Astronomical Algorithms*. Both run in the browser from `site.lat`/`site.lon`/`site.timezone` in the blueprint, or Mentone, TX (31.70 N, 103.60 W, America/Chicago). There are no network calls. `?skydate=2026-11-08` pins the date.
+- Sky dome, fog, hemisphere light, the key light and its shadows, and exposure blend by sun altitude. At night every value is the Night Survey look (fog 0x050505, hemisphere 0.7, moon light 1.25), with faint stars and the moon added.
+- Field lamps (`*_lamps`) and truck headlights come on below -2 degrees, and the light towers throw a warm pool on the ground. Status lights (`*_light`, `*_beacon`) and status colors never change with the time of day.
+- `SITE_*`, `PAD_*` and scenery (`SCENERY`, `SCENERY_*`, or extras `scenery: true`) are dark at night and their own colors by day. A field with no scenery works the same.
+- Debug: `window.__freeboardSky` has `state()`, `set(mode, minutes)`, `events()` and `attach(root)`.
+
 ## One-command demo (#67)
 
     cd web && npm install && npm run demo
