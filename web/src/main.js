@@ -4,11 +4,17 @@ import "@fontsource/azeret-mono/600.css";
 import * as THREE from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { mountSky } from "./sky.js";
 import * as api from "./api.js";
 import { buildPlaceholder } from "./placeholder.js";
 import { decode, holdButton } from "./fx.js";
 import * as shiftlog from "./shiftlog.js";
 import { mountUpload } from "./upload.js";
+import { mountHands } from "./hands.js";
+import { mountJarvis, jarvisSelectionChanged } from "./jarvis.js";
+import * as liveFeed from "./live.js";
+import { mountTwoNights } from "./twonights.js";
+import { mountInspect } from "./inspect.js";
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
@@ -48,6 +54,8 @@ ground.rotation.x = -Math.PI / 2;
 ground.receiveShadow = true;
 ground.name = "ground";
 scene.add(ground);
+// Day and night (#85): sky, lights, lamps and site brightness follow the field clock plus the slider.
+const sky = mountSky({ scene, renderer, camera, key: moon, stage: $("stage"), site: () => field && field.site, offsetMin: () => tMin });
 
 function resize() {
   const { clientWidth: w, clientHeight: h } = canvas.parentElement;
@@ -100,7 +108,20 @@ function idFor(obj) {
   return null;
 }
 
+// Blueprint equipment (#47): separators, flares, compressors... built into the glb but not
+// in /api/field. Clickable for its ID and type, never forecast and never shown as OK.
+const equipment = new Map();
+const EQUIPMENT_NAMES = { SEPARATOR: "Separator", HEATER_TREATER: "Heater treater", FLARE: "Flare", COMPRESSOR: "Compressor",
+  LACT: "LACT unit", METER_RUN: "Meter run", OTHER: "Other equipment" };
+
 function indexModel(root) {
+  root.traverse((o) => {
+    const u = o.userData || {};
+    if (u.kind === "equipment" && o.name && !ids.has(o.name)) {
+      equipment.set(o.name, { type: u.equipment_type || "OTHER", label: u.label || "", model: u.model || "generic" });
+      ids.add(o.name);
+    }
+  });
   root.traverse((o) => {
     if (!o.isMesh) return;
     o.castShadow = o.receiveShadow = true;
@@ -235,7 +256,7 @@ const movers = [];
 function animateMovers(dt, t) {
   for (const mv of movers) {
     const s = (lastView[mv.id] || {}).status;
-    const running = s !== "ALARM" && s !== "OFFLINE" && s !== "NO_DATA";
+    const running = s !== "ALARM" && s !== "OFFLINE" && s !== "NO_DATA" && s !== "UNKNOWN";
     if (mv.kind === "rotor" && running) mv.node.rotation.x += dt * 12;
     if (mv.kind === "crank" && running) mv.node.rotation.x += dt * 1.6;
     if (mv.kind === "beam") mv.node.rotation.x = mv.rest.x + (running ? 0.25 * Math.sin(t * 1.6) : 0);
@@ -256,9 +277,10 @@ const COLORS = {
   WARNING: new THREE.Color(0xc9a14a),
   ALARM: new THREE.Color(0xff4b1f),
   NO_DATA: new THREE.Color(0xc9a14a),
+  UNKNOWN: new THREE.Color(0x3a3936), // stale sensor: dimmed gray, never the OK look
 };
 const TRYING = new THREE.Color(0x8fb8c8);
-const LAMP = { OK: new THREE.Color(0x8fa36b), WARNING: new THREE.Color(0xc9a14a), ALARM: new THREE.Color(0xff4b1f), NO_DATA: new THREE.Color(0xc9a14a) };
+const LAMP = { OK: new THREE.Color(0x8fa36b), WARNING: new THREE.Color(0xc9a14a), ALARM: new THREE.Color(0xff4b1f), NO_DATA: new THREE.Color(0xc9a14a), UNKNOWN: new THREE.Color(0x9a968e) };
 const BEACON = new THREE.Color(0xff9a1f);
 const SELECTED = new THREE.Color(0x2a2f36);
 
@@ -266,7 +288,6 @@ function paint(id, status, t) {
   const a = assets.get(id);
   if (!a) return;
   const pulse = 0.55 + 0.45 * Math.sin(t * 4);
-  const trying = actions.some((x) => x.asset_id === id);
   for (const m of a.meshes) {
     const base = m.userData.base;
     m.material.color.copy(base.color);
@@ -276,8 +297,7 @@ function paint(id, status, t) {
       m.material.color.lerp(COLORS[status], status === "ALARM" ? 0.85 : 0.6);
       if (m.material.emissive) m.material.emissive.copy(COLORS[status]).multiplyScalar(status === "ALARM" ? 0.5 * pulse : 0.25);
     }
-    if (trying && m.material.emissive) m.material.emissive.add(TRYING.clone().multiplyScalar(0.35));
-    if (id === selectedId && m.material.emissive) m.material.emissive.add(SELECTED);
+    // The trying (TRYING x 0.35) and selected (SELECTED) lifts now come from highlight.js (#86), after paint().
   }
   for (const l of a.lights || []) {
     const e = l.material.emissive;
@@ -286,7 +306,7 @@ function paint(id, status, t) {
     if (/_beacon$/.test(l.name)) e.copy(BEACON).multiplyScalar(v.on_job ? (Math.sin(t * 9) > 0 ? 2.5 : 0.1) : 0);
     else if (/_headlights$/.test(l.name)) e.setScalar(v.on_job ? 1.2 : 0);
     else if (status === "OFFLINE" || !LAMP[status]) e.setScalar(0);
-    else e.copy(LAMP[status]).multiplyScalar(status === "ALARM" ? 3 * pulse : status === "NO_DATA" ? (Math.sin(t * 3) > 0 ? 1.5 : 0) : 1.4);
+    else e.copy(LAMP[status]).multiplyScalar(status === "ALARM" ? 3 * pulse : status === "NO_DATA" || status === "UNKNOWN" ? (Math.sin(t * (status === "UNKNOWN" ? 1.5 : 3)) > 0 ? 1.2 : 0) : 1.4);
   }
 }
 
@@ -366,7 +386,22 @@ function viewAt(t) {
   for (const id of ids) {
     const s = data.state.assets[id];
     // A yard has no sensor, so no reading is normal there. Anything else without one is NO DATA.
+    if (equipment.has(id)) { view[id] = { status: "DISPLAY" }; continue; }
     view[id] = s ? { ...s } : /^YARD_/.test(id) ? { status: "OK" } : { status: "NO_DATA" };
+    // Live IoT reading (#54) beats the snapshot. Stale is UNKNOWN, never OK.
+    const r = liveFeed.reading(id);
+    if (r) {
+      view[id] = { ...view[id], status: r.status, live: true, stale: r.stale };
+      for (const k of ["position", "running"]) if (r[k] !== undefined) view[id][k] = r[k];
+      if (r.level_pct != null) view[id].level_pct = r.level_pct;
+      if (r.reason && r.status !== "UNKNOWN") view[id].reason = r.reason;
+      if (r.status === "UNKNOWN") {
+        const last = r.last_status && r.last_status !== "OK" ? ` Last known: ${r.last_status}${r.level_pct != null ? ` at ${r.level_pct.toFixed(1)}%` : ""}.` : "";
+        // The backend's own reason (#38) says which signal went quiet; keep it unless the feed itself is lost.
+        view[id].reason = r.reason && !liveFeed.live.lostSince ? `${r.reason}${last}`
+          : `No reading for ${ago(liveFeed.staleMinutes(id))}${liveFeed.live.lostSince ? " (live feed lost)" : ""}. Not treated as safe.${last}`;
+      }
+    }
   }
   for (const a of actions) {
     const v = view[a.asset_id];
@@ -397,7 +432,7 @@ function viewAt(t) {
 
 // ------------------------------------------------------------- what-if ----
 let pending = 0;
-async function setActions(next, note = "") {
+async function setActions(next, note = "", quiet = false) {
   const ticket = ++pending;
   const prev = actions;
   actions = next;
@@ -409,7 +444,7 @@ async function setActions(next, note = "") {
     whatifNote = out.warnings[0];
   } else {
     fc = out;
-    logWhatif(next);
+    if (!quiet) logWhatif(next);
   }
   renderAll();
 }
@@ -431,7 +466,8 @@ function toggle(opt) {
 
 // ------------------------------------------------------------------- UI ----
 function statusTag(s) {
-  const label = s === "NO_DATA" ? "NO DATA" : s;
+  const label = s === "NO_DATA" ? "NO DATA" : s === "DISPLAY" ? "NOT MONITORED" : s;
+  // (UNKNOWN = a stale live sensor. It renders hatched, never like OK.)
   return `<span class="status ${s}"><i></i>${label}</span>`;
 }
 
@@ -474,6 +510,12 @@ function renderSelected(view) {
   const s = view[selectedId] || { status: "NO_DATA" };
   const rows = [];
   const add = (k, v) => v != null && v !== "" && rows.push(`<dt>${k}</dt><dd>${v}</dd>`);
+  const eq = equipment.get(selectedId);
+  if (eq) {
+    add("Type", esc(EQUIPMENT_NAMES[eq.type] || eq.type.replace(/_/g, " ").toLowerCase()));
+    add("Label", eq.label ? esc(eq.label) : null);
+    if (eq.model === "placeholder") add("Model", "Placeholder box. No 3D model for this type yet.");
+  }
   const tank = tankInfo(selectedId);
   if (tank) {
     add("Level", s.level_pct != null ? `${s.level_pct.toFixed(1)}%` : null);
@@ -501,7 +543,8 @@ function renderSelected(view) {
   const fuse = data.lc && data.lc.assets && data.lc.assets[selectedId];
   if (fuse && fuse.useful_until_min != null) add("Can help until", fuse.useful_until_clock);
 
-  const reason = s.status === "NO_DATA" ? "No reading for this asset. It is not treated as safe." : s.reason || "";
+  const reason = eq ? "Display only. No sensor or forecast covers this equipment, so the console makes no claim about it."
+    : s.status === "NO_DATA" ? "No reading for this asset. It is not treated as safe." : s.reason || "";
   const opts = options(selectedId);
   const current = actions.find((a) => a.asset_id === selectedId);
   const buttons = opts.map((o, i) => {
@@ -645,6 +688,11 @@ function renderTanks(view) {
         <div class="stop" style="left:${t.shutdown_pct}%"></div></div>
       <span class="pct">${pct == null ? "no data" : pct.toFixed(1) + "%"}</span></div>`;
   }).join("");
+  const blind = (field.tanks || []).filter((t) => (view[t.id] || {}).status === "UNKNOWN");
+  if (blind.length) {
+    $("tanks").insertAdjacentHTML("beforeend", `<div class="vouch">${blind.map((t) =>
+      `Can't vouch for ${nice(t.id)}: no reading for ${ago(liveFeed.staleMinutes(t.id))}. Its forecast starts from the last value we had.`).join("<br>")}</div>`);
+  }
   for (const row of $("tanks").querySelectorAll(".tank-row")) row.onclick = () => select(row.dataset.id, true);
 }
 
@@ -690,7 +738,27 @@ function render() {
   lastView = view;
 }
 
+const ago = (m) => (m == null ? "an unknown time" : m < 1 ? "under a minute" : `${m} min`);
+
+// Live feed badge: connectors, and a loud "live feed lost" with how long ago.
+function renderFeed() {
+  const el = $("feed");
+  if (!el) return;
+  const L = liveFeed.live;
+  if (!api.usingBackend || !L.available) { el.hidden = true; return; }
+  el.hidden = false;
+  if (L.lostSince) {
+    const s = Math.floor((Date.now() - L.lostSince) / 1000);
+    el.className = "feed lost";
+    el.innerHTML = `<b>Live feed lost</b> ${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")} ago. Every value is stale.`;
+    return;
+  }
+  el.className = "feed";
+  el.innerHTML = `<span class="muted">Live</span> ${liveFeed.connectorBadge().map((c) => `<span class="conn ${c.ok ? "ok" : "down"}">${c.kind}${c.ok ? "" : " unavailable"}</span>`).join(" ")}${L.connected ? "" : ` <span class="muted">(polling)</span>`}`;
+}
+
 function renderAll() {
+  renderFeed();
   renderLog();
   renderSources();
   renderIncident();
@@ -867,7 +935,9 @@ function flyHome() {
 // ------------------------------------------------------------ selection ----
 let selBox = null;
 function select(id, focus = false) {
+  const changed = id !== selectedId;
   selectedId = id;
+  if (changed) jarvisSelectionChanged();
   if (selBox) { scene.remove(selBox); selBox = null; }
   const a = id && assets.get(id);
   if (a && a.root) {
@@ -881,17 +951,10 @@ function select(id, focus = false) {
 }
 
 // --------------------------------------------------------------- picking ----
-const ray = new THREE.Raycaster();
-const ptr = new THREE.Vector2();
+// inspect.js (#86) does the picking: part-level hits, small parts by their asset's bounds,
+// and scenery, ground and roads never pickable. It still resolves IDs with idFor() above.
 function pick(ev) {
-  const r = canvas.getBoundingClientRect();
-  ptr.set(((ev.clientX - r.left) / r.width) * 2 - 1, -((ev.clientY - r.top) / r.height) * 2 + 1);
-  ray.setFromCamera(ptr, camera);
-  for (const hit of ray.intersectObjects(scene.children, true)) {
-    const id = idFor(hit.object);
-    if (id) return id;
-  }
-  return null;
+  return inspect.pick(ev.clientX, ev.clientY);
 }
 let downAt = null;
 canvas.addEventListener("pointerdown", (e) => { downAt = [e.clientX, e.clientY]; fly = null; });
@@ -900,22 +963,12 @@ canvas.addEventListener("pointerup", (e) => {
   if (downAt && Math.hypot(e.clientX - downAt[0], e.clientY - downAt[1]) < 5) select(pick(e));
   downAt = null;
 });
-canvas.addEventListener("pointermove", (e) => {
-  const id = pick(e);
-  const tag = $("hoverTag");
-  canvas.classList.toggle("pointing", !!id);
-  if (!id) { tag.hidden = true; return; }
-  const r = canvas.getBoundingClientRect();
-  tag.hidden = false;
-  tag.style.left = `${e.clientX - r.left}px`;
-  tag.style.top = `${e.clientY - r.top}px`;
-  const s = lastView[id] || {};
-  const parts = [id];
-  if (s.status && s.status !== "OK") parts.push(s.status === "NO_DATA" ? "NO DATA" : s.status);
-  const f = fuses.get(id);
-  if (f && f.burn.visible) parts.push(`can help until ${data.lc.assets[id].useful_until_clock}`);
-  tag.textContent = parts.join(" · ");
-});
+canvas.addEventListener("pointermove", (e) => hoverAt(e.clientX, e.clientY));
+// Hover at a screen point. The mouse and hand control (hands.js) both come through here.
+// The tooltip (asset, part, status, live number, Last Call fuse) and hover highlight are in inspect.js.
+function hoverAt(clientX, clientY) {
+  return inspect.hover(clientX, clientY);
+}
 canvas.addEventListener("pointerleave", () => { $("hoverTag").hidden = true; });
 
 $("time").addEventListener("input", (e) => { tMin = Number(e.target.value); render(); });
@@ -925,8 +978,106 @@ addEventListener("keydown", (e) => {
   if (e.key === "Escape") { if (walk) endWalk(); select(null); flyHome(); }
 });
 
+// ---------------------------------------------------------------- pager ----
+// A QR code for /phone. A judge scans it and their own phone becomes the night pager.
+function mountPager() {
+  const btn = document.createElement("button");
+  btn.className = "upload-open";
+  btn.textContent = "Pager";
+  document.querySelector(".brand-row").appendChild(btn);
+  btn.onclick = async () => {
+    const url = import.meta.env.VITE_PHONE_URL || `${location.origin}/phone`;
+    const QR = (await import("qrcode")).default;
+    const svg = await QR.toString(url, { type: "svg", margin: 1, color: { dark: "#e8e2d6", light: "#050505" } });
+    const local = /^(127\.0\.0\.1|localhost)$/.test(new URL(url).hostname);
+    const box = document.createElement("div");
+    box.className = "pager";
+    box.innerHTML = `<div class="pager-card"><div class="kicker">The night pager</div>
+      <div class="pager-qr">${svg}</div>
+      <p>Scan with a phone on this Wi-Fi. It buzzes on every alert, and a fix can be confirmed from it with a press and hold.</p>
+      <code>${esc(url)}</code>
+      ${local ? `<p class="note">This address only works on this laptop. Start with <b>npm run demo</b> to get a Wi-Fi address.</p>` : ""}
+      <p class="muted">No login: anyone on the Wi-Fi can confirm. Demo only.</p>
+      <button>Close</button></div>`;
+    box.onclick = (e) => { if (e.target === box || e.target.tagName === "BUTTON") box.remove(); };
+    document.body.appendChild(box);
+  };
+}
+
 // ----------------------------------------------------------------- boot ----
+if (api.usingBackend) liveFeed.start(api.BASE);
+liveFeed.on("state", () => { if (data) { renderFeed(); render(); } });
+liveFeed.on("feed", () => { if (data) { renderFeed(); render(); } });
 mountUpload();
+mountPager();
+// Two nights (counterfactual replay): all of it lives in twonights.js. These hooks are its only door in.
+mountTwoNights({
+  field: () => field,
+  baseline: () => data.baseline,
+  fc: () => fc,
+  plans: () => (data && data.plans && data.plans.plans) || [],
+  lastCall: () => (data && data.lc) || null,
+  approved: () => (approved ? approved.plan : null),
+  incident: () => data.state.incident,
+  getActions: () => actions.map((a) => ({ ...a })),
+  setActions: (list, quiet) => setActions(list, "", quiet),
+  getTime: () => tMin,
+  setTime: (t) => { tMin = t; $("time").value = String(t); render(); },
+  levelMesh: (id) => (assets.get(id) || {}).levelMesh || null,
+  approve: (plan) => startWalk(plan),
+  focusIncident: () => { const id = incidentTank(); if (id) select(id, true); },
+  log: (text) => { shiftlog.add("whatif", text); renderLog(); },
+  describe, nice, clockAt, usd,
+});
+mountJarvis({
+  stage: $("stage"),
+  selected: () => selectedId,
+  focus: (id) => { if (ids.has(id)) { select(id, true); inspect.pointed(id); } },
+  logged: () => renderLog(),
+  // A picture of the 3D view for "what am I looking at", at most 640 px wide (about 0.5 MB).
+  snapshot() {
+    renderer.render(scene, camera);
+    const k = Math.min(1, 640 / canvas.width);
+    const c = Object.assign(document.createElement("canvas"), { width: Math.round(canvas.width * k), height: Math.round(canvas.height * k) });
+    c.getContext("2d").drawImage(canvas, 0, 0, c.width, c.height);
+    return c.toDataURL("image/png").split(",")[1];
+  },
+});
+// Hand control drives the same hover, select, orbit and zoom the mouse does.
+mountHands({
+  canvas, stage: $("stage"),
+  hoverAt,
+  clickAt(x, y) {
+    const id = pick({ clientX: x, clientY: y });
+    if (!id) return null;
+    select(id, true);
+    // Jarvis (#44) listens for this and opens on the asset.
+    dispatchEvent(new CustomEvent("freeboard:jarvis", { detail: { asset_id: id, from: "pinch" } }));
+    return id;
+  },
+  orbit(dx, dy) {
+    fly = null;
+    const off = camera.position.clone().sub(controls.target);
+    const s = new THREE.Spherical().setFromVector3(off);
+    s.theta -= dx * Math.PI * 1.6;
+    s.phi = Math.max(0.15, Math.min(controls.maxPolarAngle, s.phi - dy * Math.PI));
+    camera.position.copy(controls.target).add(new THREE.Vector3().setFromSpherical(s));
+  },
+  zoom(f) {
+    fly = null;
+    const off = camera.position.clone().sub(controls.target);
+    const len = Math.max(controls.minDistance, Math.min(controls.maxDistance, off.length() * Math.pow(f, 1.5)));
+    camera.position.copy(controls.target).add(off.setLength(len));
+  },
+});
+// Highlight and part-level picking (#86). Every highlight source goes through highlight.js.
+const inspect = mountInspect({
+  scene, camera, renderer, canvas, controls, tag: $("hoverTag"), assets, idFor, select,
+  ids: () => ids, view: () => lastView, field: () => field, selected: () => selectedId, actions: () => actions,
+  equipment: (id) => { const e = equipment.get(id); return e ? { name: EQUIPMENT_NAMES[e.type] || "Equipment", label: e.label } : null; },
+  fuse: (id) => { const f = fuses.get(id); return f && f.burn.visible && data.lc.assets[id] ? data.lc.assets[id].useful_until_clock : null; },
+  staleMin: (id) => liveFeed.staleMinutes(id),
+});
 async function boot() {
   const [f, state, model] = await Promise.all([api.getField(), api.getState(), loadModel()]);
   field = f;
@@ -943,6 +1094,7 @@ async function boot() {
   }
   fc = baseline;
   scene.add(model.root);
+  sky.attach(model.root); // before indexModel darkens the site, so the sky knows its daytime colors
   indexModel(model.root);
 
   const missing = [...ids].filter((id) => !assets.has(id));
@@ -956,6 +1108,7 @@ async function boot() {
   $("loading").remove();
   frame(model.root);
   buildFuses();
+  inspect.ready(model.root);
   renderAll();
   window.__freeboard = { assets, select, viewAt: (t) => viewAt(t), missing, setActions, get actions() { return actions; } };
 }
@@ -976,10 +1129,13 @@ renderer.setAnimationLoop(() => {
   if (data) {
     for (const id of ids) paint(id, (lastView[id] || {}).status || "NO_DATA", t);
     animateMovers(dt, t);
-    if ((t | 0) !== lastSec) { lastSec = t | 0; $("clock").textContent = shiftlog.clockNow(true); }
+    sky.update(dt); // after paint(), so lamps and headlights layer on top of the status colors
+    if ((t | 0) !== lastSec) { lastSec = t | 0; $("clock").textContent = shiftlog.clockNow(true); if (liveFeed.live.lostSince) renderFeed(); }
   }
   if (selBox) selBox.update();
+  inspect.update(); // highlight lifts and dimming, after paint()
   renderer.render(scene, camera);
+  inspect.overlay(t); // outlines on top of the frame
 });
 
 boot().catch((e) => {

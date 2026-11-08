@@ -35,6 +35,17 @@ The fake files are generated, not hand-written: `python3 web/scripts/make_fakes.
 
 `window.__freeboard` in the browser console has `assets` (ID to meshes), `select(id)`, `viewAt(t)`, `setActions([...])`, `actions`, and `missing` (contract IDs not found in the model).
 
+## Highlights and parts (#86)
+
+Every highlight goes through one manager, `src/highlight.js`. Other modules call `highlight.set(source, ids, style)` and `highlight.clear(source)`, where `ids` can be asset IDs, part or node names (`TANK_3_lt`, `SENSOR_...`, `PIPE_TANK_3_PUMP_3`) or nodes. The API and the priorities are documented at the top of the file: part 100, hover 90, Jarvis and phone 80, selection 70, plan-run step 60, trying 50, alarm and alert 40, sensor 35, related 20. On each mesh the highest priority wins the outline, and the emissive lifts add up, so trying plus selected look the same as before.
+
+- **Hover** outlines the whole asset and gives the part under the pointer a stronger highlight. The tooltip names the asset and part, the live number for that part, the status, the ID and what the part is: "Tank 3 level gauge: 71%, ALARM". `src/parts.js` maps every mesh to its asset and part from node names and extras, including `LOADOUT_n` (Tank n), `SWD_n_tower` lamps, and the coming `SENSOR_*` and `RTU_*`.
+- **Small parts:** an asset under 28 px on screen is hit anywhere in a 28 px box around it, and a wheel, light or gauge under 14 px anywhere in a 14 px box. At the overview camera, hovering the center of each of the 514 parts picks the right asset 99% of the time and names the feature part (wheel, light, gauge, rotor...) 97% of the time.
+- **Click** selects as before (Jarvis follows). The selection lightly outlines what it connects to in `/api/field`, through valves (so Tank 3 brings in its wells, Pump 3, the crossover and Tank 4) and the pipes between them, and dims everything else to 40%. Status lights never dim. **Escape** clears, **Tab** and **Shift+Tab** cycle, and a **double-click** frames the asset. The cursor is a pointer only over an asset. Scenery, the site, pads and roads are never picked or highlighted.
+- **Jarvis** `ui` focus and a **phone's Show** get a violet outline for 8 seconds, and the tooltip says who pointed there. Assets in ALARM pulse red. `iot3d.js` feeds plan-run steps (`run`), new alerts (`alert`) and sensor lights (`sensor`).
+- **Cost:** the outline is a flat redraw of only the highlighted meshes from their own scene, plus one screen pass cut to the box around them. Measured on this laptop, with the frame rate uncapped: +0.2 ms a frame with the alarm outlines, and +0.4 ms with a selection, its related assets, dimming and a hover.
+- Debug: `window.__freeboardHL` has `pick(x, y)`, `hover(x, y)`, `project(name)`, `state()`, `winner(name)`, `parts(id)`, `coverage()`, `frame(id)` and `perf`.
+
 ## Next
 
 1. Swap to the live `/api/forecast`, `/api/plans`, and `/api/lastcall` as the backend lands. No code change is needed.
@@ -64,3 +75,84 @@ The files say "Recorded from the backend" in their warnings, and the badge still
 3. **Hold to build** sends `{"blueprint": ...}` to `POST /api/blueprints` and polls `GET /api/blueprints/{id}` while `status` is `building`. On `ready` or `fallback` the console reopens on `/api/field` and the returned `glb_url`. The clock in the corner counts from the drop, and the shift log records the total.
 
 Without a backend, only a blueprint JSON can be shown, and nothing is built.
+
+## Hand control (#45)
+
+**Hands** (top right of the field) turns on the laptop camera. Everything also works with the mouse.
+
+| Gesture | Does | Mouse |
+|---|---|---|
+| Point (index finger out) | Moves the cursor, highlights what's under it | Hover |
+| Pinch (thumb to index) | Selects it, flies to it, and opens Jarvis on it (`freeboard:jarvis` event) | Click |
+| Open palm, moving | Orbits the camera | Drag |
+| Two hands apart or together | Zooms | Wheel |
+
+MediaPipe Hand Landmarker (`@mediapipe/tasks-vision` 1.1.1, Apache-2.0) runs in the browser. The camera feed never leaves the laptop. The gesture rules follow AirBench (github.com/VARSHITH707/AirBench, MIT): a gesture counts after it holds for 4 frames, a pinch has on/off thresholds so it doesn't flicker, and the cursor is smoothed.
+
+The WASM runtime is served from the npm package at `/mediapipe/wasm`. The hand model loads from Google's model storage. To run with no network, save `hand_landmarker.task` as `web/public/mediapipe/hand_landmarker.task`, and it is used instead.
+
+On this MacBook Air, the model loads in 2.5 s and runs at 8.7 ms a frame, so the 30 fps camera is the limit.
+
+## Jarvis panel (#44)
+
+**Jarvis** (top right of the field) opens a side panel. It never replaces the console.
+
+- **Ask** about the field. The selected asset goes along as `selected_asset_ids`. **What am I looking at** also sends a 640 px PNG of the 3D view. `POST /api/jarvis` replies with text, `ui` focus directives (the camera flies there), and proposed fixes.
+- **Proposed fixes** need a press and hold to confirm (`POST /api/actions/{id}/confirm`), or Reject. Nothing reaches equipment without that. Confirmations, rejections, and new alerts go into the shift log.
+- **Alerts** come from `GET /api/alerts` and live over `/ws` (`alert`, `proposal`, `ui` messages). The button blinks red on a new alert. The socket reconnects with backoff.
+- A **pinch** in hand control opens Jarvis on that asset and asks what's going on with it.
+- A 503 from Jarvis (no matching rule and no API key on the server) shows its `detail` in the chat. Without a backend, the panel says so.
+
+## Live IoT layer (#54)
+
+With a backend, `src/live.js` reads `GET /api/live/state` and keeps one `/ws` socket that the console, Jarvis, and the phone page share.
+
+- A live reading beats the snapshot from `/api/state` for status, level, position, and running.
+- **A stale sensor is UNKNOWN, never OK**, and never a stale alarm passed off as current. It shows hatched in the panel, dimmed in 3D with a slow gray lamp, and says "No reading for N min. Last known: ALARM at 71.2%." A tank with no reading gets "Can't vouch for Tank N" under the tank levels, because its forecast starts from an old value.
+- The connector badge under the clock lists each connector (sim, mqtt, modbus, opcua, webhook) and marks any that are unavailable. It reads `connectors` from `/api/live/state`, then from `/api/health`. If neither has it, it shows `sim`.
+- If the socket is down for 4 s, the badge turns into **Live feed lost, m:ss ago**, and every OK value becomes UNKNOWN until the feed is back. REST polling runs every 3 s while the socket is down, and the socket reconnects with backoff.
+- A backend without `/api/live/state` (404) leaves the console as it was.
+
+## Phone view (#55)
+
+`/phone` is the page a night operator keeps in their pocket. It shows live alerts, newest first, in big type, and the screen flashes and buzzes on a new one. Below them are the pending fixes from `/api/actions`, with **hold to confirm** or reject. It follows the same rule as the console: nothing moves without a person confirming. A decision on the phone shows up in the console's Jarvis panel over `/ws`.
+
+On a phone on the same Wi-Fi:
+
+    VITE_API=http://<laptop-ip>:8000 npm run phone     # Vite listens on the LAN
+    # open http://<laptop-ip>:5173/phone on the phone
+
+The page picks its backend in this order: `?api=http://<laptop-ip>:8000` (remembered on that phone), then `VITE_API` with any `127.0.0.1` swapped for the host the page came from, then the page's own host on port 8000. The backend has to allow that origin (CORS / `PUBLIC_URL`).
+
+**No login.** Anyone on the same network who opens the page can confirm a fix. That's fine for the demo, not for a real field.
+
+## Day and night (#85)
+
+`src/sky.js` lights the field for the time of day. Field clock mode (the default) uses the big clock plus the forecast slider, so the demo opens at night and dragging the slider from 1:47 AM to 7:47 AM walks through astronomical, nautical and civil twilight into sunrise (7:14 AM at Mentone in early November). The **Sky** box above the time bar can also pin a time (Sunrise, Noon, Sunset, Dusk, Midnight, or the slider) or play a whole day in 40 seconds. It never changes the scenario clock.
+
+- The sun uses NOAA's solar position equations, and the moon uses the short lunar series from Meeus, *Astronomical Algorithms*. Both run in the browser from `site.lat`/`site.lon`/`site.timezone` in the blueprint, or Mentone, TX (31.70 N, 103.60 W, America/Chicago). There are no network calls. `?skydate=2026-11-08` pins the date.
+- Sky dome, fog, hemisphere light, the key light and its shadows, and exposure blend by sun altitude. At night every value is the Night Survey look (fog 0x050505, hemisphere 0.7, moon light 1.25), with faint stars and the moon added.
+- Field lamps (`*_lamps`) and truck headlights come on below -2 degrees, and the light towers throw a warm pool on the ground. Status lights (`*_light`, `*_beacon`) and status colors never change with the time of day.
+- `SITE_*`, `PAD_*` and scenery (`SCENERY`, `SCENERY_*`, or extras `scenery: true`) are dark at night and their own colors by day. A field with no scenery works the same.
+- Debug: `window.__freeboardSky` has `state()`, `set(mode, minutes)`, `events()` and `attach(root)`.
+
+## One-command demo (#67)
+
+    cd web && npm install && npm run demo
+
+It starts the backend on `127.0.0.1:8000` (with `.venv/bin/python` if the repo has one, else `$PYTHON`, else `python3`) and the console on `0.0.0.0:5173`. Then it prints the console URL, the phone URL, a QR code for the phone, and the curl lines that trip a pump or speed up the sim. Ctrl+C stops both.
+
+The Vite server proxies `/api` and `/ws` to the backend (`VITE_API=same-origin`), so the laptop and phones on the same Wi-Fi use one origin, and the backend needs no CORS change. The **Pager** button in the console shows the same QR code: a judge scans it, and their phone becomes the night pager.
+
+If the backend can't start, the console still runs on recorded data and says so. The backend needs Python 3.10 or newer, because `anthropic` 2.x doesn't install on 3.9.
+
+## Two nights (counterfactual replay)
+
+`[ Two nights ]` on the time bar replays tonight twice in about 35 seconds, side by side. The same pump trip and the same water run once with nobody acting and once with the plan.
+
+- **The plan side** uses the approved plan, or else the cheapest plan that keeps every well online. Its "start by" minute comes from Last Call, matched by the plan's asset IDs.
+- **The 3D tanks** show the plan's water. A red x-ray column and waterline show where the water goes if nobody acts. The waterline pulses once it reaches shutdown, and it only shows where the two nights differ.
+- **The two ledgers** count dollars and wells online minute by minute, and log events as the clock passes them: the shutdown and wells lost on one side, each plan step, the Last Call minute and the closest call on the other.
+- **Every final number** is the backend forecast's own `cost.total_usd`. The running counters follow the forecast's events (wells lost, chokes, first truck), scaled so they land on those totals.
+- **Controls:** playback slows near each event. Click the bar to jump, press Space to pause, press Esc to close. Closing restores your what-ifs and time. The end card can approve the plan with hold-to-approve. With reduced motion, it opens on the end.
+- **Code:** everything lives in `src/twonights.js`. main.js passes hooks to `mountTwoNights()` and adds nothing else.

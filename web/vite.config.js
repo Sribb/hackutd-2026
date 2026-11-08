@@ -27,8 +27,55 @@ function fieldGlb() {
   };
 }
 
+// MediaPipe's WASM runtime ships inside the npm package. Serve it from /mediapipe/wasm so
+// hand control works with no CDN, and copy it into dist/ on build.
+const MP_WASM = path.resolve(__dirname, "node_modules/@mediapipe/tasks-vision/wasm");
+
+function mediapipeWasm() {
+  return {
+    name: "mediapipe-wasm",
+    configureServer(server) {
+      server.middlewares.use("/mediapipe/wasm", (req, res, next) => {
+        const file = path.join(MP_WASM, path.basename(req.url.split("?")[0]));
+        if (!fs.existsSync(file)) return next();
+        res.setHeader("Content-Type", file.endsWith(".wasm") ? "application/wasm" : "text/javascript");
+        fs.createReadStream(file).pipe(res);
+      });
+    },
+    writeBundle(options) {
+      const out = path.join(options.dir, "mediapipe", "wasm");
+      fs.mkdirSync(out, { recursive: true });
+      for (const f of fs.readdirSync(MP_WASM)) fs.copyFileSync(path.join(MP_WASM, f), path.join(out, f));
+    },
+  };
+}
+
+// The phone view (#55) lives at /phone.
+function phoneRoute() {
+  return {
+    name: "phone-route",
+    configureServer(server) {
+      server.middlewares.use((req, res, next) => {
+        if (/^\/phone\/?(\?|$)/.test(req.url)) req.url = req.url.replace(/^\/phone\/?/, "/phone.html");
+        next();
+      });
+    },
+  };
+}
+
 export default defineConfig({
-  plugins: [fieldGlb()],
-  server: { host: "127.0.0.1", port: 5173 },
-  build: { chunkSizeWarningLimit: 1200 },
+  plugins: [fieldGlb(), mediapipeWasm(), phoneRoute()],
+  server: {
+    host: "127.0.0.1",
+    port: 5173,
+    // npm run demo sets FREEBOARD_PROXY so the page, /api and /ws share one origin.
+    proxy: process.env.FREEBOARD_PROXY ? {
+      "/api": { target: process.env.FREEBOARD_PROXY, changeOrigin: true },
+      "/ws": { target: process.env.FREEBOARD_PROXY.replace(/^http/, "ws"), ws: true, changeOrigin: true },
+    } : undefined,
+  },
+  build: {
+    chunkSizeWarningLimit: 1200,
+    rollupOptions: { input: { main: path.resolve(__dirname, "index.html"), phone: path.resolve(__dirname, "phone.html") } },
+  },
 });
