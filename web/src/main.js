@@ -17,6 +17,7 @@ import * as liveFeed from "./live.js";
 import { mountTwoNights } from "./twonights.js";
 import { mountScenery } from "./scenery.js";
 import { mountInspect } from "./inspect.js";
+import { mountAlarms } from "./alarms.js";
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
@@ -1157,6 +1158,20 @@ async function boot() {
   buildFuses();
   inspect.ready(model.root);
   renderAll();
+  // CF-1 alarm list: all of it lives in alarms.js. These hooks are its only door in.
+  mountAlarms($("alarms"), {
+    base: api.usingBackend ? api.BASE : "",
+    incident: () => data.state.incident,
+    firstShutdown: () => shutdownOf(data.baseline),
+    blindTanks,
+    nice,
+    usd,
+    clockAt,
+    startClock: () => data.state.clock || "",
+    clockIn: (m) => shiftlog.clockNow(false, m),
+    select: (id) => select(id, true),
+    log: (text) => { shiftlog.add("alarm", text); renderLog(); },
+  });
   window.__freeboard = { assets, select, viewAt: (t) => viewAt(t), missing, setActions, get actions() { return actions; } };
 }
 

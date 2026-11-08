@@ -384,3 +384,41 @@ body.two-nights .sky-ctl { display: none; }
 .auth-notice { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); z-index: 60; max-width: calc(100% - 32px);
   background: var(--bg, #050505); color: var(--warning, #c9a14a); border: 1px solid currentColor; padding: 10px 14px; font: 13px var(--mono, monospace); }
 .auth-notice[hidden] { display: none; }
+
+/* ---- CF-1 alarm list (alarms.js) ---- */
+.alarms .al-count { color: var(--ink-2); margin-left: 6px; letter-spacing: .08em; }
+.al-meter { font: 11px var(--mono); color: var(--muted); margin: -2px 0 8px; }
+.al-meter.flood { color: var(--warning); font-weight: 600; }
+.al-note { font-size: 12px; color: var(--ink-2); margin: 0 0 8px; }
+.al-note.warn { color: var(--warning); }
+.al-list, .al-sub { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.al-sub { margin: 6px 0 2px 10px; padding-left: 10px; border-left: 1px solid var(--line); gap: 6px; }
+.al { border-top: 1px solid var(--line); padding-top: 8px; }
+.al-sub .al { border-top: 0; padding-top: 0; }
+.al-head { display: flex; align-items: baseline; gap: 8px; }
+.al-head time { margin-left: auto; font: 11px var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; }
+.al-asset { padding: 0; font-size: 13px; color: var(--ink); text-decoration: none; }
+.al-asset:hover { text-decoration: underline; }
+.prio { font: 600 11px var(--mono); letter-spacing: .1em; padding: 1px 6px; border: 1px solid currentColor; border-radius: 3px; }
+.prio.P1, .prio.ALARM { color: var(--alarm); }
+.prio.P2, .prio.WARNING { color: var(--warning); }
+.prio.P3 { color: var(--ink-2); }
+.al-msg { font-size: 13px; color: var(--ink-2); margin-top: 4px; }
+.al-cons { font: 12px var(--mono); color: var(--ink); margin-top: 4px; }
+.al.ALARM > .al-cons { color: var(--alarm); }
+.al-cons.unknown { color: var(--warning); }
+.al-cons .muted { margin-left: 4px; }
+.al-shelf { font-size: 12px; color: var(--muted); margin-top: 4px; }
+.al.acked .al-msg { color: var(--muted); }
+.al.shelved { opacity: .7; }
+.al-rel { font-size: 12px; margin-top: 2px; }
+.al-btns { display: flex; gap: 6px; align-items: center; margin-top: 6px; flex-wrap: wrap; }
+.al-btns button { padding: 4px 8px; }
+.al-acked { font: 11px var(--mono); }
+.al-form { display: grid; gap: 6px; margin-top: 8px; padding: 8px; border: 1px solid var(--line); border-radius: 6px; }
+.al-form label { display: grid; grid-template-columns: 34px 1fr; align-items: center; gap: 6px; font: 11px var(--mono); color: var(--muted); text-transform: uppercase; }
+.al-form input, .al-form select { font: 13px var(--mono); padding: 5px 6px; background: var(--bg); color: var(--ink); border: 1px solid var(--line); border-radius: 4px; min-width: 0; }
+.al-empty { font-size: 13px; color: var(--muted); }
+.al-empty.unknown { color: var(--warning); }
+.al-shelf-k { margin-top: 12px; }
+.shiftlog .log li.alarm span { color: var(--warning); }

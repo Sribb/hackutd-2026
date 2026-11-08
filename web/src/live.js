@@ -18,6 +18,7 @@ export const live = {
   connected: false,     // /ws open
   lostSince: null,      // Date.now() when the feed was lost, else null
   clock: null,
+  t: null,              // live minute from the backend, when it sends one
   assets: {},           // ID -> { status, level_pct, running, position, stale, seenAt }
   connectors: [],       // [{ id, kind, status }]
 };
@@ -45,6 +46,7 @@ function mergeState(s) {
   if (!s) return;
   const now = Date.now();
   if (s.clock) live.clock = s.clock;
+  if (typeof s.t === "number") live.t = s.t; // live minutes (CF-7 consequence_t / shelved_until_t use it)
   for (const [id, a] of Object.entries(s.assets || {})) {
     const prev = live.assets[id] || {};
     const staleNow = a.stale === true || (typeof a.stale === "number" && a.stale > 0);

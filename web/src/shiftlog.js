@@ -23,8 +23,8 @@ export function start(clock, incident) {
   }
 }
 
-export function clockNow(seconds = false) {
-  const s = Math.floor((Date.now() - t0) / 1000);
+export function clockNow(seconds = false, plusMin = 0) {
+  const s = Math.floor((Date.now() - t0) / 1000) + Math.round(plusMin * 60);
   const x = (baseMin * 60 + s) % 86400;
   const hh = Math.floor(x / 3600), mm = Math.floor(x / 60) % 60, ss = x % 60;
   const sec = seconds ? `:${String(ss).padStart(2, "0")}` : "";
