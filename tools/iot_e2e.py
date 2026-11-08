@@ -160,7 +160,7 @@ def main() -> int:
     ap.add_argument("--api", default="http://127.0.0.1:8000")
     ap.add_argument("--pump", default="PUMP_3")
     ap.add_argument("--stale", default="TANK_5", help="tank whose level sensor goes stale")
-    ap.add_argument("--valve", default="VALVE_XO_34", help="the crossover Jarvis should open")
+    ap.add_argument("--valve", help="the crossover Jarvis must pick (default: any on the tripped pump's tank)")
     ap.add_argument("--speed", type=float, help="live minutes per real second during the run")
     ap.add_argument("--stale-after", type=float, default=5.0, help="the blueprint's sensors.stale_after_min")
     ap.add_argument("--expect-unavailable", metavar="CONN_ID", help="wait for this connector to go unavailable")
@@ -212,14 +212,21 @@ def main() -> int:
     def active(aid, kind):
         return next((a for a in api.alerts() if a["asset_id"] == aid and a["kind"] == kind and a.get("active")), None)
 
+    def fault(aid, typ):
+        """Inject a sim fault. An asset read over a real connector answers 409 (#74): SKIP, with its words."""
+        out = api.post("/api/live/faults", {"asset_id": aid, "type": typ, "reason": "iot_e2e"}, ok=(200, 409))
+        if isinstance(out, dict) and out.get("ok") is not True and out.get("detail"):
+            raise Skip(f"409: {out['detail']}")
+        return out
+
     # 2. Pump trip -> PUMP_TRIP within 3 readings.
     def pump_trip():
         if active(args.pump, "PUMP_TRIP"):  # the scripted trip already fired: repair it and start clean
-            api.post("/api/live/faults", {"asset_id": args.pump, "type": "REPAIR"})
+            fault(args.pump, "REPAIR")
             wait_for(lambda: not active(args.pump, "PUMP_TRIP"), tick_s(15), f"{args.pump}'s old trip to clear")
         before = {a["id"] for a in api.alerts()}
         t0, mono0 = api.state()["t"], time.monotonic()
-        api.post("/api/live/faults", {"asset_id": args.pump, "type": "TRIP", "reason": "iot_e2e"})
+        fault(args.pump, "TRIP")
         seen = set()
 
         def raised():
@@ -255,9 +262,9 @@ def main() -> int:
     def stale():
         tank = args.stale
         if api.state()["assets"][tank].get("stale"):
-            api.post("/api/live/faults", {"asset_id": tank, "type": "REPAIR"})
+            fault(tank, "REPAIR")
             wait_for(lambda: not api.state()["assets"][tank].get("stale"), tick_s(3), f"{tank} to read fresh")
-        api.post("/api/live/faults", {"asset_id": tank, "type": "SENSOR_STALE", "reason": "iot_e2e"})
+        fault(tank, "SENSOR_STALE")
         mono0, bad = time.monotonic(), []
 
         def unknown():
@@ -272,7 +279,7 @@ def main() -> int:
         alert = active(tank, "SENSOR_STALE")
         if not alert:
             raise Fail(f"{tank} is UNKNOWN but no SENSOR_STALE alert is active")
-        api.post("/api/live/faults", {"asset_id": tank, "type": "REPAIR"})
+        fault(tank, "REPAIR")
         return f"UNKNOWN after {time.monotonic() - mono0:.1f}s (age {a.get('age_min')} min), {alert['id']}; repaired"
     step(f"stale {args.stale} -> UNKNOWN, never OK", stale)
 
@@ -318,30 +325,39 @@ def main() -> int:
     step("ask Jarvis why the tank is rising", jarvis_why)
 
     def jarvis_propose():
-        pos = lambda: api.state()["assets"].get(args.valve, {}).get("position")  # noqa: E731
-        if args.valve not in api.state()["assets"]:
-            raise Skip(f"{args.valve} isn't in this field; pass --valve")
-        if str(pos()).upper() == "OPEN":  # a previous run opened it: close it first, through a person
-            p = api.post("/api/actions", {"type": "SET_VALVE", "asset_id": args.valve, "value": "CLOSED",
-                                          "reason": "iot_e2e reset"})
-            api.post(f"/api/actions/{p['id']}/confirm", {"by": "iot_e2e"})
-            wait_for(lambda: str(pos()).upper() == "CLOSED", tick_s(3), f"{args.valve} to close for the reset")
+        # Which crossover is right is Jarvis's call (the tank with room): any crossover on the
+        # tripped pump's tank passes, unless --valve names the one it must pick.
+        pump = next((p for p in api.get("/api/field").get("pumps", []) if p["id"] == args.pump), {})
+        xos = [v["id"] for v in api.get("/api/field").get("valves", [])
+               if v.get("kind") == "CROSSOVER" and pump.get("tank_id") in (v.get("connects") or [])]
+        cands = [args.valve] if args.valve else xos
+        assets = api.state()["assets"]
+        if not cands or any(c not in assets for c in cands):
+            raise Skip(f"no crossover on {pump.get('tank_id') or args.pump} in this field; pass --valve")
+        pos = lambda v: str(api.state()["assets"].get(v, {}).get("position")).upper()  # noqa: E731
+        for v in cands:
+            if pos(v) == "OPEN":  # a previous run opened it: close it first, through a person
+                p = api.post("/api/actions", {"type": "SET_VALVE", "asset_id": v, "value": "CLOSED",
+                                              "reason": "iot_e2e reset"})
+                api.post(f"/api/actions/{p['id']}/confirm", {"by": "iot_e2e"})
+                wait_for(lambda: pos(v) == "CLOSED", tick_s(3), f"{v} to close for the reset")
         mono0 = time.monotonic()
         r = api.post("/api/jarvis", {"message": "Open the crossover", "selected_asset_ids": []})
         secs = time.monotonic() - mono0
         props = [p for p in r.get("proposals", []) if p["action"]["type"] == "SET_VALVE"
-                 and p["action"]["asset_id"] == args.valve and str(p["action"].get("value")).upper() == "OPEN"]
+                 and p["action"]["asset_id"] in cands and str(p["action"].get("value")).upper() == "OPEN"]
         if not props:
-            raise Fail(f"no SET_VALVE {args.valve} OPEN proposal. Reply: {r.get('reply', '')[:160]}")
+            raise Fail(f"no SET_VALVE OPEN proposal for {' or '.join(cands)}. Reply: {r.get('reply', '')[:160]}")
         p = props[0]
+        valve = ctx["valve"] = p["action"]["asset_id"]
         if p["status"] != "PENDING":
             raise Fail(f"{p['id']} is {p['status']}, not PENDING: Jarvis must not act by itself")
         time.sleep(min(3.0, 2.0 / speed + 0.5))  # two ticks: nothing may move before a person confirms
-        if str(pos()).upper() == "OPEN":
-            raise Fail(f"{args.valve} opened before anyone confirmed {p['id']}")
+        if pos(valve) == "OPEN":
+            raise Fail(f"{valve} opened before anyone confirmed {p['id']}")
         ctx["prop"] = p
-        return f"{p['id']} PENDING in {secs:.2f}s, {args.valve} still {pos()} 2 ticks later: {p.get('text') or ''}"
-    step("Jarvis proposes opening the crossover", jarvis_propose)
+        return f"{p['id']} PENDING in {secs:.2f}s, {valve} still {pos(valve)} 2 ticks later: {p.get('text') or ''}"
+    step("Jarvis proposes opening a crossover on the tripped pump's tank", jarvis_propose)
 
     def confirm():
         p = ctx.get("prop")
@@ -367,10 +383,11 @@ def main() -> int:
     def reflects():
         if "confirm_mono" not in ctx:
             raise Skip("nothing was confirmed")
+        valve = ctx["valve"]
         a = wait_for(lambda: (lambda v: v if str(v.get("position")).upper() == "OPEN" else None)(
-            api.state()["assets"][args.valve]), tick_s(3), f"{args.valve} to read OPEN")
-        return f"{args.valve} position OPEN, status {a['status']}, {time.monotonic() - ctx['confirm_mono']:.1f}s after confirm"
-    step(f"/api/live/state shows {args.valve} OPEN", reflects)
+            api.state()["assets"][valve]), tick_s(3), f"{valve} to read OPEN")
+        return f"{valve} position OPEN, status {a['status']}, {time.monotonic() - ctx['confirm_mono']:.1f}s after confirm"
+    step("/api/live/state shows the crossover OPEN", reflects)
 
     # 8. A plan run (#63): every step waits for a person, and each one is confirmed here.
     def plan_run():
@@ -391,7 +408,18 @@ def main() -> int:
         if not plan:
             raise Fail("POST /api/plans returned no plans")
         mono0 = time.monotonic()
-        run = api.post(f"/api/plans/{plan['id']}/execute", {"by": "iot_e2e"})
+        run = api.post(f"/api/plans/{plan['id']}/execute", {"by": "iot_e2e"}, ok=(200, 409))
+        if "status" not in run:
+            # A plan scored on an older clock is refused with the live state's own plan (#75, "Stale
+            # plans"). Run that one, the way the console's "Execute it" would.
+            fresh = run.get("plan") or {}
+            if not fresh.get("id") and run.get("stale_plan_id"):
+                raise Skip(f"the plan is out of date and the live state needs none: {str(run.get('detail'))[-120:]}")
+            if not fresh.get("id"):
+                raise Fail(f"execute returned 409: {str(run.get('detail'))[:200]}")
+            ctx["stale_note"] = f"{plan['id']} was out of date, so it ran the live plan {fresh['id']}. "
+            plan = fresh
+            run = api.post(f"/api/plans/{plan['id']}/execute", {"by": "iot_e2e"})
         if run["status"] != "RUNNING":
             raise Fail(f"{run['id']} started {run['status']}: {run.get('reason')}")
         rid, done, notes = run["id"], set(), []
@@ -417,15 +445,18 @@ def main() -> int:
         steps = ", ".join(f"{s['n']}:{s['status']}" for s in run["steps"])
         if run["status"] != "DONE":
             raise Fail(f"{rid} ended {run['status']} ({run.get('reason')}); steps {steps}")
-        return f"{rid} DONE in {time.monotonic() - mono0:.1f}s, plan {plan['id']} ${plan.get('cost', {}).get('total_usd')}, steps {steps}. " + "; ".join(notes)
+        return (f"{ctx.get('stale_note', '')}{rid} DONE in {time.monotonic() - mono0:.1f}s, plan {plan['id']} "
+                f"${plan.get('cost', {}).get('total_usd')}, steps {steps}. " + "; ".join(notes))
     step("plan run, each step confirmed by a person", plan_run)
 
     def ws_run():
         if not ws.ok:
             raise Skip(ws.why)
         got = [m for _, m in ws.msgs if m.get("type") == "run"]
-        if args.skip_run or not got:
-            raise Skip("no run messages") if args.skip_run else Fail("/ws sent no run messages during the plan run")
+        if args.skip_run or results[-1][0] == "SKIP":
+            raise Skip("no plan run happened")
+        if not got:
+            raise Fail("/ws sent no run messages during the plan run")
         return f"/ws sent {len(got)} run messages, last status {got[-1]['run']['status']}"
     step("plan run reaches /ws", ws_run)
 
