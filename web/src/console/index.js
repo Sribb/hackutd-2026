@@ -128,7 +128,12 @@ export function mountConsole(H) {
     onUnread: (v) => { if (railRef.r) railRef.r.unread(v); },
     onView: () => { if (!open) setOpen(true); },
     clock: (c) => clock12(toMin(c)).toLowerCase(),
-    greeting: () => (activeAlerts().length || alertsDown() || unknownTanks().length || !vouchable() ? "what's happening on the field?" : "all quiet on the lease"),
+    // A red root alarm already up names itself, so the alarm is the first thing the operator reads.
+    greeting: () => {
+      const a = activeAlerts().find((x) => (!x.root_id || x.root_id === x.id) && levelOf(x) === "red");
+      if (a && a.message) return `${String(a.message).split(/[:;]|\.\s/)[0].replace(/\.$/, "")}. want the fix?`;
+      return activeAlerts().length || alertsDown() || unknownTanks().length || !vouchable() ? "what's happening on the field?" : "all quiet on the lease";
+    },
   });
   const rail = mountRail(app, { newChat: () => threads.newChat(), nav: (v) => layout.nav(v), navOpen: () => layout.navOpen(), layers: () => onSegment("LAYERS") });
   railRef.r = rail;
@@ -477,7 +482,8 @@ export function mountConsole(H) {
     }
     postPlanner(pNews);
   }
-  const planKey = (b) => `${b.plans.robust ? `${b.plans.robust.id}:${b.plans.robust.total_usd}` : "-"}:${b.do_nothing_usd}:${!!b.countdown}`;
+  // News is a new plan or a countdown change; the do-nothing cost drifts every tick and updates the live bubble in place.
+  const planKey = (b) => `${b.plans.robust ? `${b.plans.robust.id}:${b.plans.robust.total_usd}` : "-"}:${!!b.countdown}`;
 
   // ------------------------------------------------------------ Jarvis ----
   function say(text, extra = {}) {
@@ -751,7 +757,7 @@ export function mountConsole(H) {
 
     const plan = b.plans.robust;
     const nothing = !cd && !unknown.length && vouchable();
-    const planSeg = nothing ? { text: "no fix needed" } : plan ? { text: `best plan ${usd(plan.total_usd)} vs ${usd(b.do_nothing_usd)} if nothing changes`, title: `Cheapest robust fix vs doing nothing, from ${b.source === "brief" ? "the live brief" : "the shift plans"}.` } : { text: "" };
+    const planSeg = nothing ? { text: "no fix needed" } : plan ? { text: `fix ${usd(plan.total_usd)} vs ${usd(b.do_nothing_usd)}`, title: `Cheapest robust fix vs doing nothing, from ${b.source === "brief" ? "the live brief" : "the shift plans"}.` } : { text: "" };
 
     status.render({
       title: lc((H.data() && H.data().field && (H.data().field.name || H.data().field.site_name)) || "the lease"), follow: !!followId(),

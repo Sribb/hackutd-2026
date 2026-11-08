@@ -6,7 +6,7 @@
 
 body.fb-console {
   --g-bg: #ffffff; --g-nav: #f9f9f9; --g-raise: #f7f7f8; --g-box: #ffffff; --g-bubble: #2f6fed; --g-bubble-ink: #ffffff;
-  --g-ink: #1f1f1f; --g-ink-2: #444; --g-mute: #6e6e6e; --g-faint: #9b9b9b; --g-strong: #000;
+  --g-ink: #1f1f1f; --g-ink-2: #444; --g-mute: #6e6e6e; --g-faint: #767676; --g-strong: #000;
   --g-hover: rgba(0,0,0,.05); --g-chip: rgba(0,0,0,.06); --g-chip-2: rgba(0,0,0,.1); --g-line: rgba(0,0,0,.1); --g-focus: rgba(0,0,0,.35);
   --g-hair: rgba(0,0,0,.08); --g-btn: #1f1f1f; --g-btn-ink: #ffffff; --g-shadow: 0 8px 28px rgba(0,0,0,.08), 0 1px 3px rgba(0,0,0,.06);
   --g-red: #e5452b; --g-amber: #b7841c; --g-green: #1f9d5b;
@@ -16,7 +16,7 @@ body.fb-console {
 }
 body.fb-console.cs-dark {
   --g-bg: #0d0d0d; --g-nav: #070707; --g-raise: #171717; --g-box: #1b1b1b; --g-bubble: #2f6fed; --g-bubble-ink: #ffffff;
-  --g-ink: #ececec; --g-ink-2: #b4b4b4; --g-mute: #8e8e8e; --g-faint: #686868; --g-strong: #fff;
+  --g-ink: #ececec; --g-ink-2: #b4b4b4; --g-mute: #8e8e8e; --g-faint: #7a7a7a; --g-strong: #fff;
   --g-hover: rgba(255,255,255,.07); --g-chip: rgba(255,255,255,.09); --g-chip-2: rgba(255,255,255,.17); --g-line: rgba(255,255,255,.12); --g-focus: rgba(255,255,255,.35);
   --g-hair: rgba(255,255,255,.08); --g-btn: #f2f2f2; --g-btn-ink: #0d0d0d; --g-shadow: 0 10px 34px rgba(0,0,0,.4);
   --g-red: #ff5a3c; --g-amber: #e0b252; --g-green: #6fcf97;
@@ -132,7 +132,7 @@ body.fb-console:not(.cs-canvas-off) .cs-fieldbtn { display: none; }
 .cs-text { margin: 0; overflow-wrap: anywhere; }
 .cs-text.streaming .w { opacity: 0; animation: csword .34s ease-out forwards; }
 @keyframes csword { from { opacity: 0; filter: blur(3px); } to { opacity: 1; filter: none; } }
-.cs-b.a-you { align-self: flex-end; max-width: 78%; padding: 10px 16px; border-radius: 22px !important; background: var(--g-bubble); color: var(--g-bubble-ink); }
+.cs-b.a-you { align-self: flex-end; max-width: 78%; padding: 10px 16px; border-radius: 22px !important; background: var(--g-chip); color: var(--g-ink); }
 .cs-b.a-note { font-size: 13.5px; color: var(--g-mute); }
 .cs-b.a-note.warn { color: var(--g-amber); }
 .cs-chip { all: unset; box-sizing: border-box; display: inline-flex; align-items: center; gap: 4px; padding: 0 7px; margin: 0 1px; border-radius: 7px !important;
@@ -400,3 +400,15 @@ body.fb-console .loading b { font: 400 64px/1 "Great Vibes", cursive; color: #ff
   .typing .cs-dots i, .cs-b.flash, .cs-text.streaming .w { animation: none; opacity: 1; }
   body.fb-console .timebar { transition: none; }
 }
+
+/* Polish from the design / evidence review. */
+/* Classic panels moved into the light drawer keep the dark theme's cream ink and gold; remap them. */
+body.fb-console:not(.cs-dark) .cs-drawer { --ink: var(--g-ink); --ink-2: var(--g-ink-2); --muted: var(--g-mute); --line: var(--g-line); --warning: #8a6516; --good: #1f7a45; }
+/* The phone pager pill steps aside while the time bar is up (it sat on the slider and its hint). */
+body.fb-console.cs-tb-up .pager-pill { display: none; }
+/* Dataset mode's system switch (s1..s5) lifts above the time bar and its sky row instead of sitting on their buttons. */
+body.fb-console.cs-tb-up .sys-switch { bottom: 192px; }
+/* The hands camera preview sits below the monitoring strip, not under it. */
+body.fb-console .hands-hud { top: 124px; }
+/* A watch alert's priority line is a quiet tag, not an empty-looking card. */
+.cs-b.a-W .cs-vis { background: none; border: 0; padding: 0; margin-top: 4px; }

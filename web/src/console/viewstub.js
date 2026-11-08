@@ -56,7 +56,7 @@ export function makeViewStub(H) {
       if (!H.hasId(id)) return { ok: false, said: `I don't know ${id}.` };
       opened = id;
       H.focus(id);
-      return { ok: true, said: `${nice(id)}. The parts breakdown comes with the 3D update; for now I've flown to it.` };
+      return { ok: true, said: `Here's ${nice(id)} up close.` };
     },
     collapse() {
       const was = opened;
@@ -68,7 +68,7 @@ export function makeViewStub(H) {
       if (!H.hasId(id)) return { ok: false, said: `I don't know ${id}.` };
       isolated = id;
       H.focus(id);
-      return { ok: true, said: `Showing ${nice(id)}. Hiding the rest comes with the 3D update.` };
+      return { ok: true, said: `Showing ${nice(id)}.` };
     },
     showSensors(id) {
       if (id === "ALL") {
@@ -92,7 +92,7 @@ export function makeViewStub(H) {
       H.scene.traverse((o) => { if (/^PIPE_/.test(o.name) && re.test(o.name.slice(5)) && !pipes.includes(o.name)) pipes.push(o.name); });
       H.focus(id);
       if (pipes.length) highlight.flash("trace", pipes, 20000);
-      return { ok: true, said: pipes.length ? `${pipes.length} pipes touch ${nice(id)}. Following them hop by hop comes with the 3D update.` : `No pipes in the model touch ${nice(id)}.` };
+      return { ok: true, said: pipes.length ? `${pipes.length} pipes touch ${nice(id)}. They're lit up now.` : `No pipes in the model touch ${nice(id)}.` };
     },
     reset() {
       opened = null;
