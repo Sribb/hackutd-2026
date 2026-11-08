@@ -133,18 +133,18 @@ def _motor_and_belt(k):
     box(dk, (0.85, 0.7, 0.08), (0.05, my, BASE_Z + 0.04))             # slide base
     for sx in (-0.22, 0.32):
         box(dk, (0.1, 0.5, 0.2), (sx, my, BASE_Z + 0.18))              # feet
-    cyl(st, 0.3, 0.74, (0.05, my, mz), axis="X", segs=sg(14, 12, 10))  # frame
+    cyl(k["M_MOTOR"], 0.3, 0.74, (0.05, my, mz), axis="X", segs=sg(14, 12, 10))   # motor frame
     pts = hull(circle_pts((IN_Y, IN_Z), 0.47, sg(12, 10, 8)) + circle_pts((my, mz), 0.2, sg(8, 6, 5)))
     prism(k["M_STEEL"], pts, BELT_X - 0.1, BELT_X + 0.1, "YZ")         # V-belt guard, outboard of the crank
     if not tier():
         return
-    cyl(dk, 0.27, 0.16, (-0.4, my, mz), axis="X", segs=sg(14, 12, 10), r2=0.22)    # fan cover
+    cyl(k["M_MOTOR"], 0.27, 0.16, (-0.4, my, mz), axis="X", segs=sg(14, 12, 10), r2=0.22)    # fan cover
     box(dk, (0.22, 0.2, 0.18), (0.05, my, mz + 0.38))                 # conduit box
     if tier() < 2:
         return
     for i in range(6):                                               # cooling fins
         a = 2 * math.pi * (i + 0.5) / 6
-        box(st, (0.62, 0.035, 0.05), (0.05, my + 0.31 * math.cos(a), mz + 0.31 * math.sin(a)),
+        box(k["M_MOTOR"], (0.62, 0.035, 0.05), (0.05, my + 0.31 * math.cos(a), mz + 0.31 * math.sin(a)),
             Matrix.Rotation(a, 4, "X"))
     strut(dk, (0.05, my + 0.1, mz + 0.38), (0.05, 4.95, mz + 0.38), 0.045)
     strut(dk, (0.05, 4.95, mz + 0.4), (0.05, 4.95, 0.1), 0.045)

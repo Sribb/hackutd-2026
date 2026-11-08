@@ -15,6 +15,45 @@
     "yards": 1,
     "equipment": 0
   },
+  "look": {
+    "mode": "full",
+    "textures": true,
+    "materials": {
+      "M_BUILDING": 10,
+      "M_CONCRETE": 62,
+      "M_CONTAINMENT": 12,
+      "M_GALV": 98,
+      "M_GLASS": 53,
+      "M_GRAVEL": 33,
+      "M_HDPE": 24,
+      "M_LINER": 6,
+      "M_MOTOR": 44,
+      "M_PIPE": 75,
+      "M_PJ_DARK": 48,
+      "M_PJ_PAINT": 96,
+      "M_PUMP_PAINT": 6,
+      "M_RUBBER": 14,
+      "M_STEEL": 12,
+      "M_STEEL_DARK": 106,
+      "M_STENCIL": 64,
+      "M_TANK": 9,
+      "M_TRUCK_CAB": 2,
+      "M_TRUCK_TANK": 2,
+      "M_WOOD": 2
+    },
+    "styled": 778,
+    "looks": 276,
+    "theirs": 7,
+    "gaps_filled": 0,
+    "ao_uv_meshes": 0,
+    "seconds": {
+      "roles": 0.13,
+      "uvs": 0.59,
+      "weather": 0.1,
+      "ao": 3.03,
+      "total": 3.84
+    }
+  },
   "outputs": {
     "glb": "blender/field.glb",
     "blend": "blender/field.blend",
@@ -136,15 +175,15 @@
     "dropped": [],
     "triangles": 36082,
     "field_triangles": 231635,
-    "images_mb": 5.5
+    "images_mb": 8.09
   },
   "triangles": 267717,
-  "glb_mb": 15.31,
-  "nodes": 988,
-  "objects": 989,
+  "glb_mb": 25.35,
+  "nodes": 1020,
+  "objects": 1021,
   "budget": {
     "triangles": 300000,
     "mb": 30.0
   },
-  "seconds": 9.94
+  "seconds": 26.87
 }

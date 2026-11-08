@@ -42,6 +42,13 @@ PALETTE = {
     "M_LAMP": ((0.86, 0.86, 0.82), 0.0, 0.4),     # status lights and lamps: the console lights these
     "M_WOOD": ((0.32, 0.26, 0.20), 0.0, 0.9),
     "M_WIRE": ((0.10, 0.10, 0.10), 0.5, 0.5),
+    # Role names for parts with a clear finish. look.py gives each its textured material; without
+    # it they keep these flat colors. Everything else gets its role from the asset it is under.
+    "M_GALV": ((0.36, 0.38, 0.36), 0.35, 0.5),       # handrails, ladders, gratings, cages, posts
+    "M_MOTOR": ((0.15, 0.16, 0.17), 0.0, 0.6),       # electric motors and their fan covers
+    "M_HDPE": ((0.017, 0.018, 0.019), 0.0, 0.6),     # black HDPE flowlines
+    "M_LINER": ((0.014, 0.015, 0.015), 0.0, 0.75),   # containment liner
+    "M_BUILDING": ((0.43, 0.40, 0.33), 0.0, 0.6),    # metal buildings, enclosures, RTU and control boxes
 }
 
 AXES = {
@@ -389,9 +396,9 @@ def build_pump(site, pid, loc, rot_z=0.0):
     tube(k["M_PIPE"], (-0.8, 0, 1.2), (-0.8, 0, 1.9), 0.1, 12)
     cyl(st, 0.16, 0.6, (-0.3, 0, 0.85), axis="X", segs=14)            # bearing frame
     box(st, (0.4, 0.5, 0.45), (-0.25, 0, 0.6))
-    cyl(st, 0.36, 1.0, (1.1, 0, 0.82), axis="X", segs=20)              # motor
+    cyl(k["M_MOTOR"], 0.36, 1.0, (1.1, 0, 0.82), axis="X", segs=20)    # motor
     for x in (0.62, 1.58):
-        cyl(dk, 0.37, 0.05, (x, 0, 0.82), axis="X", segs=20)           # end bells
+        cyl(k["M_MOTOR"], 0.37, 0.05, (x, 0, 0.82), axis="X", segs=20)   # end bells
     box(dk, (0.8, 0.6, 0.08), (1.1, 0, 0.42))
     box(dk, (0.25, 0.2, 0.25), (1.1, 0.38, 0.95))                      # terminal box
     k.done()

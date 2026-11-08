@@ -22,7 +22,7 @@ SUCTION_Z, DISCHARGE_Z = 2.3, 1.55   # headers: suction clears the open gate
 def placed_pump(k, matrix):
     """Build one H-pump along +X at the origin, then move only its vertices into place."""
     import bmesh
-    mats = ("M_STEEL", "M_STEEL_DARK", "M_PIPE", "M_CONCRETE", "M_GLASS")
+    mats = ("M_STEEL", "M_STEEL_DARK", "M_PIPE", "M_CONCRETE", "M_GLASS", "M_MOTOR")
     before = {m: set(k[m].verts) for m in mats}
     hpump(k)
     for m in mats:
@@ -41,14 +41,14 @@ def hpump(k, fx=1, y=0.0):
     box(dk, (HP_X1 - HP_X0 + 0.3, 0.95, 0.18), (x((HP_X0 + HP_X1) / 2), y, 0.44))
     # motor and its terminal box, at the motor end
     mx = HP_X1 - 0.85
-    cyl(st, 0.42, 1.3, (x(mx), y, z), axis="X", segs=sg(18))
-    cyl(dk, 0.36, 0.2, (x(HP_X1 - 0.1), y, z), axis="X", segs=sg(18), r2=0.3)
+    cyl(k["M_MOTOR"], 0.42, 1.3, (x(mx), y, z), axis="X", segs=sg(18))
+    cyl(k["M_MOTOR"], 0.36, 0.2, (x(HP_X1 - 0.1), y, z), axis="X", segs=sg(18), r2=0.3)
     rbox(dk, (0.36, 0.3, 0.3), (x(mx), y + 0.45, z + 0.2), bevel=0.02)
     box(dk, (1.1, 0.8, 0.12), (x(mx), y, 0.59))
     if fine():
         for i in range(8):
             a = 2 * math.pi * (i + 0.5) / 8
-            box(st, (1.1, 0.06, 0.03), (x(mx), y + 0.43 * math.cos(a), z + 0.43 * math.sin(a)),
+            box(k["M_MOTOR"], (1.1, 0.06, 0.03), (x(mx), y + 0.43 * math.cos(a), z + 0.43 * math.sin(a)),
                 Matrix.Rotation(a, 4, "X"))
     # coupling guard and thrust chamber
     guard = hull(circle_pts((y, z), 0.2, 8, 0, math.pi) + [(y - 0.22, 0.53), (y + 0.22, 0.53)])
