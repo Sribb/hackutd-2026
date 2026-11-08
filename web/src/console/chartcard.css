@@ -1,0 +1,49 @@
+/* gaia chart cards (#159, chartcard.js): one small line chart inside a gaia reply.
+   Calm and quiet: ink and one accent for the lines, red only for the shutdown line and its
+   crossing, amber for a warning line. Past is solid; the forecast is dashed. */
+
+body.fb-console .cs-b.cc .cs-vis { display: block; max-width: 560px; padding: 12px 14px 10px; }
+.cc-card { margin: 0; min-width: 0; color: var(--g-ink-2); }
+.cc-card.go { cursor: pointer; }
+.cc-card.go:focus-visible { outline: 1px solid var(--g-focus); outline-offset: 6px; border-radius: 8px !important; }
+.cc-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 4px; font-size: 13px; }
+.cc-head b { font-weight: 500; color: var(--g-ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.cc-unit { margin-left: auto; flex: none; font-size: 12px; color: var(--g-faint); }
+body.fb-console .cc-id { text-transform: none !important; }
+
+.cc-svg { display: block; width: 100%; height: auto; overflow: visible; }
+.cc-svg .cc-grid { stroke: var(--g-hair); stroke-width: 1; }
+.cc-svg .cc-ax { font: 10px var(--sans); fill: var(--g-faint); font-variant-numeric: tabular-nums; }
+.cc-svg .cc-ax.now { fill: var(--g-mute); }
+.cc-svg .cc-now { stroke: var(--g-line); stroke-width: 1; stroke-dasharray: 2 3; }
+.cc-svg .cc-ref { stroke-width: 1; }
+.cc-svg .cc-ref.alarm { stroke: var(--g-red); opacity: .75; }
+.cc-svg .cc-ref.warn { stroke: var(--g-amber); opacity: .7; stroke-dasharray: 4 3; }
+.cc-svg .cc-lbl { font: 10px var(--sans); fill: var(--g-mute); }
+.cc-svg .cc-lbl.alarm { fill: var(--g-red); }
+.cc-svg .cc-lbl.warn { fill: var(--g-amber); }
+.cc-svg .cc-range { stroke: var(--g-red); stroke-width: 4; stroke-linecap: round; opacity: .28; }
+.cc-svg .cc-cross { fill: var(--g-raise); stroke: var(--g-red); stroke-width: 2; }
+.cc-svg .cc-empty { font: 11px var(--sans); fill: var(--g-faint); }
+.cc-svg .cc-past, .cc-svg .cc-fc { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.cc-svg .cc-fc { stroke-dasharray: 5 4; opacity: .8; }
+.cc-svg .cc-band { stroke: none; opacity: .1; }
+.cc-svg .s1 { stroke: var(--g-ink); fill: var(--g-ink); }
+.cc-svg .s2 { stroke: var(--g-bubble); fill: var(--g-bubble); }
+.cc-svg .s3 { stroke: var(--g-mute); fill: var(--g-mute); }
+.cc-svg .s4 { stroke: var(--g-faint); fill: var(--g-faint); }
+.cc-svg .cc-past.s4 { stroke-dasharray: 1 3; }
+.cc-svg .cc-past, .cc-svg .cc-fc { fill: none; }
+
+.cc-legend { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 6px; font-size: 12px; color: var(--g-mute); }
+.cc-key { display: inline-flex; align-items: center; gap: 6px; }
+button.cc-key { all: unset; display: inline-flex; align-items: center; gap: 6px; cursor: pointer; font-size: 12px; color: var(--g-ink-2); border-radius: 6px !important; padding: 0 2px; }
+button.cc-key:hover { color: var(--g-strong); }
+button.cc-key:focus-visible { outline: 1px solid var(--g-focus); }
+.cc-key .sw { display: inline-block; width: 16px; height: 0; border-top: 2px solid var(--g-ink); }
+.cc-key .sw.s2 { border-top-color: var(--g-bubble); }
+.cc-key .sw.s3 { border-top-color: var(--g-mute); }
+.cc-key .sw.s4 { border-top: 2px dotted var(--g-faint); }
+.cc-key .sw.fc { border-top: 2px dashed var(--g-ink-2); }
+.cc-key .sw.band { height: 8px; border: 0; background: var(--g-ink); opacity: .16; border-radius: 2px !important; }
+.cc-src { margin-top: 6px; font-size: 11.5px; line-height: 1.45; color: var(--g-faint); }
