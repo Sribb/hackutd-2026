@@ -3,7 +3,8 @@
 // does not serve it and nothing here asks for it.
 //
 // The files come from the dev server's /eog/ folder (vite.config.js), the same folder the
-// backend's dataset mode reads. Detection and plans are the backend's (eog.js).
+// backend's dataset mode reads, or from the backend itself when there is no dev server.
+// Detection and plans are the backend's (eog.js).
 
 export const STEP_S = 300; // the telemetry grid: every series, every 5 minutes
 
@@ -207,6 +208,22 @@ async function getText(url, onProgress) {
 export function sortFolders(list) {
   const rank = (f) => (/^test(\/|$)/.test(f) ? 0 : /mock_test/.test(f) ? 1 : /snapshot/.test(f) ? 2 : /full_week/.test(f) ? 3 : 4);
   return [...list].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
+}
+
+// The same three files from the backend (/api/dataset/file/{name}?folder=, #152), for a build
+// with no dev server (dist/ has no /eog/ folder). answer_key.json is never served there either.
+export function backendFileSource(apiBase = "") {
+  const u = (p) => `${apiBase}/api/dataset${p}`;
+  return {
+    kind: "backend",
+    async info() { return getJSON(u("")); },
+    async folders() { return sortFolders((await getJSON(u(""))).folders || []); },
+    async load(folder, onProgress) {
+      const f = (name) => u(`/file/${name}?folder=${encodeURIComponent(folder)}`);
+      const [network, ops, text] = await Promise.all([getJSON(f("network.json")), getJSON(f("ops.json")), getText(f("telemetry.csv"), onProgress)]);
+      return { network, ops, store: parseTelemetry(text) };
+    },
+  };
 }
 
 export function fileSource(base = "/eog") {

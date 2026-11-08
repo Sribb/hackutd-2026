@@ -210,9 +210,13 @@ export function makeNotifier(H) {
       : "no plan keeps every well running yet, so ask gaia for options";
     return `gaia: ${head}${a.clock ? ` at ${clockOf(toMin(a.clock))}` : ""}; ${what}; ${fix}.`;
   }
+  // Only when a judge left a number on /start and is signed up (no POST otherwise). One send
+  // per alert id here; the backend also keeps track.
+  const phoneOn = () => !!(window.gaiaPhone && window.gaiaPhone.send && (!window.gaiaPhone.subscription || window.gaiaPhone.subscription()));
   function phoneTick() {
     for (const [id, p] of phoned) {
       if (p.sent) continue;
+      if (!phoneOn()) { if (Date.now() - p.at > PHONE_WAIT_MS) p.sent = "off"; continue; }
       const ready = (cur && cur.a.id === id ? cur.fresh : H.plansAt() > p.at) || Date.now() - p.at > PHONE_WAIT_MS;
       if (!ready) continue;
       p.sent = true;
