@@ -18,6 +18,9 @@ dist/
 *.blend1
 *.blend2
 
+# Uploaded blueprints and their builds (backend/app/blueprints.py)
+backend/data/blueprints/
+
 # Agent board local state
 .board/
 
