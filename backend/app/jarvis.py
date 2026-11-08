@@ -79,6 +79,21 @@ def no_current_reading(nm: str, kind: str = "tank", many: bool = False) -> str:
     return f"I have no current reading for {nm}, so I can't say what {it} doing."
 
 
+def _eog_gaia():
+    """backend/app/eog/gaia.py, imported late (it imports the dataset service)."""
+    return __import__(f"{__package__}.eog.gaia", fromlist=["TOOLS"])
+
+
+def bbl_hr_text(x: Any) -> str:
+    """A flow in whole barrels an hour, never '-0': a stopped pump's meter noise reads a hair
+    under zero, and a flow is never negative."""
+    try:
+        n = round(float(x or 0))
+    except (TypeError, ValueError):
+        n = 0
+    return str(max(0, n))
+
+
 def and_list(items: list[str]) -> str:
     return items[0] if len(items) == 1 else ", ".join(items[:-1]) + " and " + items[-1]
 
@@ -578,6 +593,12 @@ class Jarvis:
         return line
 
     # ---------- Claude ----------
+    def field_prompt(self) -> str:
+        """Claude's system prompt for the field on screen: the active dataset's own systems, asset
+        ids and UTC clock (eog/gaia.py) while a dataset is on screen, else the live demo field's
+        (self.system). Built per question, since a dataset can be switched on at any time."""
+        return _eog_gaia().system_prompt() or self.system
+
     def _system_prompt(self) -> str:
         f = self.live.fmap
         ids = {"tanks": sorted(f.tanks), "pumps": sorted(f.pumps), "valves": sorted(f.valves),
@@ -642,14 +663,19 @@ class Jarvis:
             media = "image/jpeg" if data.startswith("/9j/") else "image/png"
             content.append({"type": "image", "source": {"type": "base64", "media_type": media, "data": data}})
         live = self.live
+        g = _eog_gaia()
+        on_dataset = g.active()
+        clock = (g.clock_note() if on_dataset else None) or f"Live clock {live.fmap.clock(live.t)}"
         this = (f"{selected[0]} (what 'this', 'it' and 'that' mean)" if selected else "nothing")
         more = f"; also {', '.join(selected[1:])}" if len(selected) > 1 else ""
-        note = (f"[Live clock {live.fmap.clock(live.t)}. Selected in the 3D view: {this}{more}."
+        note = (f"[{clock}. Selected in the 3D view: {this}{more}."
                 f"{' The image is a screenshot of the 3D view.' if image_b64 else ''}]")
         content.append({"type": "text", "text": f"{note}\n{text or 'What am I looking at?'}"})
         messages: list[dict] = [{"role": "user", "content": content}]
-        kwargs: dict = {"model": self.model, "max_tokens": 16000, "tools": TOOLS,
-                        "system": [{"type": "text", "text": self.system, "cache_control": {"type": "ephemeral"}}],
+        system = self.field_prompt() if on_dataset else self.system
+        kwargs: dict = {"model": self.model, "max_tokens": 16000,
+                        "tools": TOOLS + [g.HISTORY_TOOL] if on_dataset else TOOLS,
+                        "system": [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
                         "output_config": {"effort": self.effort}}
         if self.model in FALLBACK_MODELS:
             kwargs.update(betas=["server-side-fallback-2026-07-01"], fallbacks="default")
@@ -858,6 +884,21 @@ class Jarvis:
             t = re.sub(rf"\b{w}\b", str(n), t)
         live = self.live
 
+        # The week's history while a dataset is on screen ("which failure cost the most this
+        # week?", "what happened this week", "list the failures"): eog/gaia.py's numbers, no Claude.
+        g = _eog_gaia()
+        if g.active():
+            try:
+                got = await asyncio.to_thread(g.history_answer, text)
+            except Exception:  # noqa: BLE001 - a dataset problem falls through to the other answers
+                log.exception("week history failed")
+                got = None
+            if got:
+                line, aid = got
+                if aid:
+                    self._note_ui(aid, ctx)
+                return line
+
         # Fixes (proposals only).
         m = re.search(r"send truck (\d+)(?: to tank (\d+))?", t)
         if m:
@@ -1036,7 +1077,10 @@ class Jarvis:
             # Right after a pump changes state the fit can still lag; a rate whose sign
             # disagrees with what the pumps and wells explain would only mislead.
             if obs is not None and not (exp is not None and abs(exp) >= 1 and obs * exp < 0):
-                line += f", changing {obs:+.0f} barrels an hour over its recent readings"
+                # A rate under half a barrel rounds to 0: "holding steady", never "-0" or "+0".
+                n = round(float(obs))
+                line += (f", changing {n:+d} barrels an hour over its recent readings" if n
+                         else ", holding steady over its recent readings")
             line += "."
             # Why: the tank's own pumps' active alerts, then its forecast shutdown time.
             causes = [a["message"] for pid in self.live.fmap.pumps_by_tank.get(aid, [])
@@ -1051,13 +1095,14 @@ class Jarvis:
                 line += " " + " ".join(extra)
         elif kind == "pump":
             run = "running" if lv.get("running") else "stopped"
-            line = f"{nm} is {run}, moving {lv.get('flow_bbl_hr') or 0:.0f} barrels an hour{self._age_note(aid)}."
+            line = f"{nm} is {run}, moving {bbl_hr_text(lv.get('flow_bbl_hr'))} barrels an hour{self._age_note(aid)}."
         elif kind == "valve":
             line = f"{nm} is {str(lv.get('position')).lower()}{self._age_note(aid, 'position')}."
         elif kind == "truck":
             phase = str(lv.get("phase", "IDLE")).lower().replace("_", " ")
             line = f"{nm} is {phase}" + (f" for {name(lv['target_id'])}." if lv.get("target_id") else ".")
         else:
-            line = f"{nm} is flowing {lv.get('flow_bbl_hr') or 0:.0f} barrels an hour{self._age_note(aid, 'flow_bbl_hr')}."
+            line = (f"{nm} is flowing {bbl_hr_text(lv.get('flow_bbl_hr'))} barrels an hour"
+                    f"{self._age_note(aid, 'flow_bbl_hr')}.")
         alerts = [a["message"] for a in info["alerts"] if a["message"] not in line]
         return " ".join([line, *alerts[:1]])
