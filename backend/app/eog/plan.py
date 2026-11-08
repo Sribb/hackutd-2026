@@ -10,6 +10,11 @@ Public API
     countdown(ds, event, at_ts=None) -> dict      de-noised level and countdown for one pump failure
     key_text(plan) -> str                         summary plus notes, written like the answer key
 
+wait_curve points: delay_min, start_ts, cost (this event), summary, trucks, system_cost (its system).
+countdown here returns a dict and never edits the Event. It is not detect.countdown(ds, event) -> Event,
+which fills the Event from its own fit. plan_failures fills only the countdown fields still empty, so
+if detect ran first, the Event shows detect's level and hours_to_limit, not R1/R2/R4's.
+
 Everything comes from the dataset: capacities, wells, prices, trucks, limits and repair time. "Now"
 is the view's last telemetry row, never the clock. answer_key.json is never opened here.
 
