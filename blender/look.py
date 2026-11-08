@@ -33,7 +33,11 @@ With textures=False (build_field.py --no-scenery) no image is attached: the fiel
 role colors and weathering only.
 
 Modes: "fast" (the default, for uploads through the API) skips ambient occlusion; "full"
-(the committed blender/field.glb) adds it. Run apply() before optimize.run().
+(the committed blender/field.glb) adds it. "bake" is full plus a second UV map, AO_UV (glTF
+TEXCOORD_1), for a baked AO atlas (docs/3D_QUALITY.md #4); it costs about 1.6 MB of UVs on
+the default field, so only a bake run uses it. Every look material carries the exporter's
+"glTF Material Output" group with its Occlusion socket open, and plug_ao(image) wires a
+baked image into it. Run apply() before optimize.run().
 """
 import hashlib
 import math
@@ -46,7 +50,9 @@ import numpy as np
 from mathutils import Vector
 from mathutils.bvhtree import BVHTree
 
-MODES = ("fast", "full")
+MODES = ("fast", "full", "bake")
+AO_UV = "AO_UV"                 # the second UV map (glTF TEXCOORD_1), unique per kind of part
+GLTF_OUTPUT = "glTF Material Output"
 HERE = os.path.dirname(os.path.abspath(__file__))
 ASSETS = os.path.join(HERE, "assets")
 DETAIL_SRGB = 0.88          # sRGB mean of every detail map (make_materials.DETAIL_MEAN)
@@ -206,9 +212,46 @@ def build_material(name, textures):
     nt.links.new(tint_out, w_a)
     nt.links.new(vcol.outputs["Color"], w_b)
     nt.links.new(w_out, bsdf.inputs["Base Color"])
+    occlusion_slot(nt)
     mat.diffuse_color = (*lin, 1.0)
     mat.metallic, mat.roughness = metallic, rough
+    mat["look"] = name
     return mat
+
+
+def occlusion_slot(nt):
+    """The glTF exporter's "glTF Material Output" group node, with its Occlusion socket left
+    open: nothing exports until plug_ao() connects a baked image to it."""
+    group = bpy.data.node_groups.get(GLTF_OUTPUT)
+    if group is None:
+        group = bpy.data.node_groups.new(GLTF_OUTPUT, "ShaderNodeTree")
+        group.interface.new_socket(name="Occlusion", in_out="INPUT", socket_type="NodeSocketFloat")
+    node = nt.nodes.new("ShaderNodeGroup")
+    node.node_tree = group
+    return node
+
+
+def plug_ao(image, materials=None):
+    """For an AO bake (docs/3D_QUALITY.md #4): read `image` through the AO_UV map (glTF
+    TEXCOORD_1) into each look material's Occlusion socket. The exporter then writes
+    occlusionTexture with texCoord 1, and three.js loads it as aoMap on channel 1 with no
+    console code. Build with --look bake first, so the meshes carry AO_UV."""
+    image.colorspace_settings.name = "Non-Color"
+    done = 0
+    for mat in materials or [m for m in bpy.data.materials if m.get("look")]:
+        nt = mat.node_tree
+        slot = next((n for n in nt.nodes if n.type == "GROUP" and n.node_tree and n.node_tree.name == GLTF_OUTPUT),
+                    None) or occlusion_slot(nt)
+        uv = nt.nodes.new("ShaderNodeUVMap")
+        uv.uv_map = AO_UV
+        tex = nt.nodes.new("ShaderNodeTexImage")
+        tex.image = image
+        split = nt.nodes.new("ShaderNodeSeparateColor")
+        nt.links.new(uv.outputs["UV"], tex.inputs["Vector"])
+        nt.links.new(tex.outputs["Color"], split.inputs["Color"])
+        nt.links.new(split.outputs[0], slot.inputs["Occlusion"])
+        done += 1
+    return done
 
 
 def has_image(mat):
@@ -411,6 +454,48 @@ def set_colors(obj, col):
     me.color_attributes.render_color_index = me.color_attributes.find(ATTR)
 
 
+def ao_uvs(groups):
+    """--look bake: a second UV map, AO_UV (glTF TEXCOORD_1), unwrapped once per kind of part
+    (Smart UV Project, all of them packed into one shared 0 to 1 atlas) and copied to every
+    identical copy, so one bake per template serves all its copies and they still share a mesh.
+    UVMap (TEXCOORD_0) stays the tiling map. Untextured parts get none. Returns meshes mapped."""
+    reps = [m[0][0] for m in groups.values() if m[0][0].data.uv_layers.get("UVMap")]
+    if not reps:
+        return 0
+    for obj in reps:
+        me = obj.data
+        me.uv_layers.active = me.uv_layers.get(AO_UV) or me.uv_layers.new(name=AO_UV)
+    view = bpy.context.view_layer
+    for o in view.objects:
+        o.select_set(False)
+    for o in reps:
+        o.select_set(True)
+    view.objects.active = reps[0]
+    bpy.ops.object.mode_set(mode="EDIT")
+    bpy.ops.mesh.select_all(action="SELECT")
+    bpy.ops.uv.smart_project(angle_limit=math.radians(66), island_margin=0.002, area_weight=0.0,
+                             correct_aspect=True, scale_to_bounds=False)
+    bpy.ops.object.mode_set(mode="OBJECT")
+    mapped = 0
+    for members in groups.values():
+        rep = members[0][0]
+        src = rep.data.uv_layers.get(AO_UV)
+        if src is None:
+            continue
+        data = np.empty(len(src.data) * 2, dtype=np.float32)
+        src.data.foreach_get("uv", data)
+        for obj, _ in members:
+            me = obj.data
+            layer = me.uv_layers.get(AO_UV) or me.uv_layers.new(name=AO_UV)
+            layer.data.foreach_set("uv", data)
+            me.uv_layers.active = me.uv_layers["UVMap"]
+            me.uv_layers["UVMap"].active_render = True
+            mapped += 1
+    for o in view.objects:
+        o.select_set(False)
+    return mapped
+
+
 def fill_gaps(obj):
     """A mesh on someone else's textured material keeps its UVs and color layers. If it has
     none, it gets box UVs and a white layer for each color attribute the material reads, so
@@ -480,13 +565,14 @@ def apply(scene, mode="fast", textures=True):
             else:
                 while obj.data.uv_layers:    # no texture reads them: keep the glb small
                     obj.data.uv_layers.remove(obj.data.uv_layers[0])
+    ao_uv = ao_uvs(groups) if mode == "bake" and textures else 0
     t_uv = time.time()
 
     ground_z = -0.2                     # field_build.ground_height's mean
     colors = {key: weather_colors(m[0][0], ROLES[m[0][1]][5], ground_z, seed(key + "f"), m[0][1], key)
               for key, m in groups.items()}
     ao_s = 0.0
-    if mode == "full":
+    if mode != "fast":
         t = time.time()
         solid = [o for o in meshes if o.data.materials and o.data.materials[0] is not None
                  and o.data.materials[0].name not in ("M_LAMP", "M_BRINE", "M_WIRE")
@@ -507,6 +593,7 @@ def apply(scene, mode="fast", textures=True):
     t_end = time.time()
     return {"mode": mode, "textures": bool(textures), "materials": dict(sorted(counts.items())),
             "styled": len(styled), "looks": len(groups), "theirs": len(foreign), "gaps_filled": filled,
+            "ao_uv_meshes": ao_uv,
             "seconds": {"roles": round(t_roles - t0, 2), "uvs": round(t_uv - t_roles, 2),
                         "weather": round(t_end - t_uv - ao_s, 2), "ao": round(ao_s, 2),
                         "total": round(t_end - t0, 2)}}

@@ -42,15 +42,16 @@
       "M_WOOD": 2
     },
     "styled": 677,
-    "looks": 262,
+    "looks": 264,
     "theirs": 3,
     "gaps_filled": 0,
+    "ao_uv_meshes": 0,
     "seconds": {
-      "roles": 0.04,
-      "uvs": 0.22,
-      "weather": 0.09,
-      "ao": 2.14,
-      "total": 2.5
+      "roles": 0.05,
+      "uvs": 0.16,
+      "weather": 0.06,
+      "ao": 1.36,
+      "total": 1.63
     }
   },
   "outputs": {
@@ -179,12 +180,12 @@
     "images_mb": 12.02
   },
   "triangles": 263085,
-  "glb_mb": 26.15,
+  "glb_mb": 26.16,
   "nodes": 1013,
   "objects": 1014,
   "budget": {
     "triangles": 300000,
     "mb": 30.0
   },
-  "seconds": 36.03
+  "seconds": 18.86
 }

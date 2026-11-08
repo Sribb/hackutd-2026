@@ -4,7 +4,7 @@ Run from the repo root:
   /Applications/Blender.app/Contents/MacOS/Blender --background --factory-startup \
       --python blender/build_field.py -- [--blueprint PATH.json] [--out DIR] \
       [--detail full|lite|bare] [--render-dir DIR] [--render-assets ID,ID] [--no-scenery] \
-      [--look fast|full]
+      [--look fast|full|bake]
 
 The blueprint follows docs/BLUEPRINT.md (format v1); ingest drafts with missing numbers
 build too, since the generator only needs IDs and links.
@@ -14,7 +14,8 @@ whatever triangle budget is left. --no-scenery builds the plain field: no SCENER
 and flat ground and road colors instead of the kit's textures.
 
 Last, look.py gives every part its realistic material, UVs and weathering. --look full adds
-baked ambient occlusion (the committed blender/field.glb); fast, the default, skips it.
+baked ambient occlusion (the committed blender/field.glb); fast, the default, skips it;
+bake is full plus the AO_UV map (TEXCOORD_1) an AO texture bake needs.
 
 With no --blueprint it builds scenario/field.json into blender/, the field the team uses
 today. With --blueprint and no --out it writes to blender/out/<blueprint name>/. Every run
