@@ -21,14 +21,17 @@ Rules this module keeps:
   security_mode "None" is allowed only with allow_insecure: true and an endpoint on
   127.0.0.1 or localhost. The client certificate and key are files whose paths come
   from FREEBOARD_CONN_ variables. server_cert_path_env pins the server certificate;
-  without it the client takes the certificate the server lists for its endpoint.
+  without it the client takes the certificate the server lists for its endpoint, and
+  status() says the certificate is not pinned.
 - Values. A notification is used only when its StatusCode is Good and its
   SourceTimestamp (or ServerTimestamp, when the server sends no source time) is no
   older than max_age_s (default 300 s). Bad or Uncertain status, an old timestamp, or
   a value its signal_map rule rejects gives no reading, and self.quality says why.
-  While the session is healthy, the last good value of each signal is read again on
-  every read(), since a subscription only reports changes; its age is checked against
-  the device timestamp each time, so it goes stale on its own.
+  Monitored items use the StatusValueTimestamp trigger, so a server that restamps an
+  unchanged value still sends it. While the session is healthy, the last good value of
+  each signal is read again on every read(); its age is checked against the device
+  timestamp (or its arrival time, when it came with none) each time, so it goes stale
+  on its own.
 - Session loss. When the keepalive or the watchdog fails, status() turns unavailable
   with the reason, every declared signal turns comm_lost and gives no reading, and
   the thread reconnects with Backoff and subscribes again. Nothing held from before
@@ -36,7 +39,8 @@ Rules this module keeps:
 - Writes. Only from send(), which the live layer calls only after a person confirms.
   send() writes the command's NodeId once, with the variable's own VariantType, within
   timeout_s. No session means nothing is sent. Nothing is queued or retried; when the
-  write left but no answer came, send() returns uncertain_result().
+  write left but no answer came, send() returns uncertain_result(). Once send() has
+  given up, the I/O loop never starts that write.
 """
 from __future__ import annotations
 
@@ -195,7 +199,9 @@ class OpcUaConnector(Connector):
             client, loop = self._client, self._loop
         if client is None or loop is None:
             return {"ok": False, "detail": f"{self.id} has no OPC UA session ({self._detail}); nothing was sent."}
-        state = {"sent": False}
+        # "sent" and "given_up" change only under state["lock"], so the I/O loop either
+        # starts the write before send() gives up (uncertain) or never starts it.
+        state = {"sent": False, "given_up": False, "lock": threading.Lock()}
         try:
             fut = asyncio.run_coroutine_threadsafe(self._write(client, node, typ, value, state), loop)
         except RuntimeError:
@@ -204,7 +210,10 @@ class OpcUaConnector(Connector):
             return fut.result(timeout=self.timeout_s)
         except Exception as e:  # noqa: BLE001 - a timeout, or the loop went away
             fut.cancel()
-            if state["sent"]:
+            with state["lock"]:
+                state["given_up"] = True
+                sent = state["sent"]
+            if sent:
                 return sm.uncertain_result()
             why = _short(e, self.config)
             return {"ok": False, "detail": f"{self.id}: the write was not sent ({why}); nothing was sent."}
@@ -270,7 +279,9 @@ class OpcUaConnector(Connector):
                 mapped = self.smap.apply(aid, sig, raw, quality=q, age_s=self._age(src))
                 self.inbox.put(aid, sig, mapped)
                 if mapped.good:
-                    self._held[(aid, sig)] = (raw, src)
+                    # With no timestamp at all, the value is as old as its arrival, so a
+                    # held copy still runs out after max_age_s.
+                    self._held[(aid, sig)] = (raw, time.time() if src is None else src)
                 else:
                     self._held.pop((aid, sig), None)
                 self._mark((aid, sig), mapped.quality, why if q != sm.GOOD and why else mapped.detail)
@@ -305,7 +316,10 @@ class OpcUaConnector(Connector):
             why = _short(e, self.config)
             return {"ok": False,
                     "detail": f"{self.id}: could not read the type of {node_text} ({why}); nothing was sent."}
-        state["sent"] = True
+        with state["lock"]:
+            if state["given_up"]:
+                return {"ok": False, "detail": f"{self.id}: send() had already given up; nothing was sent."}
+            state["sent"] = True
         try:
             await node.write_value(ua.DataValue(ua.Variant(wire, vtype)))
         except asyncio.CancelledError:
@@ -426,9 +440,9 @@ class OpcUaConnector(Connector):
                 self._subscribing = True
             sub = await client.create_subscription(self.publish_ms, handler)
             nodes = [client.get_node(n) for n in self.by_node]
-            results = await sub.subscribe_data_change(nodes) if nodes else []
+            results = await self._subscribe(sub, nodes) if nodes else []
             bad = []
-            for text, res in zip(self.by_node, results if isinstance(results, list) else [results]):
+            for text, res in zip(self.by_node, results):
                 if isinstance(res, ua.StatusCode):
                     bad.append(text)
                     with self._lock:
@@ -440,7 +454,9 @@ class OpcUaConnector(Connector):
                 self._vtypes = {}
                 self._detail = (f"connected to {self.endpoint} ({self.policy if self.mode != 'None' else 'no'} "
                                 f"security, {self.mode}), {len(nodes) - len(bad)} of {len(nodes)} nodes subscribed"
-                                + (f"; not subscribed: {', '.join(bad)}" if bad else ""))
+                                + (f"; not subscribed: {', '.join(bad)}" if bad else "")
+                                + ("; server certificate not pinned (set server_cert_path_env)"
+                                   if self.mode != "None" and not self.config.get("server_cert_path_env") else ""))
             return client
         except BaseException:
             with self._lock:
@@ -450,6 +466,22 @@ class OpcUaConnector(Connector):
             except BaseException:  # noqa: BLE001
                 pass
             raise
+
+    async def _subscribe(self, sub: Any, nodes: list) -> list:
+        """Monitor every node with the StatusValueTimestamp trigger, so a value the server
+        restamps without changing still arrives and its age stays the server's latest
+        stamp. Nodes whose server refuses that filter are monitored with the default
+        trigger (value or status changes only); their values then run out after
+        max_age_s unless they change. One result per node: a handle or a StatusCode."""
+        ua = self.ua.ua
+        flt = ua.DataChangeFilter(Trigger=ua.DataChangeTrigger.StatusValueTimestamp)
+        results = list(await sub._subscribe(nodes, ua.AttributeIds.Value, flt))
+        retry = [i for i, res in enumerate(results) if isinstance(res, ua.StatusCode)]
+        if retry:
+            again = await sub.subscribe_data_change([nodes[i] for i in retry])
+            for i, res in zip(retry, again if isinstance(again, list) else [again]):
+                results[i] = res
+        return results
 
     async def _cert_uri(self, path: Optional[str]) -> Optional[str]:
         """The application URI in the client certificate, so the session's URI matches it."""

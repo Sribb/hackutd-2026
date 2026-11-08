@@ -295,3 +295,69 @@ def test_close_returns_at_once(fake):
     conn.close()
     assert time.monotonic() - t0 < 0.2
     wait_for(lambda: not conn._thread.is_alive(), timeout=5)
+
+
+# ---------- review round 1 ----------
+
+def test_restamped_static_value_stays_fresh(fake):
+    """A value that never changes but that the server restamps keeps arriving: the
+    subscription asks for timestamp changes too, so its age is the server's latest stamp."""
+    conn = OpcUaConnector(spec_for(fake.endpoint, max_age_s=1.5), None, lambda: 0.0)
+    try:
+        wait_for(lambda: conn.quality.get(("PUMP_6", "running"), {}).get("quality") == "good")
+        end = time.monotonic() + 3.5            # well past max_age_s; PUMP_6.Running stays True
+        while time.monotonic() < end:
+            conn.read()
+            time.sleep(0.1)
+        assert conn.quality[("PUMP_6", "running")]["quality"] == "good", conn.quality[("PUMP_6", "running")]
+        assert any(r["signal"] == "running" and r["value"] is True for r in conn.read())
+    finally:
+        conn.close()
+
+
+def _offline(monkeypatch, **config):
+    """A connector with no I/O thread, for feeding notify() by hand."""
+    from backend.app.connectors import opcua_ua
+    monkeypatch.setattr(opcua_ua.sm, "import_optional", lambda module, package: (None, "asyncua is off"))
+    conn = OpcUaConnector(spec_for("opc.tcp://127.0.0.1:1/x", **config), None, lambda: 0.0)
+    conn._client = object()                    # pretend a session is up
+    return conn
+
+
+def test_value_without_timestamps_expires_after_max_age(monkeypatch):
+    from types import SimpleNamespace as NS
+    conn = _offline(monkeypatch, max_age_s=0.4)
+    conn.notify("ns=2;s=TANK_6.Level", NS(StatusCode=None, Value=NS(Value=50.0),
+                                          SourceTimestamp=None, ServerTimestamp=None))
+    assert [r["value"] for r in conn.read() if r["signal"] == "level_pct"] == [50.0]
+    time.sleep(0.6)
+    assert all(r["signal"] != "level_pct" for r in conn.read()), "held forever with no timestamp"
+    assert conn.quality[("TANK_6", "level_pct")]["quality"] == "stale"
+
+
+def test_write_given_up_is_never_sent_later(fake, live, monkeypatch):
+    """send() timed out before the write left: the write must not go out afterwards, so
+    "nothing was sent" stays true."""
+    conn = conn_of(live)
+    wait_for(lambda: conn.status()["available"], step=lambda: live.step(0.05))
+    before = len(fake.writes)
+    real = conn._wire_value
+
+    def slow(*a):                               # the I/O loop stalls past timeout_s
+        time.sleep(conn.timeout_s + 0.5)
+        return real(*a)
+
+    monkeypatch.setattr(conn, "_wire_value", slow)
+    res = conn.send({"type": "SET_VALVE", "asset_id": "VALVE_D_6", "value": "CLOSED"})
+    time.sleep(1.5)
+    assert res["ok"] is False and "nothing was sent" in res["detail"], res
+    assert len(fake.writes) == before, f"said nothing was sent, but the fake got {fake.writes[before:]}"
+
+
+def test_unpinned_server_cert_is_shown_in_status(fake):
+    conn = OpcUaConnector(spec_for(fake.endpoint, server_cert_path_env=None), None, lambda: 0.0)
+    try:
+        st = wait_for(lambda: (s := conn.status())["available"] and s)
+        assert "not pinned" in st["detail"]
+    finally:
+        conn.close()
