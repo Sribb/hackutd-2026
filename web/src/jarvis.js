@@ -123,9 +123,9 @@ async function ask(message, ids, withView = false) {
 
 async function decide(p, verb) {
   try {
-    const out = await call(`/api/actions/${encodeURIComponent(p.id)}/${verb}`, {});
+    const out = await call(`/api/actions/${encodeURIComponent(p.id)}/${verb}`, { by: "console" });
     proposals.set(out.id, out);
-    shiftlog.add(verb === "confirm" ? "approve" : "whatif", `${verb === "confirm" ? "CONFIRMED" : "Rejected"} Jarvis fix: ${describe(p.action)}. ${p.reason || ""}`.trim());
+    shiftlog.add(verb === "confirm" ? "approve" : "whatif", `${verb === "confirm" ? "CONFIRMED" : "Rejected"} fix: ${p.text || describe(p.action)} ${p.reason || ""}`.trim());
     hooks.logged();
   } catch (e) {
     chat.push({ who: "note", text: e.status === 409 ? "That fix was already decided elsewhere." : e.message });
@@ -147,7 +147,8 @@ function draw() {
   if (!open) return;
   $("jarvisBtn").classList.remove("ping");
   const sel = hooks.selected();
-  const live = [...alerts.values()].sort((a, b) => (b.t > a.t ? 1 : -1)).slice(0, 4);
+  // Resolved alerts (active: false, #38) drop off the panel; the shift log keeps them.
+  const live = [...alerts.values()].filter((a) => a.active !== false).sort((a, b) => (b.t > a.t ? 1 : -1)).slice(0, 4);
   const pend = [...proposals.values()].sort((a, b) => (b.created_t > a.created_t ? 1 : -1));
   // Redraws come from the socket too, so keep whatever the operator is typing.
   const typed = $("jvIn") ? $("jvIn").value : "";
@@ -161,7 +162,7 @@ function draw() {
       ${!chat.length && !busy ? `<li class="m-note"><p>Ask about the field. "Why is Tank 3 rising?" Select or pinch an asset to ask about it.</p></li>` : ""}</ol>
     ${pend.length ? `<div class="jv-props"><div class="kicker">Proposed fixes</div>${pend.map((p) => `
       <div class="jv-prop ${p.status}">
-        <div><b>${esc(describe(p.action))}</b> <span class="muted">${esc(p.status)}</span></div>
+        <div><b>${esc(p.text || describe(p.action))}</b> <span class="muted">${esc(p.status)}${p.decided_by ? ` by ${esc(p.decided_by)}` : ""}</span></div>
         ${p.reason ? `<div class="muted">${esc(p.reason)}</div>` : ""}
         ${p.result ? `<div class="muted">${esc(typeof p.result === "string" ? p.result : JSON.stringify(p.result))}</div>` : ""}
         ${p.status === "PENDING" ? `<div class="plan-btns"><button data-reject="${esc(p.id)}">Reject</button><button class="primary hold" data-confirm="${esc(p.id)}"><i></i><span>Hold to confirm</span></button></div>` : ""}
