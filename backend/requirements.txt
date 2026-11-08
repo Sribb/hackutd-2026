@@ -5,3 +5,8 @@ pytest==8.3.4
 # For ingest/ (POST /api/ingest), mounted by backend/app/main.py
 anthropic==2.6.0
 python-multipart==0.0.33
+# For /ws (#38): uvicorn needs a WebSocket library, or /ws returns 404
+websockets==15.0.1
+# Real connectors (#62): MQTT and Modbus TCP. Without them those connectors report "unavailable".
+paho-mqtt==2.1.0
+pymodbus==3.8.6
