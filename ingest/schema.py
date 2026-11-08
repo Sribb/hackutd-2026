@@ -23,13 +23,16 @@ ITEM_SCHEMA = {
         "connects_labels": {"type": "array", "items": {"type": "string"}},
         "capacity_bbl": _nullable("number"),
         "rate_bbl_hr": _nullable("number"),
+        "shutdown_pct": _nullable("number"),
+        "lost_usd_hr": _nullable("number"),
+        "manual": _nullable("boolean"),
         "x": _nullable("number"),
         "y": _nullable("number"),
         "confidence": {"type": "number"},
         "evidence": {"type": "string"},
     },
     "required": ["kind", "label", "feeds_label", "connects_labels", "capacity_bbl", "rate_bbl_hr",
-                 "x", "y", "confidence", "evidence"],
+                 "shutdown_pct", "lost_usd_hr", "manual", "x", "y", "confidence", "evidence"],
     "additionalProperties": False,
 }
 
@@ -52,8 +55,10 @@ REQUIRED_NUMBERS = {
     "pumps": ["rate_bbl_hr"],
     "wells": ["water_bbl_hr", "lost_usd_hr"],
     "disposal_wells": ["max_bbl_hr"],
-    "trucks": ["capacity_bbl"],
+    "trucks": ["capacity_bbl", "minutes_to"],
 }
+# A crossover's numbers, asked for together so the console can show one row per valve.
+CROSSOVER_NEEDS = ["max_bbl_hr", "manual"]
 
 REVIEW_CONFIDENCE = 0.8   # items Claude is less sure about than this go on the review list
 DEFAULT_SITE_WIDTH_M = 450.0
