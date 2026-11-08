@@ -5,7 +5,7 @@
   --line: rgba(232,226,214,.11);
   --ink: #e8e2d6;
   --ink-2: #a39d91;
-  --muted: #5e5a53;
+  --muted: #858076; /* 5:1 on --bg: kickers and stamps stay readable on a projector */
   --warning: #c9a14a;
   --alarm: #ff4b1f;
   --offline: #2a2825;
@@ -14,7 +14,7 @@
   --display: "Gloock", "Times New Roman", serif;
 }
 * { box-sizing: border-box; }
-html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink); font: 14px/1.45 var(--sans); }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink); font: 14px/1.45 var(--sans); font-variant-ligatures: none; /* Azeret Mono draws "fi" as a dotless ı */ }
 #app { display: grid; grid-template-columns: minmax(0, 1fr) 360px; height: 100vh; }
 
 #stage { position: relative; overflow: hidden; }
@@ -61,6 +61,9 @@ input[type=range] { width: 100%; accent-color: var(--ink-2); height: 26px; margi
 .marks span:first-child { transform: none; }
 .marks span:nth-child(7) { transform: translateX(-100%); }
 .marks .event { color: var(--alarm); }
+.marks .tick { position: absolute; top: -26px; width: 2px; height: 16px; margin-left: -1px; pointer-events: auto; }
+.marks .tick.lc { background: var(--warning); }
+.marks .tick.sd { background: var(--alarm); }
 .marks .range { position: absolute; top: -20px; height: 4px; background: rgba(239,90,80,.35); border-radius: 2px; }
 
 #side { border-left: 1px solid var(--line); background: var(--surface); padding: 16px; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; }
@@ -138,6 +141,8 @@ button.try.on { border-color: var(--trying); color: var(--trying); }
 .stamp { margin: 4px 0 0 26px; font: 11px var(--mono); color: var(--warning); }
 .stamp.fragile { color: var(--muted); }
 .plan-btns { display: flex; gap: 8px; margin: 8px 0 0 26px; }
+.approved-stamp { margin: 8px 0 0 26px; font: 600 11px var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--good); }
+.more-plans { margin: 8px 0 0 26px; font: 11px var(--mono); }
 .walk .plan-btns { margin-left: 0; }
 
 .lastcall { margin-top: 10px; padding-top: 8px; border-top: 1px dashed var(--line); font-size: 13px; color: var(--ink-2); }
@@ -148,6 +153,45 @@ button.try.on { border-color: var(--trying); color: var(--trying); }
 .steps li { cursor: pointer; color: var(--ink-2); }
 .steps li.on { color: var(--ink); font-weight: 600; }
 .steps li.done { color: var(--muted); text-decoration: line-through; }
+/* #75 plan run: every step waits for a hold-to-confirm; statuses never claim more than the readings show */
+.run { border-color: var(--ink-2); }
+.run .plan-btns { margin-left: 0; }
+.run-sum { font-size: 13px; color: var(--ink-2); margin: 2px 0 6px; }
+.run-sum .bad { color: var(--alarm); }
+.run-sum b { font-family: var(--mono); color: var(--ink); }
+.run-head { font: 600 12px var(--mono); margin-bottom: 8px; color: var(--ink); }
+.run-head.PAUSED, .run-head.CANCELLING { color: var(--warning); }
+.run-head.FAILED { color: var(--alarm); }
+.run-head.DONE { color: var(--good); }
+.run-steps { margin: 0; padding: 0; list-style: none; display: grid; gap: 8px; }
+.run-steps li { border-left: 2px solid var(--line); padding-left: 8px; }
+.run-steps li.PENDING { border-color: var(--warning); }
+.run-steps li.MISMATCH, .run-steps li.FAILED, .run-steps li.UNCERTAIN { border-color: var(--alarm); }
+.run-steps li.DONE { border-color: var(--good); }
+.run-step { display: grid; grid-template-columns: auto 1fr auto; gap: 8px; align-items: baseline; font-size: 13px; }
+.run-text { cursor: pointer; }
+.run-text:hover { text-decoration: underline; }
+.run-step time { font: 11px var(--mono); color: var(--muted); }
+.chip { font: 600 10px var(--mono); letter-spacing: .06em; text-transform: uppercase; padding: 1px 5px; border: 1px solid var(--line); color: var(--ink-2); white-space: nowrap; }
+.chip.PENDING { color: var(--warning); border-color: var(--warning); }
+.chip.VERIFYING, .chip.SENDING { color: var(--ink); }
+.chip.DONE { color: var(--good); border-color: var(--good); }
+.chip.MISMATCH, .chip.FAILED, .chip.UNCERTAIN { color: var(--alarm); border-color: var(--alarm); }
+.chip.REJECTED, .chip.CANCELLED, .chip.WAITING { color: var(--muted); }
+.run-steps li.REJECTED .run-text, .run-steps li.CANCELLED .run-text { color: var(--muted); text-decoration: line-through; }
+.run-detail { margin-top: 3px; font: 11px/1.45 var(--mono); color: var(--ink-2); }
+.run-steps li.MISMATCH .run-detail, .run-steps li.UNCERTAIN .run-detail, .run-steps li.FAILED .run-detail { color: var(--alarm); }
+.run-offer { margin-top: 10px; padding: 8px 10px; border: 1px dashed var(--warning); }
+.run-offer-k { font: 600 11px var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--warning); }
+.run-offer p { margin: 6px 0 0; font-size: 13px; line-height: 1.45; }
+.run-note { margin-top: 8px; font: 12px var(--mono); color: var(--warning); }
+.run-crew { margin-top: 10px; padding: 8px 10px; border: 1px solid var(--line); }
+.crew-row { display: grid; gap: 2px; margin-top: 6px; font-size: 13px; }
+.crew-row .plan-btns { margin: 4px 0 0; }
+.crew-due { font: 11px var(--mono); color: var(--ink-2); }
+.crew-row.late .crew-due { color: var(--alarm); font-weight: 600; }
+.run-ctl { margin-top: 12px; padding-top: 8px; border-top: 1px solid var(--line); }
+
 details { margin-top: 10px; font-size: 12px; color: var(--ink-2); }
 details summary { cursor: pointer; font: 11px var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
 details p { margin: 6px 0 0; line-height: 1.5; }
@@ -166,7 +210,7 @@ body::after { content: ""; position: fixed; inset: -50%; pointer-events: none; z
 @keyframes grain { 0%{transform:translate(0,0)} 33%{transform:translate(-3%,2%)} 66%{transform:translate(2%,-3%)} 100%{transform:translate(0,0)} }
 #stage::after { content: ""; position: absolute; inset: 0; pointer-events: none; background: radial-gradient(ellipse at center, transparent 45%, rgba(0,0,0,.75)); }
 .clock, .incident .countdown, .asset-id { font-family: var(--display); font-weight: 400; letter-spacing: 0; }
-.clock { font-size: 56px; }
+.clock { font-size: 44px; }
 .brand { font-family: var(--display); font-size: 20px; letter-spacing: .32em; color: var(--ink); }
 .kicker::before { content: "// "; color: var(--muted); }
 button { background: transparent; text-transform: uppercase; letter-spacing: .12em; font-size: 11px; }
@@ -453,3 +497,36 @@ body.two-nights .sky-ctl { display: none; }
 .tank-row .pct .age { display: block; margin-left: 0; font-size: 9px; line-height: 1.2; }
 .tank-row { grid-template-columns: 56px 1fr 64px; }
 .tank-row .pct.stale { color: var(--muted); text-decoration: line-through; text-decoration-color: var(--warning); }
+
+/* ---- Storm check (weather.js) ---- */
+.wx { font-size: 12px; color: var(--ink-2); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; margin: 0 0 10px; line-height: 1.45; }
+.wx .wx-k { font: 600 10px var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--muted); margin-right: 4px; }
+.wx.hot { border-color: var(--warning); color: var(--ink); }
+.wx.hot .wx-k { color: var(--warning); }
+.wx .wx-pick { margin-top: 6px; color: var(--warning); font-weight: 600; }
+.stamp.who { color: var(--muted); }
+.stamp.who.safe { color: var(--good); }
+
+/* Sky box stays one line until hovered or focused, so it doesn't compete with the failed pump. */
+.sky-ctl:not(:hover):not(:focus-within) .sky-sub,
+.sky-ctl:not(:hover):not(:focus-within) .sky-modes,
+.sky-ctl:not(:hover):not(:focus-within) .sky-pick { display: none; }
+.sky-ctl:not(:hover):not(:focus-within) { width: auto; }
+.wx.quiet { padding: 5px 10px; margin-bottom: 6px; }
+
+/* ---- #126 refused requests (security.js) ---- */
+.security .sec-head { font-size: 13px; color: var(--ink-2); margin: 0 0 6px; }
+.security .sec-head.hot { color: var(--warning); font-weight: 600; }
+.security .sec-list { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 6px; }
+.security .sec-ev { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; border-top: 1px solid var(--line); padding-top: 6px; font-size: 12px; }
+.security .sec-ev.w .sec-k { color: var(--warning); }
+.security .sec-k { color: var(--ink); }
+.security .sec-p { grid-column: 1; font: 11px var(--mono); color: var(--ink-2); overflow-wrap: anywhere; }
+.security .sec-c { grid-column: 1; font: 11px var(--mono); color: var(--muted); }
+.security .sec-ev time { grid-column: 2; grid-row: 1; font: 11px var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; }
+.security .sec-note { font-size: 11px; margin-top: 6px; }
+
+/* Link to the sponsor dataset console (/dataset). */
+.ds-link { font: 10px var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--ink-2); text-decoration: none;
+  border: 1px solid var(--line); padding: 2px 7px; margin-left: 6px; }
+.ds-link:hover { color: var(--ink); border-color: var(--ink-2); }

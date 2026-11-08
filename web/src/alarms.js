@@ -40,9 +40,13 @@ let box = null;
 let openRow = null;         // root id whose related alarms are shown
 let shelving = null;        // alert id with the shelve form open
 let formMsg = "";
+let loadSeq = 0, applied = 0; // applied: the newest load whose answer is on screen            // GET /api/alerts in flight; socket updates stamp the seq they arrived under
+const touched = new Map();  // id -> loadSeq when the socket last changed it
+let loadedOnce = false;     // the alerts feed answered at least once
+let loadError = "";         // why the last load failed, while it keeps failing
 
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
-const label = (m) => (m < 60 ? `${m} min` : m % 60 ? `${Math.floor(m / 60)} h ${m % 60} min` : `${m / 60} h`);
+const label = (m) => (m < 120 ? `${m} min` : m % 60 ? `${Math.floor(m / 60)} h ${m % 60} min` : `${m / 60} h`);
 
 // ------------------------------------------------------------------ model ----
 function nowT() {
@@ -159,18 +163,28 @@ async function post(path, body) {
 
 async function load() {
   if (!base) return useDerived();
+  const seq = ++loadSeq;
   try {
     const r = await fetch(`${base}/api/alerts`);
     if (r.status === 404) return useDerived();
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const j = await r.json();
+    // Loads overlap (boot, feed recovery, the 30 s timer). An older answer never overwrites a newer one.
+    if (seq < applied) return;
+    applied = seq;
     derived = false;
+    // The snapshot is as old as the request. A row the socket changed after the request went
+    // out is newer than the snapshot: keep the socket's version (a new P1 raised, or a
+    // resolved alarm, must not be undone by a slow GET).
+    const fresher = (id) => (touched.get(id) || 0) >= seq;
     const ids = new Set();
-    for (const a of j.alerts || []) { put(a); ids.add(a.id); }
-    for (const id of [...all.keys()]) if (!ids.has(id)) all.delete(id); // drop derived rows
-  } catch {
-    // Backend down: keep what we had. The feed badge already says the backend is down,
-    // and the panel adds that these may be out of date.
+    for (const a of j.alerts || []) { ids.add(a.id); if (!fresher(a.id)) put(a); }
+    for (const id of [...all.keys()]) if (!ids.has(id) && !fresher(id)) all.delete(id); // gone, or a derived row
+    loadedOnce = true;
+    loadError = "";
+  } catch (e) {
+    // Backend down: keep what we had, and say the list may be out of date (or never loaded).
+    loadError = e.message || "no answer";
   }
   changed();
 }
@@ -191,6 +205,9 @@ function useDerived() {
     keep.add(key);
     const prev = all.get(key) || {};
     const m = ev ? Math.max(0, Math.round(ev.t_min)) : null;
+    // The countdown runs from when this number was computed. A refreshed forecast already
+    // counts the time gone by, so restart the count whenever the number changes.
+    const at = prev.derived_at && prev.minutes_to_consequence === m ? prev.derived_at : Date.now();
     // Rank on the early end, as the backend does: inflow 15% high reaches shutdown sooner.
     const low = m == null ? null : Math.round(m / 1.15);
     put({
@@ -202,7 +219,7 @@ function useDerived() {
       priority_source: "derived",
       minutes_to_consequence: m,
       minutes_to_consequence_low: low,
-      derived_at: prev.derived_at || Date.now(),
+      derived_at: at,
       consequence: ev ? `${h.nice(ev.asset_id)} reaches shutdown at ${h.clockAt(ev.t_min)}.` : null,
       consequence_asset_id: ev ? ev.asset_id : null,
       consequence_clock: ev ? h.clockAt(ev.t_min) : null,
@@ -275,7 +292,7 @@ function consequenceLine(a) {
   const m = minutesLeft(a);
   const who = a.consequence_asset_id ? hooks.nice(a.consequence_asset_id) : "";
   const text = a.consequence_clock && who
-    ? `${who} shuts in at ${a.consequence_clock}${m != null ? (m > 0 ? ` (${label(m)})` : " (now)") : ""}`
+    ? `${who} reaches shutdown at ${a.consequence_clock}${m != null ? (m > 0 ? ` (${label(m)})` : " (now)") : ""} if nothing changes`
     : a.consequence;
   const usd = a.usd_at_risk ? ` · ${hooks.usd(a.usd_at_risk)} at risk` : "";
   return `<div class="al-cons">${esc(text)}<span class="muted">${esc(usd)}</span></div>`;
@@ -312,9 +329,12 @@ function draw() {
   if (!box) return;
   if (isHolding()) { afterHold(draw); return; }
   // Keep a half-typed reason across redraws (a countdown tick redraws every few seconds).
-  const typing = box.querySelector(".al-form input[name=reason]");
+  // Only for the same alarm: Pump 3's reason must never prefill Tank 5's shelve form.
+  const oldForm = box.querySelector(".al-form");
+  const same = oldForm && oldForm.dataset.form === shelving;
+  const typing = same ? oldForm.querySelector("input[name=reason]") : null;
   const keepReason = typing ? typing.value : "";
-  const keepMin = box.querySelector(".al-form select")?.value;
+  const keepMin = same ? oldForm.querySelector("select")?.value : undefined;
   const hadFocus = typing && document.activeElement === typing;
 
   const gs = groups();
@@ -339,13 +359,14 @@ function draw() {
     empty = blind.length
       ? `<li class="al-empty unknown">No alarms, but ${blind.length === 1 ? "1 tank has" : `${blind.length} tanks have`} no reading (${esc(blind.map(hooks.nice).join(", "))}). Not all clear.</li>`
       : shelf.length ? `<li class="al-empty">Nothing outside the shelf. ${shelf.length} shelved below.</li>`
+      : base && !derived && !loadedOnce ? `<li class="al-empty unknown">Alarm list not loaded${loadError ? ` (${esc(loadError)})` : ""}. Not all clear.</li>`
       : `<li class="al-empty">No active alarms.</li>`;
   }
 
   box.innerHTML = `<div class="kicker">Alarms <span class="al-count">${[live.length ? `${live.length} active` : "", shelf.length ? `${shelf.length} shelved` : ""].filter(Boolean).join(" · ")}</span></div>
     <div class="al-meter ${flood ? "flood" : ""}">${flood ? "Alarm flood: " : ""}alarms in the last 10 min: ${n}${flood ? ". Showing root causes only." : ""}</div>
-    ${derived ? `<div class="al-note">No alerts feed from the backend. Derived from the forecast; ack and shelve stay on this screen.</div>` : ""}
-    ${down ? `<div class="al-note warn">Live feed lost. These may be out of date.</div>` : ""}
+    ${derived ? `<div class="al-note">From the forecast (no alerts feed). Ack and shelve stay on this screen.</div>` : ""}
+    ${down ? `<div class="al-note warn">Live feed lost. These may be out of date.</div>` : loadedOnce && loadError ? `<div class="al-note warn">Alarm list not refreshed (${esc(loadError)}). These may be out of date.</div>` : ""}
     ${formMsg ? `<div class="al-note warn" role="alert">${esc(formMsg)}</div>` : ""}
     <ol class="al-list">${rows}${empty}</ol>
     ${shelf.length ? `<div class="kicker al-shelf-k">Shelved ${shelf.length}</div><ol class="al-list">${shelf.map((g) => row(g.root, buttons(g.root))).join("")}</ol>` : ""}`;
@@ -399,6 +420,7 @@ export function mountAlarms(el, h) {
       if (derived) { load(); return; }  // the backend has alerts after all
       const was = all.get(a.id);
       put(a, !was);
+      touched.set(a.id, loadSeq);
       if (msg.event === "unshelved" && was && isShelved(was)) hooks.log(`${hooks.nice(a.asset_id)} is back from the shelf: ${a.message}`);
       if (msg.event === "resolved" && openRow === a.id) openRow = null;
       changed();
@@ -419,6 +441,8 @@ const api = {
   recent,
   flood: () => recent() > FLOOD,
   derived: () => derived,
+  // For the handoff: never "None" when the list never loaded.
+  loadState: () => ({ loadedOnce, error: loadError }),
   minutesLeft,
   shelfLeft,
   on: (fn) => { subs.add(fn); return () => subs.delete(fn); },

@@ -111,6 +111,11 @@ With a backend, `src/live.js` reads `GET /api/live/state` and keeps one `/ws` so
 - **A stale sensor is UNKNOWN, never OK**, and never a stale alarm passed off as current. It shows hatched in the panel, dimmed in 3D with a slow gray lamp, and says "No reading for N min. Last known: ALARM at 71.2%." A tank with no reading gets "Can't vouch for Tank N" under the tank levels, because its forecast starts from an old value.
 - The connector badge under the clock lists each connector (sim, mqtt, modbus, opcua, webhook) and marks any that are unavailable. It reads `connectors` from `/api/live/state`, then from `/api/health`. If neither has it, it shows `sim`.
 - If the socket is down for 4 s, the badge turns into **Live feed lost, m:ss ago**, and every OK value becomes UNKNOWN until the feed is back. REST polling runs every 3 s while the socket is down, and the socket reconnects with backoff.
+- **Watchdog (every 2 s):** the console sends `{"type":"ping"}` and the backend answers `pong`.
+  - A socket that has ticked or answered a ping, then goes 6 s with nothing at all, is half-open (a Wi-Fi drop with no close event). The feed is lost, and the socket is replaced at once instead of waiting up to a minute for `onclose`.
+  - Pongs but no state for 6 s, while the sim isn't paused, means the server stopped sending state to this screen, so alerts and runs stopped too. The socket is replaced, and the feed is marked lost only if the new one isn't up within 4 s.
+  - A paused sim (`POST /api/live/sim {"paused": true}`) is not a lost feed, and its readings don't age while it stands still.
+- **Deadlines that passed say so.** When the shift clock is past the Last Call, the point of no return, the shutdown time or a plan's "Start by", the console says that time passed and which readings the forecast was made from. It never presents that time as still ahead.
 - A backend without `/api/live/state` (404) leaves the console as it was.
 
 ## Phone view (#55)
@@ -185,3 +190,82 @@ After the field loads, the console measures its own frame rate. Under 45 fps it 
   - The shutdown line, with the crossing time marked.
   - A what-if moves only the dashed part. Hover any minute to read its level.
 - **Handoff** has six fixed sections: open alarms, shelved alarms, blind sensors, the approved plan, the next deadline, and the what-ifs tried. Tank levels and the full log come after. `window.__freeboard.handoff()` returns the text.
+
+## Storm check (real weather, `src/weather.js`)
+
+The cheapest fix usually sends people out to the tank battery at night: truck drivers to the loadout, and the rover to a manual valve. The Plans card reads the real NWS forecast for the site (`api.weather.gov`, which needs no key, runs in the browser, and caches for 10 min). It checks thunder odds, wind gusts, visibility, and active warnings for the next 4 hours.
+
+- **What each plan shows:** who it sends out ("Sends 3 out: rover at the valve (Valve XO 34), truck driver (Truck 1), …") or "Remote only: nobody goes out". Remote valves (`manual: false`), chokes and pumps count as remote.
+- **When it flags a hazard:**
+  - lightning: a thunderstorm or tornado alert, or thunder odds of 25% or more;
+  - visibility: a dust or fog alert, or under 1 mi;
+  - wind: a wind alert, or gusts of 46 mph or more;
+  - flooding: any flood alert.
+- **When a hazard is flagged:**
+  - Plans that send people out are marked, and their approve button says how many go out.
+  - The card names the cheapest plan that keeps everyone inside. If no listed plan does, it finds one against the live forecast by choking or shutting in the threatened tank's wells from the console, with the most water per dollar of lost oil first. It shows the cost next to doing nothing. "Try it" applies it as a what-if.
+  - The shift log and the handoff record the hazard.
+- **Why it matters:**
+  - Lightning ignites saltwater tanks, and losing one tank can take out the battery.
+  - OSHA/NOAA guidance (OSHA 3863) is to stop outdoor work until 30 min after the last thunder.
+  - NWS Midland tells drivers in blowing dust to pull off and park.
+- **When it can't check:** offline, or with no answer from NWS, it says "Weather not checked. Look outside before sending anyone." It never says clear.
+- **Rehearsal:** `?wx=storm` runs a labeled DRILL, a made-up Severe Thunderstorm Warning.
+
+## Seismic check (real quakes, `src/seismic.js`)
+
+Every plan ends at a saltwater disposal well. In the Permian, the Texas Railroad Commission responds to induced-earthquake clusters area by area. In the Northern Culberson-Reeves Seismic Response Area it suspended every deep disposal permit (23 wells), effective January 12, 2024. A cluster near the lease is a reason to confirm the SWDs can take water before a plan leans on them.
+
+- **Source:** the USGS event service (no key; it runs in the browser and carries the TexNet catalog). It reads M2+ quakes within 31 mi over the last 30 days, cached for 30 min.
+- **Quiet line:** for example "none within 10 mi; 60 M2+ within 31 mi, last 30 days". Hover for the largest and the nearest.
+- **Flag:** an M3.0+ quake within 10 mi gives "M3.2 4 mi away, 2 days ago. Confirm SWD 1, SWD 2 can take water." It is logged once and goes into the handoff. It is planning context, not an alarm: it never pages anyone and never says the well caused the quake.
+- **When it can't check:** it says "not checked", never "no risk".
+- **Rehearsal:** `?quake=drill` adds a labeled made-up M3.4 nearby.
+
+## Plan runs (#75, `src/runs.js`)
+
+With a backend that has `/api/runs`, Hold to approve starts a plan run (`POST /api/plans/{id}/execute`) instead of the static walk. Every step is a proposal that waits for a person.
+
+- **The run card shows:**
+  - each step's status: waiting, needs you, sending, checking, done, not seen, uncertain, rejected or failed;
+  - when each step is released;
+  - Reject and Hold to confirm on each step that is waiting for you.
+- **A stale plan (409):**
+  - The card says why and offers the backend's current plan, which takes one more hold.
+  - If the re-scored plan has the same commands with new times, it starts right away, because that is what you held to approve.
+- **A paused run** (an effect not seen, a step rejected or failed): the card shows the reason and Jarvis's re-plan, with Hold to run it.
+- **Controls:** Pause, Resume and Hold to cancel run.
+- **Updates:** from `/ws` `run` and `proposal` events, plus a 10 s re-read while a run is active.
+- **Elsewhere:** the approved plan's card, the shift log and the handoff follow the run's step statuses.
+- **Lone-worker check-in:**
+  - When a step that sends the rover to a manual valve is confirmed, the run card shows "People out" with a check-in time 20 field minutes ahead, plus Checked in and Back in.
+  - A missed check-in turns red and is logged once. The handoff lists everyone still out.
+  - Why: NIOSH/OSHA counted 9 deaths at production tanks in 2010–2015, and all were workers alone (OSHA 3843).
+
+## Frozen-gauge check (`frozen()` in `src/trend.js`)
+
+A working level gauge jitters; the simulator's move about ±0.1 point per reading. A gauge that reads exactly the same value for 10 live minutes may be stuck. At Buncefield (2005) the tank gauge flatlined while the tank kept filling, and it overflowed hours later on the night shift.
+
+- **What changes:** the console stops vouching for that tank. Its row says "stuck?", the tank list says "Can't vouch for Tank 4: its gauge has read exactly 55.34% for 14 min…", and the tank counts as blind in the what-if verdicts. The shift log gets one line and the handoff lists it.
+- **What it isn't:** proof of a fault. It is a reason to check the level in person.
+- **Rehearsal:** `?gauge=freeze:TANK_4` pins that tank's level after the first reading. It is a labeled DRILL.
+
+## Refused requests (`src/security.js`, #126 security log)
+
+Every command to equipment needs the operator token. When the backend serves `GET /api/security/events` (and pushes `/ws` `security` messages), the console shows a "Refused requests" card for the last hour: wrong or missing tokens, writes from a page on another site, a token without that right, PIN lockouts, refused uploads, and refused `/ws` tokens.
+
+- **Burst:** 3 or more refused writes in 10 minutes (deduped events add their counts) turns the card amber and writes one shift-log line. It never pages and never blocks anything. Nothing was sent by any of these requests, and the card says so.
+- **Privacy:** the server masks client addresses and never records tokens, PINs or query strings. The console only shows what the server returns.
+- **Handoff:** section 7 lists counts by kind and the latest refused write. A backend without the log says "Not on this backend". A failed read says "Not checked", never "none".
+
+## Dataset console (`/dataset`, EOG sponsor data)
+
+`web/dataset.html` runs the sponsor's "Beat the Shutdown" data: any folder holding `network.json`, `ops.json` and `telemetry.csv` (the history folders, the mock test, and `test/` at judging). "Now" is the last telemetry timestamp, never the system clock.
+
+- **Run it:** `EOG_DIR=/path/to/HackUTD-ZeroDay npm run dev`, then open `/dataset`. The dev server serves only those three files under `/eog/` (never `answer_key.json`), and `?folder=history/snapshot_2026-10-08T1200` picks a folder. `FREEBOARD_EOG_DIR` (the backend's name) works too.
+- **Alerts** come from the backend's dataset mode, in SPEC order: pump failures by `hours_to_limit`, ties to the higher lost revenue per hour, then leaks and worn pumps. Without a backend the page says **Not checked** (never an empty all-clear) and lists only pumps whose own status reads 2 (fault), each with its countdown and a cheapest plan.
+- **Plans** (`src/dataset/plan.js`): `replay()` runs a plan minute by minute under the SPEC rules (trucks arrive together, every trip before the repair ends, a load capped at what the tank holds, shut-ins until the repair) and prices it next to doing nothing. `cheapestJoint()` searches trucks, trips and late shut-ins per tank and splits a system's fleet across its tanks. It reproduces the README's EVENT_9 numbers ($905, $1,958, $5,016) and the three snapshot answer keys' plans. When the backend sends a plan, the card replays it and says if the replay disagrees or a cheaper plan exists.
+- **What-if:** change trucks, trips and which wells shut in when, and watch the tank line against the 85% and 92% limits. "What if this pump failed now?" works on any facility for practice.
+- **Time travel:** the slider replays any earlier moment as now, and `?at=<unix>` links to it.
+- **Trends:** click a facility for tank level, water in and out (pump flow next to the flow arriving at disposal shows a leak), pressures, and pump state on one shared crosshair.
+- **Handoff** and **events.json** buttons: the handoff never reads as all clear unless detection ran.

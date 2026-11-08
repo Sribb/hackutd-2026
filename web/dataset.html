@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#050505">
+  <title>Gaia Datasets</title>
+</head>
+<body>
+  <div id="ds">
+    <header class="ds-head">
+      <div class="ds-brand">
+        <a href="/" class="ds-back" title="Back to the field console">GAIA</a>
+        <span class="kicker">Beat the Shutdown · dataset console</span>
+      </div>
+      <label class="ds-folder">
+        <span class="kicker">Dataset</span>
+        <select id="dsFolder" aria-label="Dataset folder"></select>
+      </label>
+      <div class="ds-now">
+        <span class="kicker" id="dsNowKicker">Now (dataset time)</span>
+        <b id="dsNow">—</b>
+      </div>
+      <div class="ds-actions">
+        <button id="dsHandoff" type="button">Shift handoff</button>
+        <button id="dsExport" type="button">events.json</button>
+      </div>
+    </header>
+
+    <section class="ds-travel" aria-label="Time travel">
+      <input id="dsAt" type="range" min="0" max="1" step="300" value="1" aria-label="Replay the dataset as if this moment were now">
+      <div class="ds-travel-row">
+        <span id="dsAtLabel"></span>
+        <button id="dsLatest" type="button" hidden>Back to latest</button>
+      </div>
+    </section>
+
+    <div id="dsStatus" class="ds-status" role="status" aria-live="polite">Loading…</div>
+
+    <main class="ds-body">
+      <section class="ds-alerts card" aria-label="Alerts">
+        <div class="ds-sec-head"><span class="kicker">Alerts in progress</span><span id="dsAlertCount" class="ds-count"></span></div>
+        <div id="dsAlerts"></div>
+        <details id="dsResolvedWrap" class="ds-resolved" hidden>
+          <summary id="dsResolvedSum">Resolved earlier</summary>
+          <div id="dsResolved"></div>
+        </details>
+      </section>
+
+      <section class="ds-map card" aria-label="Network">
+        <div class="ds-sec-head"><span class="kicker">Network</span><span id="dsMapNote" class="ds-count"></span>
+          <div class="ds-win" id="dsView" role="group" aria-label="Map or 3D"><button type="button" data-v="map" class="on">Map</button><button type="button" data-v="3d">3D</button></div></div>
+        <div id="dsMap" class="ds-systems"></div>
+        <div id="ds3d" class="ds-3d" hidden>
+          <div id="ds3dTabs" class="ds-win ds-3d-tabs" role="group" aria-label="System"></div>
+          <div id="ds3dHost" class="ds-3d-host"></div>
+          <p class="ds-hint">The generated field when the backend serves one, otherwise built from network.json. Tanks fill to the reading at the moment on screen, with amber and red rings at the warning and shutdown limits. Drag to orbit, click an asset to open it.</p>
+        </div>
+      </section>
+
+      <section class="ds-detail card" aria-label="Detail">
+        <div id="dsDetail"><p class="ds-hint">Pick a facility on the map, or an alert, to see its readings and plan.</p></div>
+      </section>
+    </main>
+
+    <footer id="dsFoot" class="ds-foot"></footer>
+  </div>
+
+  <dialog id="dsDialog" class="ds-dialog">
+    <form method="dialog">
+      <div class="ds-sec-head"><span class="kicker" id="dsDialogTitle">Shift handoff</span></div>
+      <pre id="dsDialogBody"></pre>
+      <menu>
+        <button id="dsCopy" type="button">Copy</button>
+        <button value="close">Close</button>
+      </menu>
+    </form>
+  </dialog>
+  <script type="module" src="/src/dataset/main.js"></script>
+</body>
+</html>

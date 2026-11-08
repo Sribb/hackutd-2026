@@ -71,7 +71,7 @@ const mint = () => crypto.randomBytes(18).toString("base64url");
 const OP = process.env.FREEBOARD_TOKEN || mint();
 const PH = process.env.FREEBOARD_PHONE_TOKEN || mint();
 const base = `http://${host}:${WEB_PORT}`;
-console.log("\nFREEBOARD demo\n");
+console.log("\nGAIA demo\n");
 let backend = true;
 let ownTokens = true;
 if (await up(`${api}/api/health`, 300)) {
@@ -101,7 +101,9 @@ if (!(await up(`http://127.0.0.1:${WEB_PORT}/`, 30000))) {
 }
 
 const frag = ownTokens ? `#k=${OP}&p=${PH}` : "";
-const consoleUrl = `${base}/${frag}`;
+// ?fresh: each demo run starts a new shift log and crew list (a rehearsal's entries stay out).
+// The console drops it from the address bar once loaded, so a reload keeps the log.
+const consoleUrl = `${base}/?fresh${frag}`;
 const phoneUrl = `${base}/phone${ownTokens ? `#k=${PH}` : ""}`;
 const qr = LAN ? await QRCode.toString(phoneUrl, { type: "terminal", small: true }) : "";
 console.log(`

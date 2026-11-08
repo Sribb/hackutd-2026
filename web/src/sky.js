@@ -113,7 +113,7 @@ function todayAt(site) {
   catch { const n = new Date(); return { y: n.getFullYear(), mo: n.getMonth() + 1, d: n.getDate() }; }
 }
 const clockText = (min) => {
-  const x = ((Math.round(min) % 1440) + 1440) % 1440, h = Math.floor(x / 60);
+  const x = ((Math.floor(min) % 1440) + 1440) % 1440, h = Math.floor(x / 60); // floor: same minute as the header clock
   return `${h % 12 || 12}:${String(x % 60).padStart(2, "0")} ${h < 12 ? "AM" : "PM"}`;
 };
 function fieldMinutes() {

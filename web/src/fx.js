@@ -117,9 +117,21 @@ export function holdButton(btn, onCommit, ms = 1500) {
   };
   function stop() {
     if (done || !holding) return;
+    const early = btn.isConnected && performance.now() - t0 < ms;
     finish();
     set(0);
     holdEnded();
+    if (early) hint();
+  }
+  // Let go too soon (or just clicked): say so on the button for a moment. Nothing was sent.
+  let hintTimer = 0;
+  function hint() {
+    const label = btn.querySelector("span");
+    if (!label) return;
+    if (!hintTimer) btn.dataset.label = label.textContent;
+    label.textContent = "Keep holding…";
+    clearTimeout(hintTimer);
+    hintTimer = setTimeout(() => { hintTimer = 0; if (btn.dataset.label != null) label.textContent = btn.dataset.label; }, 1200);
   }
   function keyStop(e) { if (e.key === " " || e.key === "Enter") stop(); }
   btn.addEventListener("pointerdown", start);

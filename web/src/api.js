@@ -25,7 +25,7 @@ async function getJson(url, init) {
 // backend doesn't have that endpoint at all (404). A backend that is down, erroring, or
 // refusing (401/403/5xx, no answer) never gets silently replaced by recorded numbers (#104):
 // the call fails, and the screen says so.
-const OFFLINE = new URLSearchParams(location.search).has("offline");
+export const OFFLINE = new URLSearchParams(location.search).has("offline");
 export class BackendDown extends Error {}
 
 function fake(name) {

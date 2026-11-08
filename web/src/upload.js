@@ -59,7 +59,7 @@ function close() {
 function shell(step, body) {
   const steps = ["Drop", "Check", "Build"].map((s, i) => `<span class="${i === step ? "on" : i < step ? "done" : ""}">0${i + 1} ${s}</span>`).join("");
   return `<header class="up-head">
-      <div class="brand">FREEBOARD</div>
+      <div class="brand">GAIA</div>
       <nav class="up-steps">${steps}</nav>
       <span class="up-clock" id="upClock">${st && st.t0 ? "" : "--.-"}</span>
       <button id="upClose">Close</button>

@@ -4,12 +4,16 @@ import "@fontsource/azeret-mono/600.css";
 import * as THREE from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { MeshoptDecoder } from "three/addons/libs/meshopt_decoder.module.js";
+import { DRACOLoader } from "three/addons/loaders/DRACOLoader.js";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
-import { mountSky } from "./sky.js";
+import { mountSky, DEFAULT_SITE } from "./sky.js";
+import { startSeismic, onQuakes, seismicSummary } from "./seismic.js";
+import { startWeather, onWeather, hazards, exposure, remoteOnly, weather, summary as wxSummary } from "./weather.js";
 import * as api from "./api.js";
 import { phoneToken } from "./auth.js";
 import { buildPlaceholder } from "./placeholder.js";
 import { decode, holdButton, isHolding, afterHold } from "./fx.js";
+import { mountIot3d } from "./iot3d.js";
 import * as shiftlog from "./shiftlog.js";
 import { mountUpload } from "./upload.js";
 import { mountHands } from "./hands.js";
@@ -19,7 +23,9 @@ import { mountTwoNights } from "./twonights.js";
 import { mountScenery } from "./scenery.js";
 import { mountInspect } from "./inspect.js";
 import { mountAlarms, alarms } from "./alarms.js";
-import { startTrend, trendHtml, wireTrend } from "./trend.js";
+import { startTrend, trendHtml, wireTrend, frozen } from "./trend.js";
+import { mountRuns, runsSupported, runsOn, execute as executeRun, peopleOut } from "./runs.js";
+import { mountSecurity, securityLines } from "./security.js";
 import "./console/auth.js"; // takes ?token= into auth.js (#104) before anything talks to the backend
 import { mountConsole } from "./console/index.js";
 
@@ -28,7 +34,13 @@ const layout = new URLSearchParams(location.search).get("layout") === "classic" 
 
 const $ = (id) => document.getElementById(id);
 // Meshopt-compressed glb (#112/#117) loads with no extra files; a plain glb is unaffected.
-const gltfLoader = () => new GLTFLoader().setMeshoptDecoder(MeshoptDecoder);
+// Draco (#97, build_field.py --compress): one decoder for every load, fetched from /draco/ only
+// when a model uses it. An uncompressed model never touches it.
+let draco = null;
+const gltfLoader = () => {
+  if (!draco) draco = new DRACOLoader().setDecoderPath("/draco/");
+  return new GLTFLoader().setMeshoptDecoder(MeshoptDecoder).setDRACOLoader(draco);
+};
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
 const usd = (n) => "$" + Math.round(n).toLocaleString("en-US");
 
@@ -59,6 +71,10 @@ moon.position.set(-30, 60, 25);
 moon.castShadow = true;
 moon.shadow.mapSize.set(2048, 2048);
 Object.assign(moon.shadow.camera, { left: -60, right: 60, top: 60, bottom: -60, far: 200 });
+// Shadow acne fix (docs/3D_QUALITY.md, method 1): no cost, removes the rings on pads and
+// the stripes on tank shells. normalBias scales with the shadow box in frame().
+moon.shadow.bias = -0.0005;
+moon.shadow.normalBias = 0.04;
 scene.add(moon);
 
 const ground = new THREE.Mesh(new THREE.PlaneGeometry(400, 400), new THREE.MeshStandardMaterial({ color: 0x15181c, roughness: 1 }));
@@ -137,6 +153,8 @@ function indexModel(root) {
   root.traverse((o) => {
     if (!o.isMesh) return;
     o.castShadow = o.receiveShadow = true;
+    // Small scenery (grass, rocks, fence, terrain) is marked cast_shadow: false (#97): cheaper shadows.
+    for (let n = o; n; n = n.parent) if (n.userData && n.userData.cast_shadow !== undefined) { o.castShadow = n.userData.cast_shadow !== false; break; }
     // Night look: the site itself (ground, roads, pads, scenery) sinks into the dark so
     // the equipment, lamps and status colors carry the scene.
     for (let n = o; n; n = n.parent) {
@@ -167,7 +185,7 @@ function indexModel(root) {
     if (/^(STOP|ROAD)_/.test(o.name)) waypoints.set(o.name, o.getWorldPosition(new THREE.Vector3()));
     if (assets.has(o.name)) assets.get(o.name).root = o;
     // Moving parts from CONTRACT.md "What's in field.glb".
-    const m = o.name.match(/^(PUMP_\d+)_rotor$|^(VALVE_[A-Z0-9_]+?)_wheel$|^(WELL_\d+)_(beam|crank)$/);
+    const m = o.name.match(/^(PUMP_\d+)_rotor$|^(VALVE_[A-Z0-9_]+?)_wheel$|^(WELL_\d+)_(beam|crank|pitman|bridle)$/);
     if (m) movers.push({ node: o, id: m[1] || m[2] || m[3], kind: m[1] ? "rotor" : m[2] ? "wheel" : m[4], rest: o.rotation.clone() });
     const g = o.name.match(/^(TANK_\d+)_gauge$/);
     if (g) movers.push({ node: o, id: g[1], kind: "gauge", rest: o.rotation.clone() });
@@ -175,6 +193,7 @@ function indexModel(root) {
     if (ax) movers.push({ node: o, id: ax[1], kind: "axle", rest: o.rotation.clone() });
   });
   for (const a of assets.values()) if (!a.root) a.root = a.meshes[0] || a.levelMesh;
+  buildJacks();
   for (const a of assets.values()) {
     if (!/^TRUCK_/.test(a.id) || !a.root) continue;
     a.home = { pos: a.root.position.clone(), quat: a.root.quaternion.clone() };
@@ -265,8 +284,58 @@ function placeTrucks(view) {
 // Animated parts: pumps spin while running, pumpjacks rock while producing,
 // a valve's handwheel turns while a what-if changes it.
 const movers = [];
+
+// Pumpjack linkage (CONTRACT.md, #121): with <well>_pitman in the model, the crank drives the
+// beam through the pitman, a four-bar linkage, so the arms stay on the crank pins and the
+// horse head moves the way a real one does (fast down, slow up). Well frame, Blender axes
+// (y along the beam toward the motor, z up), in which three.js rotation.x turns the same way:
+//   beam pivot O (0, 4.1); equalizer E = O + R(beam) (3.55, -0.24);
+//   crank pin P = (2.7 + 0.85 cos c, 1.6 + 0.85 sin c), c = crank rotation.x.
+// The pitman's length is |E - P| at the model's rest pose. Without a pitman node (older
+// models) the beam keeps its plain rocking.
+const JACK = { oy: 0, oz: 4.1, ey: 3.55, ez: -0.24, py: 2.7, pz: 1.6, r: 0.85 };
+const jacks = new Map(); // well id -> { beam, crank, pitman, bridle, L }
+const rot = (y, z, a) => [y * Math.cos(a) - z * Math.sin(a), y * Math.sin(a) + z * Math.cos(a)];
+const equalizer = (a) => { const [y, z] = rot(JACK.ey, JACK.ez, a); return [JACK.oy + y, JACK.oz + z]; };
+const crankPin = (c) => [JACK.py + JACK.r * Math.cos(c), JACK.pz + JACK.r * Math.sin(c)];
+function buildJacks() {
+  jacks.clear();
+  const by = new Map();
+  for (const mv of movers) if (/^(beam|crank|pitman|bridle)$/.test(mv.kind)) by.set(mv.id, { ...(by.get(mv.id) || {}), [mv.kind]: mv.node });
+  for (const [id, j] of by) {
+    if (!j.beam || !j.crank || !j.pitman) continue;
+    const e = equalizer(j.beam.rotation.x), p = crankPin(j.crank.rotation.x);
+    jacks.set(id, { ...j, L: Math.hypot(e[0] - p[0], e[1] - p[1]) });
+    // Real pumpjacks on a lease don't move in step: start each crank at its own angle.
+    const n = Number((id.match(/\d+/) || [0])[0]);
+    j.crank.rotation.x += (n * 2.399) % (2 * Math.PI); // golden angle: spread evenly
+  }
+}
+// The beam angle that puts the equalizer at the pitman's length from the crank pin: the
+// intersection of two circles, the one above the pin (the pitman hangs from the beam).
+function solveBeam(j) {
+  const P = crankPin(j.crank.rotation.x), rE = Math.hypot(JACK.ey, JACK.ez);
+  const dy = P[0] - JACK.oy, dz = P[1] - JACK.oz, d = Math.hypot(dy, dz);
+  const a = (rE * rE - j.L * j.L + d * d) / (2 * d), h2 = rE * rE - a * a;
+  if (!(d > 0) || h2 < 0) return null;
+  const h = Math.sqrt(h2), by = JACK.oy + (a * dy) / d, bz = JACK.oz + (a * dz) / d;
+  const c1 = [by - (h * dz) / d, bz + (h * dy) / d], c2 = [by + (h * dz) / d, bz - (h * dy) / d];
+  const pick = c1[1] >= c2[1] ? c1 : c2;
+  return Math.atan2(pick[1] - JACK.oz, pick[0] - JACK.oy) - Math.atan2(JACK.ez, JACK.ey);
+}
+function animateJack(j) {
+  const b = solveBeam(j);
+  if (b == null) return;
+  j.beam.rotation.x = b;
+  const E = equalizer(b), P = crankPin(j.crank.rotation.x);
+  j.pitman.rotation.x = Math.atan2(P[0] - E[0], -(P[1] - E[1])) - b; // CONTRACT.md: atan2(dy, -dz) - beam
+  if (j.bridle) j.bridle.rotation.x = -b; // hangs plumb over the wellhead
+}
+
 function animateMovers(dt, t) {
   for (const mv of movers) {
+    if (mv.kind === "pitman" || mv.kind === "bridle") continue;
+    if (mv.kind === "beam" && jacks.has(mv.id)) continue; // driven by its crank below
     const s = (lastView[mv.id] || {}).status;
     const running = s !== "ALARM" && s !== "OFFLINE" && s !== "NO_DATA" && s !== "UNKNOWN";
     if (mv.kind === "rotor" && running) mv.node.rotation.x += dt * 12;
@@ -277,6 +346,7 @@ function animateMovers(dt, t) {
     if (mv.kind === "gauge") { const p = (lastView[mv.id] || {}).level_pct; if (p != null) mv.node.position.y = 0.3 + 4.3 * Math.min(1, p / 100); }
     if (mv.kind === "axle" && (lastView[mv.id] || {}).driving) mv.node.rotation.z += dt * 8;
   }
+  for (const j of jacks.values()) animateJack(j);
 }
 
 function boxOf(id) {
@@ -435,7 +505,7 @@ function viewAt(t) {
     }
     for (const [tid, e] of shut) {
       view[tid].status = "ALARM";
-      view[tid].reason = `${e.text}. Its wells are shut in.`;
+      view[tid].reason = `${String(e.text).replace(/\.$/, "")}. Its wells are shut in.`;
       for (const w of field.wells || []) {
         if (w.tank_id === tid && view[w.id]) {
           view[w.id] = { ...view[w.id], status: "OFFLINE", reason: `Shut in when ${nice(tid)} reached shutdown at ${clockAt(e.t_min)}.` };
@@ -469,7 +539,7 @@ async function setActions(next, note = "", quiet = false) {
 function logWhatif(list) {
   if (!list.length) { shiftlog.add("whatif", "Cleared every what-if. Back to the no-action forecast."); return; }
   const ev = shutdownOf(fc);
-  const outcome = ev ? `${nice(ev.asset_id)} still hits shutdown at ${clockAt(ev.t_min)}` : `every tank holds through ${clockAt(360)}`;
+  const outcome = ev ? `${nice(ev.asset_id)} still reaches shutdown at ${clockAt(ev.t_min)}` : `every tank holds through ${clockAt(360)}`;
   shiftlog.add("whatif", `Tried ${list.map(describe).join(" + ")}: ${outcome}${fc.cost ? `, ${usd(fc.cost.total_usd)}` : ""}.`);
 }
 
@@ -487,18 +557,50 @@ function statusTag(s) {
   return `<span class="status ${s}"><i></i>${label}</span>`;
 }
 
+// Minutes the shift clock has moved past the clock the forecast was computed at
+// (data.state.clock). The forecast is re-read every minute with a backend; offline it isn't,
+// so countdowns subtract this to stay in step with the header clock.
+// Unwrapped across midnight and past 12 h: once the clock has run ahead, a later reading
+// picks the whole-day turn closest to the last answer, so a deadline that passed never reads
+// as ahead again. A new forecast clock starts the count over.
+let since = { key: "", d: 0 };
+function minutesSinceData() {
+  const m = /^(\d{1,2}):(\d{2})(?::\d{2})? (AM|PM)$/.exec(shiftlog.clockNow());
+  const key = String(data.state.clock || "00:00");
+  const [h0, m0] = key.split(":").map(Number);
+  if (!m) return 0;
+  const now = ((+m[1] % 12) + (m[3] === "PM" ? 12 : 0)) * 60 + +m[2];
+  const raw = (((now - (h0 * 60 + m0)) % 1440) + 1440) % 1440;
+  let d;
+  if (since.key !== key) d = raw > 720 ? 0 : raw; // a clock behind the data (just re-read): nothing to subtract
+  else d = Math.max(0, raw + 1440 * Math.round((since.d - raw) / 1440));
+  since = { key, d };
+  return d;
+}
+
+// A forecast minute the shift clock has already passed. Deadlines from an old forecast must
+// say they passed, not still read as ahead of the crew.
+const passed = (min) => Number.isFinite(min) && minutesSinceData() > min;
+const sinceRead = () => `forecast made from the ${clockAt(0)} readings`;
+// Where a fresh plan comes from: approving re-scores on the live state when the backend runs plans.
+const rescore = () => { const r = runsOn(); return r === true ? "Holding to approve re-scores a plan on the live state first." : r === false ? "Ask Jarvis for a plan from the live state." : ""; };
+
 function renderIncident() {
   const inc = data.state.incident;
   const box = $("incident");
-  if (!inc) { box.hidden = true; return; }
   const ev = shutdownOf(data.baseline);
+  // No incident reported but the forecast has a shutdown: never a silent screen.
+  if (!inc && !ev) { box.hidden = true; return; }
   const wellsAtRisk = ev ? (field.wells || []).filter((w) => w.tank_id === ev.asset_id).length : 0;
   let countdown = "";
   if (ev) {
     const range = ev.t_min_low != null
       ? ` <span class="muted">(${clockAt(ev.t_min_low)} to ${ev.t_min_high == null ? "later" : clockAt(ev.t_min_high)})</span>` : "";
-    countdown = `<div class="countdown" data-decode="countdown">${nice(ev.asset_id)} reaches shutdown at ${clockAt(ev.t_min)}${range}</div>
-      <div class="sub">${Math.round(ev.t_min)} min from now if nobody acts. ${wellsAtRisk} wells go down with it.</div>`;
+    const left = Math.max(0, Math.round(ev.t_min - minutesSinceData()));
+    const late = Math.round(minutesSinceData() - ev.t_min);
+    // data-decode on the headline only: decode() sets textContent, which would flatten the range's styling.
+    countdown = `<div class="countdown"><span data-decode="countdown">${nice(ev.asset_id)} reaches shutdown at ${clockAt(ev.t_min)}</span>${range}</div>
+      <div class="sub">${left > 0 ? `${left} min from now if nobody acts.` : late >= 2 ? `That time passed ${late} min ago (${sinceRead()}). Check the tank in person.` : "Due now if nobody has acted."} ${wellsAtRisk} wells ${late >= 2 ? "depend on it" : "go down with it"}.</div>`;
   }
   const blind = blindTanks();
   if (blind.length) {
@@ -509,14 +611,21 @@ function renderIncident() {
   let last = "";
   if (lc && lc.status === "INCIDENT" && lc.options && lc.options.length) {
     const best = lc.options[0];
-    last = `<div class="lastcall"><b>Last Call:</b> the cheapest plan (${usd(best.cost.total_usd)}) only works if you start by
-      <b>${best.expires_clock}</b>.${lc.point_of_no_return ? ` After ${lc.point_of_no_return.clock}, nothing keeps every well online.` : ""}</div>`;
+    const hot = best.robust === false && !best.expires_clock_hot ? " It already falls short if inflow runs 15% high." : "";
+    const pnr = lc.point_of_no_return;
+    const pnrText = !pnr ? "" : passed(pnr.t_min)
+      ? ` The forecast said nothing keeps every well online after ${pnr.clock}, and that time has passed.`
+      : ` At the forecast inflow, nothing keeps every well online after ${pnr.clock}.`;
+    last = passed(best.expires_min)
+      ? `<div class="lastcall"><b>Last Call passed at ${best.expires_clock}:</b> the cheapest plan (${usd(best.cost.total_usd)}) no longer works as planned (${sinceRead()}).${rescore() ? ` ${rescore()}` : ""}${pnrText}</div>`
+      : `<div class="lastcall"><b>Last Call:</b> the cheapest plan (${usd(best.cost.total_usd)}) only works if you start by
+      <b>${best.expires_clock}</b>.${hot}${pnrText}</div>`;
   }
   box.hidden = false;
   box.innerHTML = `<div class="kicker">Incident</div>
-    <div class="head">${statusTag("ALARM")} <span>${esc(inc.summary)}</span></div>${countdown}${last}`;
+    <div class="head">${statusTag(inc ? "ALARM" : "WARNING")} <span>${inc ? esc(inc.summary) : `No incident reported, but the forecast has ${esc(nice(ev.asset_id))} reaching shutdown.`}</span></div>${countdown}${last}`;
   box.querySelector(".head").style.cursor = "pointer";
-  box.querySelector(".head").onclick = () => select(inc.root_asset_id, true);
+  box.querySelector(".head").onclick = () => select(inc ? inc.root_asset_id : ev.asset_id, true);
   decode(box);
 }
 
@@ -582,11 +691,31 @@ function renderSelected(view) {
   decode(box);
 }
 
-// Tanks with no level reading right now. The console never vouches for them.
+// No fresh reading: NO_DATA, UNKNOWN, or a stale reading kept in ALARM (an alarm is never
+// hidden by a lost signal, but the number under it is still old).
+const isBlind = (v) => !!v && (v.status === "NO_DATA" || v.status === "UNKNOWN" || v.stale === true);
+
+// Tanks whose gauge reads exactly the same value for 10+ live minutes (trend.js frozen()).
+const frozenLogged = new Set();
+function frozenTanks() {
+  return (field.tanks || []).map((t) => t.id).filter((id) => {
+    const f = frozen(id);
+    if (f && !frozenLogged.has(id)) {
+      frozenLogged.add(id);
+      shiftlog.add("alarm", `${liveFeed.gaugeDrill() === id ? "DRILL · " : ""}${nice(id)} gauge has read exactly ${f.v.toFixed(2)}% for ${f.minutes} min. A working gauge jitters; this one may be stuck. Check the level in person.`);
+      setTimeout(renderLog, 0);
+    }
+    if (!f) frozenLogged.delete(id);
+    return !!f;
+  });
+}
+
+// Tanks with no level reading right now, or a gauge that may be stuck. The console never vouches for them.
 function blindTanks() {
+  const frozenNow = frozenTanks();
   return (field.tanks || []).map((t) => t.id).filter((id) => {
     const s = (data.state.assets || {})[id], v = lastView[id];
-    return !s || s.level_pct == null || (v && (v.status === "NO_DATA" || v.status === "UNKNOWN"));
+    return !s || s.level_pct == null || isBlind(v) || frozenNow.includes(id);
   });
 }
 
@@ -601,6 +730,13 @@ function noShutdownText(blind) {
   return `Every tank with a reading stays below shutdown through ${until}. No reading for ${names}, so the console can't vouch for ${blind.length === 1 ? "that tank" : "those tanks"}. Check in person.`;
 }
 
+// The plan on the list with exactly these commands (timing aside), if any.
+function planFor(acts) {
+  const k = (xs) => xs.map(api.actionKey).sort().join("|");
+  const want = k(acts || []);
+  return want ? ((data.plans && data.plans.plans) || []).find((p) => k(p.actions || []) === want) || null : null;
+}
+
 function renderWhatif() {
   const box = $("whatif");
   if (!actions.length && !whatifNote) { box.hidden = true; return; }
@@ -611,7 +747,16 @@ function renderWhatif() {
   if (!actions.length) verdict = "";
   else if (!now) {
     const blind = blindTanks();
-    verdict = `<div class="verdict ${blind.length ? "warn" : "good"}" data-decode="verdict">${noShutdownText(blind)}</div>`;
+    // A plan the planner calls fragile holds only at the forecast inflow: never plain green.
+    // Only a plan the planner checked at +15% inflow gets plain green. Fragile: amber, and says so.
+    // Not checked (a hand-made what-if): says it holds at the forecast inflow.
+    const robust = (planFor(actions) || {}).robust;
+    // Every tank blind: the console vouches for nothing, so no inflow clause either.
+    const allBlind = blind.length && blind.length === (field.tanks || []).length;
+    const [first, ...rest] = noShutdownText(blind).split(/(?<=\.) /);
+    const clause = allBlind || robust === true ? "" : robust === false ? " Not if inflow runs 15% high." : " Not checked at +15% inflow.";
+    const text = allBlind ? noShutdownText(blind) : `${robust === true ? first : first.replace(/\.$/, " at the forecast inflow.")}${clause}${rest.length ? ` ${rest.join(" ")}` : ""}`;
+    verdict = `<div class="verdict ${blind.length || robust === false ? "warn" : "good"}" data-decode="verdict">${text}</div>`;
   }
   else {
     const gained = base ? Math.round(now.t_min - base.t_min) : 0;
@@ -633,22 +778,105 @@ function renderWhatif() {
   if (clear) clear.onclick = () => setActions([]);
 }
 
+// Last Call's deadline for a plan: the option with the same commands (type and asset) and
+// the same cost. Plans from /api/plans don't carry expires_clock themselves.
+function deadlineFor(p) {
+  if (p.expires_clock) return { clock: p.expires_clock, hot: p.expires_clock_hot, min: p.expires_min };
+  const k = (xs) => xs.map((a) => `${a.type}:${a.asset_id}`).sort().join("|");
+  const want = k(p.actions || []);
+  const o = ((data.lc && data.lc.options) || []).find((x) => x.expires_clock && x.cost && p.cost
+    && Math.round(x.cost.total_usd) === Math.round(p.cost.total_usd) && k(x.steps || []) === want);
+  return o ? { clock: o.expires_clock, hot: o.expires_clock_hot, min: o.expires_min } : null;
+}
+const firstSentence = (t) => { const m = /^(.+?\.)(\s|$)/.exec(String(t || "")); return m ? m[1] : String(t || ""); };
+let allPlans = false; // the plan list shows the cheapest and the cheapest robust until asked
+
 function renderPlans() {
+  // Never swap a Hold to approve button out from under a finger (storm search, weather).
+  if (isHolding()) { afterHold(renderPlans); return; }
   const box = $("plans");
   const list = (data.plans && data.plans.plans) || [];
   if (!list.length) { box.hidden = true; return; }
   box.hidden = false;
-  box.innerHTML = `<div class="kicker">Cheapest plans</div>` + list.map((p, i) => {
-    const stamp = p.expires_clock ? `Start by ${p.expires_clock}${p.robust === false ? " · fails if inflow runs 15% hot" : ""}` : "";
+  // Storm check (weather.js): who each plan sends outside, weighed against the real weather.
+  const hz = hazards();
+  const safe = hz.length ? remoteOnly(list, field) : null;
+  // Nothing flagged: one line, details on hover. A hazard (or weather not checked) gets the full block.
+  const quiet = !hz.length && weather().status === "ok" && !/not checked|last checked/.test(wxSummary());
+  const wx = quiet ? `<div class="wx quiet" title="${esc(wxSummary())}"><span class="wx-k">Storm check</span> ${weather().drill ? "DRILL · " : ""}no NWS flags, 4 h</div>`
+    : `<div class="wx ${hz.length ? "hot" : ""}" title="${esc(hz.map((h) => h.why).join(" "))}"><span class="wx-k">Storm check</span> ${esc(wxSummary())}
+    ${hz.length ? `<div class="wx-pick">${safe ? `Keeps everyone inside: plan ${safe.i + 1} (${usd(safe.p.cost.total_usd)}), remote only.`
+      : storm && storm.plan ? `Keeps everyone inside: ${esc(storm.plan.summary)} ${usd(storm.plan.cost.total_usd)}, checked with the forecast${data.baseline && data.baseline.cost ? ` (doing nothing: ${usd(data.baseline.cost.total_usd)})` : ""}. <button class="link" data-storm>Try it</button>`
+      : storm && storm.busy ? "Looking for a plan that keeps everyone inside…"
+      : storm && storm.none ? `No remote-only fix keeps every tank below shutdown (${esc(storm.none)}). Weigh the shutdown against sending people out.`
+      : "No plan on the list keeps everyone inside. Weigh the shutdown against sending people out."}</div>` : ""}</div>`;
+  // Short list: the cheapest, the cheapest that holds at +15% inflow, and the remote-only
+  // plan when the weather calls for it. The rest behind one link.
+  const robustI = list.findIndex((p) => p.robust === true && p.keeps_running !== false);
+  const show = new Set([0, robustI, safe ? safe.i : -1, approved ? list.findIndex((p) => p.id === approved.plan.id) : -1].filter((i) => i >= 0));
+  const hidden = allPlans ? 0 : list.length - show.size;
+  // Seismic check (seismic.js): quakes near the lease, for disposal capacity. Context, not an alarm.
+  const sq = seismicSummary(undefined, (field.disposal_wells || []).map((d) => nice(d.id)));
+  const quake = `<div class="wx ${sq.flag ? "hot" : "quiet"}" title="${esc(sq.detail)}"><span class="wx-k">Seismic check</span> ${esc(sq.line)}${sq.flag ? `<div class="wx-pick">${esc(sq.detail)}</div>` : ""}</div>`;
+  box.innerHTML = `<div class="kicker">Cheapest plans</div>${wx}${quake}` + list.map((p, i) => {
+    if (!allPlans && !show.has(i)) return "";
+    const dl = deadlineFor(p);
+    const hold = p.robust === true ? "Holds even if inflow runs 15% high" : p.robust === false ? "Holds at the forecast inflow, not at +15%" : "";
+    const stamp = [dl ? (passed(dl.min) ? `Start-by time ${dl.clock} has passed${runsOn() === true ? ": approving re-scores it first" : ""}` : `Start by ${dl.clock}`) : "", hold].filter(Boolean).join(" · ");
+    // An approved plan whose run was cancelled or failed can be approved again.
+    const mine = approved && approved.plan.id === p.id && !approved.ended;
+    const endedHere = approved && approved.plan.id === p.id && approved.ended;
+    const out = exposure(p, field);
+    const roles = {};
+    out.forEach((o) => { roles[o.who] = (roles[o.who] || 0) + 1; });
+    const who = out.length ? `${out.length} go${out.length === 1 ? "es" : ""} out: ${Object.entries(roles).map(([w, n]) => (n > 1 ? `${n} ${w.replace("truck driver", "truck drivers").replace("rover at the valve", "rovers")}` : w.replace(" at the valve", ""))).join(", ")}` : "Remote only: nobody goes out";
+    const risky = hz.length && out.length;
     return `<div class="plan">
-      <div class="plan-top"><span class="rank">${i + 1}</span><span class="sum">${esc(p.summary)}</span><b>${usd(p.cost.total_usd)}</b></div>
+      <div class="plan-top"><span class="rank">${i + 1}</span><span class="sum" title="${esc(p.summary)}">${esc(firstSentence(p.summary))}</span><b>${usd(p.cost.total_usd)}</b></div>
       ${stamp ? `<div class="stamp ${p.robust === false ? "fragile" : ""}">${stamp}</div>` : ""}
       ${p.keeps_running === false ? `<div class="stamp fragile">Can't save: ${(p.cannot_save || []).map(nice).join(", ")}</div>` : ""}
-      <div class="plan-btns"><button data-try="${i}">Try it</button><button class="primary hold" data-approve="${i}" title="Press and hold to approve"><i></i><span>Hold to approve</span></button></div>
+      <div class="stamp who ${risky ? "fragile" : hz.length ? "safe" : ""}">${esc(who)}${risky ? ` · in ${esc(hz.map((h) => h.key).join(", "))}` : ""}</div>
+      ${endedHere ? `<div class="stamp fragile">Run ${esc(approved.ended.toLowerCase())} at ${approved.done} of ${approved.steps.length} done</div>` : ""}
+      ${mine ? `<div class="approved-stamp">Approved ${esc(approved.at)} · ${approved.done} of ${approved.steps.length} done</div>`
+        : `<div class="plan-btns"><button data-try="${i}">Try it</button><button class="primary hold" data-approve="${i}" title="Press and hold to approve"><i></i><span>${approved && !approved.ended ? "Hold to approve instead" : risky ? `Hold to approve · ${out.length} out` : "Hold to approve"}</span></button></div>`}
     </div>`;
-  }).join("");
+  }).join("") + (list.length > show.size ? `<button class="link more-plans" data-more>${allPlans ? "Fewer plans ▴" : `${hidden} more plan${hidden === 1 ? "" : "s"} ▸`}</button>` : "");
+  const more = box.querySelector("[data-more]");
+  if (more) more.onclick = () => { allPlans = !allPlans; renderPlans(); };
   box.querySelectorAll("[data-try]").forEach((b) => { b.onclick = () => setActions(list[Number(b.dataset.try)].actions.map((a) => ({ ...a }))); });
+  const sb = box.querySelector("[data-storm]");
+  if (sb) sb.onclick = () => setActions(storm.plan.actions.map((a) => ({ ...a })));
+  if (hz.length && !safe && !storm) findStormPlan();
   box.querySelectorAll("[data-approve]").forEach((b) => holdButton(b, () => startWalk(list[Number(b.dataset.approve)])));
+}
+
+// When the weather makes on-site work risky and no listed plan is remote only, look for one
+// with the real forecast: shut in the threatened tank's wells from the console, the most water
+// per dollar of lost oil first, until no tank reaches shutdown. Only against a live forecast:
+// fake data would make up the answer. A what-if, not an approval: the planner owns approvals.
+let storm = null; // { busy } | { plan } | { none: why }
+async function findStormPlan() {
+  if (storm) return;
+  storm = { busy: true };
+  const done = (x) => { storm = x; renderPlans(); };
+  if (api.sources.forecast !== "live") return done({ none: "needs the live forecast" });
+  const tank = incidentTank();
+  const wells = (field.wells || []).filter((w) => w.tank_id === tank)
+    .sort((a, b) => b.water_bbl_hr / (b.lost_usd_hr || 1) - a.water_bbl_hr / (a.lost_usd_hr || 1));
+  const at = lead("CHOKE_WELL");
+  for (let k = 1; k <= wells.length; k++) {
+    for (const value of [0.5, 0]) {
+      const acts = wells.slice(0, k).map((w) => ({ type: "CHOKE_WELL", asset_id: w.id, value, at_min: at }));
+      let f;
+      try { f = await api.forecast(acts); } catch { return done({ none: "the forecast didn't answer" }); }
+      if (f.unknown) return done({ none: "the forecast didn't answer" });
+      if (!shutdownOf(f)) {
+        const names = andList(wells.slice(0, k).map((w) => nice(w.id)));
+        return done({ plan: { summary: `${value === 0 ? "Shut in" : "Choke to 50%"} ${names} from the console. ${noShutdownText(blindTanks())}`, actions: acts, cost: f.cost || { total_usd: 0 } } });
+      }
+    }
+  }
+  done({ none: `even shutting in every well on ${nice(tank || "the tank")} isn't enough` });
 }
 
 function renderWalk() {
@@ -669,6 +897,17 @@ function renderWalk() {
 
 async function startWalk(plan) {
   await setActions(plan.actions.map((a) => ({ ...a })));
+  // A backend with plan runs (#75) carries the plan out itself: each step becomes a proposal
+  // that waits for a hold-to-confirm in the run panel. The static walk stays for older backends.
+  if (await runsSupported()) {
+    walk = null;
+    const r = await executeRun(plan);
+    // runs.js logged the approval; keep the full plan (actions, cost) for the handoff.
+    if (r && approved && approved.run === r.id && r.plan_id === plan.id) approved.plan = plan;
+    renderAll();
+    $("run").scrollIntoView({ block: "nearest", behavior: "smooth" });
+    return;
+  }
   let res;
   try {
     res = await api.approve(plan.id);
@@ -684,6 +923,7 @@ async function startWalk(plan) {
   if (!walk.steps.length) walk = null;
   else goStep(0);
   renderAll();
+  if (walk) $("walk").scrollIntoView({ block: "nearest", behavior: "smooth" });
 }
 function goStep(i) {
   if (!walk) return;
@@ -711,16 +951,20 @@ function renderTanks(view) {
   $("tanks").innerHTML = (field.tanks || []).map((t) => {
     const s = view[t.id] || { status: "NO_DATA" };
     const pct = s.level_pct;
+    const fz = tMin === 0 && !!frozen(t.id); // gauge may be stuck: never shown as a live number
     return `<div class="tank-row" data-id="${t.id}">
       <span class="name">${nice(t.id)}</span>
       <div class="bar"><div class="fill ${s.status}" style="width:${pct == null ? 0 : Math.min(100, pct)}%"></div>
         <div class="stop" style="left:${t.shutdown_pct}%"></div></div>
-      <span class="pct ${s.status === "UNKNOWN" ? "stale" : ""}">${pct == null ? "no data" : `${s.status === "UNKNOWN" ? "last " : ""}${pct.toFixed(1)}%`}${tMin === 0 && liveFeed.ageText(t.id) ? `<small class="age">${liveFeed.ageText(t.id)}</small>` : ""}</span></div>`;
+      <span class="pct ${isBlind(s) || fz ? "stale" : ""}">${pct == null ? "no data" : `${isBlind(s) ? "last " : ""}${pct.toFixed(1)}%`}${fz ? `<small class="age">stuck?</small>` : tMin === 0 && liveFeed.ageText(t.id) ? `<small class="age">${liveFeed.ageText(t.id)}</small>` : ""}</span></div>`;
   }).join("");
-  const blind = (field.tanks || []).filter((t) => (view[t.id] || {}).status === "UNKNOWN");
-  if (blind.length) {
-    $("tanks").insertAdjacentHTML("beforeend", `<div class="vouch">${blind.map((t) =>
-      `Can't vouch for ${nice(t.id)}: no reading for ${ago(liveFeed.staleMinutes(t.id))}. Its forecast starts from the last value we had.`).join("<br>")}</div>`);
+  const blind = (field.tanks || []).filter((t) => isBlind(view[t.id]) && (view[t.id] || {}).status !== "NO_DATA");
+  const stuck = tMin === 0 ? frozenTanks().filter((id) => !blind.some((t) => t.id === id)) : [];
+  if (blind.length || stuck.length) {
+    $("tanks").insertAdjacentHTML("beforeend", `<div class="vouch">${[
+      ...blind.map((t) => `Can't vouch for ${nice(t.id)}: no reading for ${ago(liveFeed.staleMinutes(t.id))}. Its forecast starts from the last value we had.`),
+      ...stuck.map((id) => { const f = frozen(id); return `${liveFeed.gaugeDrill() === id ? "DRILL · " : ""}Can't vouch for ${nice(id)}: its gauge has read exactly ${f.v.toFixed(2)}% for ${f.minutes} min. A working gauge jitters; this one may be stuck. Check the level in person.`; }),
+    ].join("<br>")}</div>`);
   }
   for (const row of $("tanks").querySelectorAll(".tank-row")) row.onclick = () => select(row.dataset.id, true);
 }
@@ -734,6 +978,13 @@ function renderMarks() {
       marks.push(`<div class="range" style="left:${(100 * e.t_min_low) / max}%;width:${(100 * (hi - e.t_min_low)) / max}%"></div>`);
     }
   }
+  // The two times the operator plans around, as ticks on the slider: Last Call (start the
+  // cheapest plan by then) and the shutdown if nobody acts.
+  const tick = (m, cls, label) => (m != null && m >= 0 && m <= max ? `<i class="tick ${cls}" style="left:${(100 * m) / max}%" title="${esc(label)}"></i>` : "");
+  const lcBest = data.lc && data.lc.status === "INCIDENT" && data.lc.options && data.lc.options[0];
+  if (lcBest && typeof lcBest.expires_min === "number") marks.push(tick(lcBest.expires_min, "lc", `Last Call ${lcBest.expires_clock}: start the cheapest plan by then`));
+  const sd = shutdownOf(data.baseline);
+  if (sd) marks.push(tick(sd.t_min, "sd", `${nice(sd.asset_id)} reaches shutdown at ${clockAt(sd.t_min)} if nobody acts`));
   $("marks").innerHTML = marks.join("");
 }
 
@@ -753,9 +1004,13 @@ function render() {
   const view = viewAt(tMin);
   placeTrucks(view);
   $("clock").textContent = shiftlog.clockNow(true); // the real "now" never moves with the slider
-  $("tankKicker").textContent = tMin === 0 ? "Tank levels" : `Tank levels at ${clockAt(tMin)} (forecast)`;
+  // Slider minute 0 is when the forecast was computed. Once the shift clock has moved on,
+  // calling it "now" would put two different times on screen under the same word.
+  const behind = minutesSinceData();
+  const liveLevels = liveFeed.live.available && !liveFeed.live.lostSince;
+  $("tankKicker").textContent = tMin === 0 ? (liveLevels ? "Tank levels" : `Tank levels · as of ${clockAt(0)}`) : `Tank levels at ${clockAt(tMin)} (forecast)`;
   $("timeClock").textContent = clockAt(tMin);
-  $("timeRel").textContent = tMin === 0 ? "now" : `+${tMin} min`;
+  $("timeRel").textContent = tMin === 0 ? (behind >= 1 ? "forecast start" : "now") : `+${tMin} min`;
   $("timeLabel").textContent = actions.length ? `Forecast with ${actions.length} change${actions.length > 1 ? "s" : ""}` : "Forecast, no action";
   renderSelected(view);
   renderTanks(view);
@@ -806,14 +1061,20 @@ function renderAll() {
 function renderLog() {
   const box = $("log");
   const items = shiftlog.entries();
+  // Keep a half-typed note (and its focus) across redraws: alarms and runs log while you type.
+  const oldIn = $("noteIn");
+  const draft = oldIn ? oldIn.value : "";
+  const typing = oldIn && document.activeElement === oldIn;
   box.innerHTML = `<div class="kicker">Shift log</div>
     <ol class="log">${items.slice().reverse().map((e) => `<li class="${e.kind}"><time>${e.at}</time><span>${esc(e.text)}</span></li>`).join("") || `<li class="empty">Nothing yet. What you try and approve lands here.</li>`}</ol>
     <form id="noteForm" class="note-form"><input id="noteIn" placeholder="Add a note for the next crew" maxlength="240" autocomplete="off"></form>
     <div class="plan-btns"><button id="copyHandoff">Copy handoff</button><button id="saveHandoff">Download .txt</button></div>`;
+  if (draft) $("noteIn").value = draft;
+  if (typing) $("noteIn").focus();
   $("noteForm").onsubmit = (e) => {
     e.preventDefault();
     const v = $("noteIn").value.trim();
-    if (v) { shiftlog.add("note", v); renderLog(); }
+    if (v) { $("noteIn").value = ""; shiftlog.add("note", v); renderLog(); }
   };
   $("copyHandoff").onclick = async () => {
     try { await navigator.clipboard.writeText(handoffText()); $("copyHandoff").textContent = "Copied"; }
@@ -838,9 +1099,14 @@ function handoffText() {
   const inc = data.state.incident;
   const base = shutdownOf(data.baseline);
   const nowView = viewAt(0);
-  L.push("FREEBOARD SHIFT HANDOFF", `Written ${shiftlog.clockNow()} for the next crew.`);
+  L.push("GAIA SHIFT HANDOFF", `Written ${shiftlog.clockNow()} for the next crew.`);
   if (inc) L.push(`Incident: ${inc.summary}`);
-  if (base) L.push(`If nothing changes: ${nice(base.asset_id)} reaches shutdown at ${clockAt(base.t_min)}, and ${(field.wells || []).filter((w) => w.tank_id === base.asset_id).length} wells go down with it.`);
+  if (base) {
+    const wells = (field.wells || []).filter((w) => w.tank_id === base.asset_id).length;
+    L.push(passed(base.t_min)
+      ? `If nothing changed: ${nice(base.asset_id)} was forecast to reach shutdown at ${clockAt(base.t_min)}, taking ${wells} wells with it. That time has passed (${sinceRead()}): check the tank in person.`
+      : `If nothing changes: ${nice(base.asset_id)} reaches shutdown at ${clockAt(base.t_min)}, and ${wells} wells go down with it.`);
+  }
 
   const roots = alarms.roots();
   const open = roots.filter((a) => !a.shelved), shelf = roots.filter((a) => a.shelved);
@@ -848,12 +1114,17 @@ function handoffText() {
   const cons = (a) => {
     const m = alarms.minutesLeft(a);
     return a.consequence_clock && a.consequence_asset_id
-      ? ` ${nice(a.consequence_asset_id)} shuts in at ${a.consequence_clock}${m != null ? (m > 0 ? ` (${m} min)` : " (now)") : ""}.`
+      ? ` ${nice(a.consequence_asset_id)} reaches shutdown at ${a.consequence_clock}${m != null ? (m > 0 ? ` (${m} min)` : " (now)") : ""} if nothing changes.`
       : a.consequence ? ` ${a.consequence}` : "";
   };
 
   head(1, `OPEN ALARMS${src}`);
-  if (!open.length) L.push(blindTanks().length ? "  None, but some tanks have no reading (see 3). Not all clear." : "  None.");
+  const st = alarms.loadState();
+  if (st.error && !st.loadedOnce && !alarms.derived()) L.push(`  Not checked: the alarm list did not load (${st.error}). Not all clear.`);
+  else {
+    if (st.error && !alarms.derived()) L.push(`  As of the last good read (the list is not refreshing: ${st.error}).`);
+    if (!open.length) L.push(blindTanks().length ? "  None, but some tanks have no reading (see 3). Not all clear." : "  None.");
+  }
   for (const a of open) {
     L.push(`  ${a.priority || a.severity}  ${nice(a.asset_id || "")}: ${a.message}${cons(a)}`);
     const tags = [a.related_count ? `+${a.related_count} related` : "", a.acked ? `acked${a.acked_by ? ` by ${a.acked_by}` : ""}` : "NOT ACKED", a.usd_at_risk ? `${usd(a.usd_at_risk)} at risk` : ""].filter(Boolean);
@@ -870,43 +1141,69 @@ function handoffText() {
   }
 
   head(3, "BLIND SENSORS");
-  const blindIds = Object.keys(nowView).filter((id) => nowView[id] && (nowView[id].status === "UNKNOWN" || nowView[id].status === "NO_DATA"));
-  for (const id of blindTanks()) if (!blindIds.includes(id)) blindIds.push(id);
-  if (!blindIds.length) L.push("  None. Every monitored asset has a fresh reading.");
+  const blindIds = Object.keys(nowView).filter((id) => isBlind(nowView[id]));
+  for (const id of frozenTanks()) {
+    if (blindIds.includes(id)) continue;
+    const f = frozen(id);
+    L.push(`  ${nice(id)}: gauge reads exactly ${f.v.toFixed(2)}% for ${f.minutes} min, may be stuck. Check the level in person.`);
+  }
+  const stuckIds = frozenTanks();
+  for (const id of blindTanks()) if (!blindIds.includes(id) && !stuckIds.includes(id)) blindIds.push(id);
+  if (!blindIds.length && !stuckIds.length) L.push("  None. Every monitored asset has a fresh reading.");
   for (const id of blindIds) {
     const age = liveFeed.staleMinutes(id);
-    L.push(`  ${nice(id)}: no fresh reading${age != null ? ` for ${age} min` : ""}. Check it in person; Freeboard can't vouch for it.`);
+    L.push(`  ${nice(id)}: no fresh reading${age != null ? ` for ${age} min` : ""}. Check it in person; Gaia can't vouch for it.`);
   }
 
   head(4, "APPROVED PLAN");
   if (!approved) L.push("  No plan approved yet.");
   else {
-    L.push(`  Approved ${approved.at}: ${approved.plan.summary} (${usd(approved.plan.cost.total_usd)}).`);
-    approved.steps.forEach((s, i) => L.push(`  [${i < approved.done ? "x" : " "}] ${i < approved.done ? "done   " : "pending"}  ${s.text}`));
+    L.push(`  Approved ${approved.at}: ${approved.plan.summary} (${usd(approved.plan.cost.total_usd)}).${approved.ended ? ` The run ended ${approved.ended}${approved.reason ? `: ${approved.reason}` : ""}.` : ""}`);
+    approved.steps.forEach((s, i) => {
+      // Run steps carry their own status (#75); a static walk counts steps walked.
+      const word = s.status ? (s.status === "DONE" ? "done" : s.status.toLowerCase()) : i < approved.done ? "done" : "pending";
+      L.push(`  [${word === "done" ? "x" : " "}] ${word.padEnd(9)}${s.text}${s.status === "MISMATCH" && s.verify ? ` (${s.verify})` : ""}`);
+    });
   }
 
   head(5, "NEXT DEADLINE");
   const lc = data.lc;
-  if (approved) L.push(approved.done >= approved.steps.length ? "  Every step of the approved plan is done." : `  Finish the approved plan: ${approved.steps.length - approved.done} step${approved.steps.length - approved.done === 1 ? "" : "s"} still pending.`);
+  if (approved && approved.ended) L.push(`  The approved plan's run ended ${approved.ended} with ${approved.done} of ${approved.steps.length} steps done. Nothing more from it reaches equipment; choose a plan again.`);
+  else if (approved) L.push(approved.done >= approved.steps.length ? "  Every step of the approved plan is done." : `  Finish the approved plan: ${approved.steps.length - approved.done} step${approved.steps.length - approved.done === 1 ? "" : "s"} still pending.`);
   if (lc && lc.options && lc.options.length) {
-    L.push(`  Last Call: the cheapest plan (${usd(lc.options[0].cost.total_usd)}) only works if started by ${lc.options[0].expires_clock}.`);
-    if (lc.point_of_no_return) L.push(`  After ${lc.point_of_no_return.clock}, nothing keeps every well online.`);
+    const o = lc.options[0], pnr = lc.point_of_no_return;
+    L.push(passed(o.expires_min)
+      ? `  Last Call passed at ${o.expires_clock}: the cheapest plan (${usd(o.cost.total_usd)}) no longer works as planned (${sinceRead()}).${rescore() ? ` ${rescore()}` : ""}`
+      : `  Last Call: the cheapest plan (${usd(o.cost.total_usd)}) only works if started by ${o.expires_clock}.`);
+    if (pnr) L.push(passed(pnr.t_min) ? `  The point of no return (${pnr.clock}) has passed: the forecast had no plan keeping every well online after it.` : `  After ${pnr.clock}, nothing keeps every well online.`);
   } else if (lc && lc.status) L.push(`  Last Call: ${lc.headline || lc.status}.`);
   else L.push("  No Last Call deadline on hand.");
   const now = shutdownOf(fc);
   L.push(`  On screen${actions.length ? ` (with ${actions.map(describe).join(" + ")})` : ""}: ${now ? `${nice(now.asset_id)} reaches shutdown at ${clockAt(now.t_min)}.` : noShutdownText(blindTanks())}`);
+
+  for (const p of peopleOut()) L.push(`  PEOPLE OUT: ${p.who} at ${nice(p.asset)}${p.lastAgo != null ? `, last check-in ${p.lastAgo} min ago` : ""}${p.missed ? " (MISSED CHECK-IN)" : ""}.`);
+  L.push(`  Weather: ${wxSummary()}`);
+  const sq = seismicSummary(undefined, (field.disposal_wells || []).map((d) => nice(d.id)));
+  L.push(`  Seismic: ${sq.line}${sq.flag ? ` ${sq.detail}` : ""}`);
+  if (approved && hazards().length) {
+    const out = exposure(approved.plan, field);
+    if (out.length) L.push(`  The approved plan sends ${out.length} out (${out.map((o) => `${o.who}, ${nice(o.asset_id)}`).join("; ")}) in ${hazards().map((h) => h.text).join(", ")}.`);
+  }
 
   head(6, "WHAT-IFS TRIED");
   const tried = shiftlog.entries().filter((e) => e.kind === "whatif");
   if (!tried.length) L.push("  None.");
   for (const e of tried) L.push(`  ${e.at.padStart(8)}  ${e.text}`);
 
+  head(7, "REFUSED REQUESTS (security log)");
+  L.push(...securityLines());
+
   // Levels as they read right now (live readings win over the boot snapshot), stamped,
   // so the next crew never acts on a number that was stale when it was written (#104).
-  L.push("", `TANK LEVELS as of ${shiftlog.clockNow()}${liveFeed.live.available ? (liveFeed.live.lostSince ? " (live feed LOST: last known values)" : " (live)") : ` (snapshot from ${dataAt})`}`);
+  L.push("", `TANK LEVELS as of ${shiftlog.clockNow()}${liveFeed.live.available ? (liveFeed.live.lostSince ? " (live feed LOST: last known values)" : " (live)") : (dataAt && dataAt !== "boot" ? ` (snapshot from ${dataAt})` : " (snapshot from when the console opened)")}`);
   for (const t of field.tanks || []) {
     const s = nowView[t.id] || {};
-    if (s.status === "UNKNOWN") L.push(`  ${nice(t.id)}: NO FRESH READING${s.level_pct != null ? ` (last ${s.level_pct.toFixed(1)}%)` : ""}. Not safe until checked.`);
+    if (isBlind(s) && s.status !== "NO_DATA") L.push(`  ${nice(t.id)}: NO FRESH READING${s.level_pct != null ? ` (last ${s.level_pct.toFixed(1)}%)` : ""}${s.status === "ALARM" ? ", still in ALARM" : ""}. Not safe until checked.`);
     else L.push(s.level_pct != null ? `  ${nice(t.id)}: ${s.level_pct.toFixed(1)}% (shutdown ${t.shutdown_pct}%)` : `  ${nice(t.id)}: NO READING. Not safe until checked.`);
   }
   L.push("", "FULL SHIFT LOG");
@@ -1006,6 +1303,7 @@ function frame(root) {
   moon.target.position.copy(center);
   scene.add(moon.target);
   moon.shadow.camera.updateProjectionMatrix();
+  moon.shadow.normalBias = 0.04 * Math.max(1, half / 60); // one shadow texel grows with the box
   // Sit under the model's own ground (if it has one) so the two never z-fight.
   const whole = new THREE.Box3().setFromObject(root);
   ground.position.set(center.x, Math.min(box.min.y, whole.min.y) - Math.max(0.05, half * 0.002), center.z);
@@ -1085,7 +1383,7 @@ function mountPager() {
       <div class="pager-qr">${svg}</div>
       <p>Scan with a phone on this Wi-Fi. It buzzes on every alert, and a fix can be confirmed from it with a press and hold.</p>
       <code>${esc(url.split("#")[0])}</code>
-      ${local ? `<p class="note">This address only works on this laptop. Start with <b>npm run demo</b> to get a Wi-Fi address.</p>` : ""}
+      ${local ? `<p class="note">This address only works on this laptop. Start with <b>npm run demo:lan</b> to get a Wi-Fi address.</p>` : ""}
       ${pt ? `<p class="muted">This QR carries a phone token (never shown as text): that phone can confirm, reject and acknowledge, nothing else.</p>`
         : `<p class="muted">No control token: anyone on this network can confirm. Start with npm run demo to get one.</p>`}
       <button>Close</button></div>`;
@@ -1097,7 +1395,25 @@ function mountPager() {
 // ----------------------------------------------------------------- boot ----
 if (api.usingBackend) liveFeed.start(api.BASE); // live.js sends the auth.js token in the first /ws message
 startTrend(api.usingBackend ? api.BASE : "");
-liveFeed.on("state", () => { if (data) { renderFeed(); render(); } });
+// The backend sends state every second, and render() rebuilds the Selected card and the
+// tank list. A rebuild between mousedown and mouseup swallows the click, so while a press is
+// held inside the side panel the redraw waits for the release.
+let pressInSide = false, renderQueued = false;
+addEventListener("pointerdown", (e) => { pressInSide = !!(e.target && e.target.closest && e.target.closest("#side")); }, true);
+const released = () => { pressInSide = false; if (renderQueued) { renderQueued = false; setTimeout(() => { if (data) { renderFeed(); render(); } }, 0); } };
+addEventListener("pointerup", released, true);
+addEventListener("pointercancel", released, true);
+let queuedAt = 0;
+liveFeed.on("state", () => {
+  if (!data) return;
+  // At most 1.5 s: a press with no release (a scrollbar drag, a release outside the window)
+  // must not freeze the levels and the clock.
+  if (pressInSide && (!renderQueued || Date.now() - queuedAt < 1500)) { if (!renderQueued) queuedAt = Date.now(); renderQueued = true; return; }
+  pressInSide = false;
+  renderQueued = false;
+  renderFeed();
+  render();
+});
 
 // #104: the countdown, plans and Last Call were read once at boot and went stale as the
 // night moved. Re-read them every minute, and soon after any alert. A failed read leaves
@@ -1110,6 +1426,7 @@ async function refreshData() {
     try {
       const [state, baseline, lc, plans] = await Promise.all([api.getState(), api.forecast([]), api.lastCall(), api.plans()]);
       Object.assign(data, { state, baseline, lc, plans });
+      if (storm && !storm.busy) storm = null; // the field moved: look again with the new forecast
       if (!actions.length && !document.body.classList.contains("two-nights")) fc = baseline;
       dataAt = shiftlog.clockNow();
     } catch (e) {
@@ -1122,6 +1439,8 @@ async function refreshData() {
   })();
 }
 setInterval(refreshData, 60000);
+// The countdown counts down between forecast reads (and offline, where there are none).
+setInterval(() => { if (data) renderIncident(); }, 30000);
 let alertKick = 0;
 liveFeed.on("alert", () => { clearTimeout(alertKick); alertKick = setTimeout(refreshData, 2000); });
 liveFeed.on("feed", () => { if (data) { renderFeed(); render(); } });
@@ -1134,7 +1453,7 @@ mountTwoNights({
   fc: () => fc,
   plans: () => (data && data.plans && data.plans.plans) || [],
   lastCall: () => (data && data.lc) || null,
-  approved: () => (approved ? approved.plan : null),
+  approved: () => (approved && !approved.ended ? approved.plan : null),
   incident: () => data.state.incident,
   getActions: () => actions.map((a) => ({ ...a })),
   setActions: (list, quiet) => setActions(list, "", quiet),
@@ -1234,18 +1553,22 @@ async function boot() {
   const [baseline, lc, plans] = await Promise.all([api.forecast([]), api.lastCall(), api.plans()]);
   data = { field, state, baseline, lc, plans };
   shiftlog.start(state.clock || "00:00", (state.incident && state.incident.summary) || "");
-  shiftlog.followClock(() => (liveFeed.live.available && !liveFeed.live.lostSince ? liveFeed.live : null));
+  // The live clock, carried on at the last known speed while the feed is lost, so the header
+  // and log stamps never jump back to the page-load clock.
+  shiftlog.followClock(() => liveFeed.clockEstimate());
   let built = null;
   try { built = JSON.parse(sessionStorage.getItem("freeboard.built") || "null"); sessionStorage.removeItem("freeboard.built"); } catch { /* ignore */ }
   if (built) shiftlog.add("open", `Field "${built.name}" built from an uploaded blueprint in ${built.secs} s${built.status === "fallback" ? `, on the standard model (${built.note})` : ""}.`);
-  if (!shiftlog.entries().length) {
+  if (!shiftlog.entries().some((e) => e.kind === "open")) {
     const ev = shutdownOf(baseline);
-    shiftlog.add("open", `Console opened. ${(state.incident && state.incident.summary) || "No incident."}${ev ? ` ${nice(ev.asset_id)} hits shutdown at ${clockAt(ev.t_min)} if nobody acts.` : ""}`);
+    shiftlog.add("open", `Console opened. ${(state.incident && state.incident.summary) || "No incident."}${ev ? (passed(ev.t_min) ? ` ${nice(ev.asset_id)} was forecast to reach shutdown at ${clockAt(ev.t_min)} (${sinceRead()}); that time has passed.` : ` ${nice(ev.asset_id)} reaches shutdown at ${clockAt(ev.t_min)} if nobody acts.`) : ""}`);
   }
+  shiftlog.flushEarly(); // live alerts that came in while the model loaded
   fc = baseline;
   scene.add(model.root);
   sky.attach(model.root); // before indexModel darkens the site, so the sky knows its daytime colors
   indexModel(model.root);
+  mountIot3d({ root: model.root, field, live: liveFeed, base: api.BASE }); // #80: sensor and RTU lights, alert and run highlights
 
   const missing = [...ids].filter((id) => !assets.has(id));
   const notes = [...(baseline.warnings || [])];
@@ -1256,12 +1579,34 @@ async function boot() {
   note.hidden = false;
   note.textContent = model.from === "placeholder" ? "Placeholder geometry until blender/field.glb lands" : `Model: ${model.from}`;
   mountScenery(model.root, note, renderer); // #88 scenery toggle, plus a 45 fps guard (pixels first, then scenery)
+  // Compile every shader behind the loading screen, so the first frames do not stall
+  // (0.4 to 1.6 s measured). Never hold the console longer than 4 s for it.
+  try {
+    await Promise.race([renderer.compileAsync(scene, camera), new Promise((r) => setTimeout(r, 4000))]);
+  } catch (e) { console.warn("compileAsync:", e); }
   $("loading").remove();
   frame(model.root);
   buildFuses();
   inspect.ready(model.root);
   if (ui) ui.ready(model.root);
   renderAll();
+  // Storm check: the real NWS weather at the site, read in the browser (no key, no backend).
+  let hadHazard = false;
+  onWeather(() => {
+    const hz = hazards();
+    if (hz.length && !hadHazard) { shiftlog.add("alarm", `Storm check: ${hz.map((h) => h.text).join(", ")}. Plans that send people out are flagged.`); renderLog(); }
+    hadHazard = hz.length > 0;
+    if (data) renderPlans();
+  });
+  startWeather(field.site || DEFAULT_SITE, { offline: api.OFFLINE });
+  // Seismic check: USGS quakes near the lease, read in the browser. Logged once if flagged.
+  let quakeLogged = false;
+  onQuakes(() => {
+    const sq = seismicSummary(undefined, (field.disposal_wells || []).map((d) => nice(d.id)));
+    if (sq.flag && !quakeLogged) { quakeLogged = true; shiftlog.add("note", `Seismic check: ${sq.line}`); renderLog(); }
+    if (data) renderPlans();
+  });
+  startSeismic(field.site || DEFAULT_SITE, { offline: api.OFFLINE });
   // CF-1 alarm list: all of it lives in alarms.js. These hooks are its only door in.
   mountAlarms($("alarms"), {
     base: api.usingBackend ? api.BASE : "",
@@ -1271,12 +1616,50 @@ async function boot() {
     nice,
     usd,
     clockAt,
-    startClock: () => data.state.clock || "",
+    startClock: () => clockAt(0),
     clockIn: (m) => shiftlog.clockNow(false, m),
     select: (id) => select(id, true),
     log: (text) => { shiftlog.add("alarm", text); renderLog(); },
   });
-  window.__freeboard = { assets, select, viewAt: (t) => viewAt(t), missing, setActions, get actions() { return actions; }, handoff: () => handoffText() };
+  // #126 security log: refused requests (wrong tokens, writes from another site). Its own card.
+  mountSecurity($("security"), api.usingBackend ? api.BASE : "", (text) => { shiftlog.add("alarm", text); renderLog(); }, () => shiftlog.clockNow());
+  // #75 plan runs: the run panel under the plans. It feeds the handoff's approved plan.
+  mountRuns($("run"), {
+    base: api.usingBackend ? api.BASE : "",
+    usd,
+    nice,
+    clockIn: (m) => shiftlog.clockNow(false, m),
+    // Who a step sends out alone: the rover to a manual valve (a remote valve is worked from here).
+    outside: (a) => (a && a.type === "SET_VALVE" && exposure({ actions: [a] }, field).length ? "Rover" : null),
+    select: (id) => select(id, true),
+    log: (text) => { shiftlog.add("step", text); renderLog(); },
+    progress: (r) => {
+      if (!approved || approved.run !== r.id) {
+        // "01:48" from the backend is when the run started; a reload must not restamp it.
+        const st = /^(\d{1,2}):(\d{2})$/.exec(r.start_clock || "");
+        const at = st ? `${(+st[1] % 12) || 12}:${st[2]} ${+st[1] < 12 ? "AM" : "PM"}` : shiftlog.clockNow();
+        if (!approved || approved.run) approved = { plan: { id: r.plan_id, summary: r.summary, cost: { total_usd: r.cost_usd }, actions: r.steps.map((s) => s.action).filter(Boolean) }, steps: r.steps, done: 0, at, run: r.id };
+        else return;
+      }
+      approved.steps = r.steps;
+      approved.done = r.steps.filter((s) => s.status === "DONE").length;
+      approved.ended = r.status === "FAILED" || r.status === "CANCELLED" ? r.status : null;
+      approved.reason = approved.ended ? String(r.reason || "").replace(/\.+$/, "") : "";
+      approved.logged = approved.logged || new Set();
+      let fresh = false;
+      for (const s of r.steps) {
+        if (approved.logged.has(s.n) || !["DONE", "MISMATCH", "FAILED", "REJECTED"].includes(s.status)) continue;
+        approved.logged.add(s.n);
+        shiftlog.add("step", s.status === "DONE" ? `Done: ${s.text}${s.verify ? ` ${s.verify}` : ""}` : `Step ${s.status.toLowerCase()}: ${s.text}${s.verify || s.result ? ` ${s.verify || s.result}` : ""}`);
+        fresh = true;
+      }
+      if (fresh) renderLog();
+      renderPlans(); // the approved plan's card shows how far the run got
+    },
+  });
+  window.__freeboard = { assets, select, viewAt: (t) => viewAt(t), missing, setActions, get actions() { return actions; }, handoff: () => handoffText(),
+    // Pumpjack linkage, for checks: per well, beam angle and how far the pitman's foot is from its crank pin (m).
+    jacks: () => [...jacks].map(([id, j]) => { const E = equalizer(j.beam.rotation.x), P = crankPin(j.crank.rotation.x); return { id, beam: +j.beam.rotation.x.toFixed(3), gap: +Math.abs(Math.hypot(E[0] - P[0], E[1] - P[1]) - j.L).toFixed(4) }; }) };
 }
 
 const clock = new THREE.Clock();
@@ -1305,7 +1688,14 @@ renderer.setAnimationLoop(() => {
   inspect.overlay(t); // outlines on top of the frame
 });
 
-boot().catch((e) => {
+// ?fresh starts a new shift log, crew list and burst line once. Every module has read it by
+// now: drop it from the address bar so a reload mid-shift keeps the log.
+boot().then(() => {
+  try {
+    const u = new URL(location.href);
+    if (u.searchParams.has("fresh")) { u.searchParams.delete("fresh"); history.replaceState(null, "", u.pathname + u.search + u.hash); }
+  } catch { /* leave the address as it is */ }
+}).catch((e) => {
   const l = $("loading");
   console.error(e);
   if (!l) return;
@@ -1313,7 +1703,7 @@ boot().catch((e) => {
     // #104: never fall back to recorded numbers when a backend was asked for and failed.
     l.classList.add("down");
     $("clock").textContent = "--:--"; // no field clock without a backend
-    l.innerHTML = `<b>FREEBOARD</b><span class="down-head">The backend isn't answering</span>
+    l.innerHTML = `<b>GAIA</b><span class="down-head">The backend isn't answering</span>
       <span>${esc(e.message)} at ${esc(api.BASE)}</span>
       <span>Nothing on this screen would be live, so the console shows nothing rather than guess.</span>
       <span class="down-btns"><button type="button" data-retry>Retry</button><a href="?offline">Open the recorded demo instead (clearly marked)</a></span>`;

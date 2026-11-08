@@ -22,8 +22,11 @@ function captureFragment() {
   const keep = [];
   for (const part of h.split("&")) {
     const [k, v = ""] = part.split("=");
-    if (k === "k") store.set(KEY, decodeURIComponent(v));
-    else if (k === "p") store.set(PHONE_KEY, decodeURIComponent(v));
+    // A mangled link (bad %-escape) must not stop the console from loading: drop that part.
+    let val = null;
+    try { val = decodeURIComponent(v); } catch { val = null; }
+    if (k === "k") { if (val) store.set(KEY, val); }
+    else if (k === "p") { if (val) store.set(PHONE_KEY, val); }
     else if (part) keep.push(part);
   }
   history.replaceState(null, "", location.pathname + location.search + (keep.length ? `#${keep.join("&")}` : ""));

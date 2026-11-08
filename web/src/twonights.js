@@ -111,17 +111,17 @@ export function mountTwoNights(h) {
     const L = [], R = [];
     const opening = inc ? `${inc.summary}` : "The night starts.";
     L.push({ t: 0, text: `${clock(0)} ${opening} Nobody hears it.` });
-    R.push({ t: 0, text: `${clock(0)} ${opening} Freeboard flags it and pages the on-call phone.`, good: true });
+    R.push({ t: 0, text: `${clock(0)} ${opening} Gaia flags it and pages the on-call phone.`, good: true });
     for (const e of none.events || []) {
       if (e.type !== "SHUTDOWN_LEVEL") continue;
       const n = (e.wells_lost || []).length;
-      L.push({ t: e.t_min, bad: true, text: `${clock(e.t_min)} ${nice(e.asset_id)} hits shutdown. ${n} well${n === 1 ? "" : "s"} shut in.` });
+      L.push({ t: e.t_min, bad: true, text: `${clock(e.t_min)} ${nice(e.asset_id)} reaches shutdown. ${n} well${n === 1 ? "" : "s"} shut in.` });
     }
     const acts = [...plan.actions].sort((a, b) => a.at_min - b.at_min);
     for (const a of acts) R.push({ t: a.at_min, text: `${clock(a.at_min)} ${h.describe(a)}.` });
     for (const e of withFc.events || []) {
       if (e.type !== "SHUTDOWN_LEVEL") continue;
-      R.push({ t: e.t_min, bad: true, text: `${clock(e.t_min)} ${nice(e.asset_id)} still hits shutdown.` });
+      R.push({ t: e.t_min, bad: true, text: `${clock(e.t_min)} ${nice(e.asset_id)} still reaches shutdown.` });
     }
     // The closest call on the plan side: the tank that comes nearest its shutdown line.
     let close = null;
@@ -289,7 +289,7 @@ export function mountTwoNights(h) {
         <ol class="tn-log">${r.events.L.map(li).join("")}</ol>
       </section>
       <section class="tn-col with">
-        <div class="kicker">With Freeboard</div>
+        <div class="kicker">With Gaia</div>
         <div class="tn-usd">$0</div>
         <div class="tn-wells"></div>
         <ol class="tn-log">${r.events.R.map(li).join("")}</ol>
