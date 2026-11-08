@@ -29,7 +29,12 @@ async def lifespan(_app: FastAPI):
     # Mirror the starting state into SpacetimeDB without blocking startup.
     threading.Thread(target=spacetime_sync.push_state,
                      args=(state_payload(SCENARIO),), daemon=True).start()
+    live = getattr(_app.state, "live", None)  # live layer (#38), mounted at the bottom
+    if live:
+        live.start()
     yield
+    if live:
+        await live.stop()
 
 
 app = FastAPI(title="Freeboard backend", lifespan=lifespan)
@@ -154,3 +159,14 @@ try:
     LASTCALL = "mounted"
 except ImportError:
     LASTCALL = "not installed (lastcall/ is not on this branch yet)"
+
+
+# ---------- Live layer: connectors, alerts, actions, Jarvis, /ws (#38, @vinnycodes67) ----------
+
+try:
+    from .live_api import install as install_live
+
+    LIVE = install_live(app, SCENARIO)
+except ImportError as e:
+    LIVE = None
+    log.warning("Live layer not mounted: %s", e)

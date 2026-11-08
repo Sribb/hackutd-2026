@@ -179,6 +179,7 @@ The backend sends the status. The web console picks the color.
 | `WARNING` | Needs attention soon | Amber |
 | `ALARM` | Failed or at risk now | Red |
 | `OFFLINE` | Stopped or shut in | Dark |
+| `UNKNOWN` | No fresh reading (live layer only). Never treat as safe | Hatched or gray with a "?" |
 
 ## API
 
@@ -292,3 +293,125 @@ Turns a plan into the steps the 3D scene walks through.
   "radio_script": "Field, this is control. Pump 3 is down..."
 }
 ```
+
+## Live layer (#38)
+
+Additive. The endpoints above don't change. The live layer reads signals from **connectors** (the blueprint's optional `connectors` list, see [BLUEPRINT.md](BLUEPRINT.md); with none, the simulator drives every asset), flags problems from the readings, and lets Jarvis and the console **propose** commands that do nothing until a person confirms them.
+
+The live clock starts at the blueprint's `clock_start` and runs at `FREEBOARD_SPEED` live minutes per real second (default 0.25). Scripted `faults` fire at their `at_min`.
+
+### `GET /api/live/state`
+
+```json
+{
+  "clock": "01:52",
+  "t": 8.0,
+  "assets": {
+    "TANK_3": { "status": "ALARM", "level_pct": 72.6, "stale": false, "age_min": 0, "last_reading_t": "2026-11-07T07:12:03+00:00", "reason": null, "observed_bbl_hr": 182.0, "expected_bbl_hr": -40.0 },
+    "TANK_5": { "status": "UNKNOWN", "level_pct": 60.1, "stale": true, "age_min": 6.5, "last_reading_t": "2026-11-07T07:11:01+00:00", "reason": "No level_pct reading from Tank 5 for 7 min. Treat it as unknown, not safe." },
+    "PUMP_3": { "status": "ALARM", "running": false, "flow_bbl_hr": 0, "stale": false, "age_min": 0, "last_reading_t": "...", "reason": "Pump 3 tripped: it reports stopped. Tank 3 is no longer being emptied." },
+    "VALVE_XO_34": { "status": "OK", "position": "CLOSED", "stale": false, "age_min": 0, "last_reading_t": "..." },
+    "WELL_9": { "status": "OK", "flow_bbl_hr": 50, "stale": false, "age_min": 0, "last_reading_t": "..." },
+    "TRUCK_1": { "status": "OK", "phase": "EN_ROUTE", "target_id": "TANK_3", "stale": false, "age_min": null, "last_reading_t": null }
+  },
+  "connectors": [
+    { "id": "CONN_SIM", "kind": "sim", "status": "connected", "detail": "simulating 47 assets" },
+    { "id": "CONN_SCADA", "kind": "mqtt", "status": "unavailable", "detail": "paho-mqtt is not installed (pip install paho-mqtt)" }
+  ],
+  "speed": 0.25,
+  "paused": false
+}
+```
+
+- `status` is `OK`, `WARNING`, `ALARM`, `OFFLINE`, or `UNKNOWN`. A tank with no fresh level reading is `UNKNOWN`, never `OK`.
+- `stale` is true when the asset's readings are older than `sensors.stale_after_min` (default 5). `age_min` is live minutes since its newest reading (null if never). `last_reading_t` is that reading's ISO time (null if never). Trucks have no sensors, so their age is null.
+- Readings per kind: tanks `level_pct`; pumps `running`, `flow_bbl_hr`; valves `position`; wells and disposal wells `flow_bbl_hr`; trucks `phase` (`IDLE`, `QUEUED`, `EN_ROUTE`, `LOADING`, `TO_DISPOSAL`) and `target_id`. A value is null when nothing has been read.
+- `connectors` always starts with the simulator, `CONN_SIM`. Connector `kind` is `sim`, `webhook`, `mqtt`, `modbus`, or `opcua`; `status` is `connected` or `unavailable`.
+
+### Alerts
+
+`GET /api/alerts` → `{"alerts": [alert]}`, oldest first. `POST /api/alerts/{id}/ack` marks one acknowledged (the phone notification button calls it).
+
+```json
+{ "id": "alert_1", "asset_id": "PUMP_3", "kind": "PUMP_TRIP", "severity": "ALARM",
+  "message": "Pump 3 tripped: flow reads 0 bbl/hr, it should be moving 150. Tank 3 is filling.",
+  "t": "2026-11-07T07:12:03+00:00", "clock": "01:48", "active": true }
+```
+
+| `kind` | `severity` | Raised when |
+|---|---|---|
+| `PUMP_TRIP` | `ALARM` | The pump reports `running` false, or its flow is under 10% of its rate while it should run, or its tank rises faster than its wells explain. Confirmed over 2 readings, so it alerts within 3. |
+| `SENSOR_STALE` | `WARNING` | No reading of a signal for `stale_after_min`. |
+| `VALVE_MISMATCH` | `WARNING` | A valve's reported position differs from the position a person confirmed, for 2 readings after a 1 minute grace. |
+
+`t` is when it was raised (ISO). When the condition clears, the same alert is sent again with `"active": false` and `resolved_t`.
+
+### Actions (human-confirmed)
+
+A proposal changes nothing. Only confirm sends it, through the connector that owns the asset (the simulator when none does).
+
+```json
+{ "id": "act_1",
+  "action": { "type": "SET_VALVE", "asset_id": "VALVE_XO_34", "value": "OPEN" },
+  "reason": "Tank 3 reaches shutdown at 2:47 AM; the crossover moves water to Tank 4.",
+  "status": "PENDING", "created_t": "2026-11-07T07:12:10+00:00",
+  "text": "Open the Tank 3 to 4 crossover.", "source": "jarvis", "connector_id": "CONN_SIM" }
+```
+
+- `action.type`: `SET_VALVE` (value `OPEN`/`CLOSED`), `SET_PUMP` (`ON`/`OFF`), `CHOKE_WELL` (0 shut in to 1 untouched), `SEND_TRUCK` (value null, plus `target_id`, a tank).
+- `status`: `PENDING`, then `CONFIRMED`, `REJECTED`, or `FAILED` (the connector refused or was unreachable). After a decision the proposal also has `result` (what the connector said), `decided_t`, and `decided_by`.
+- `GET /api/actions` → `{"proposals": [proposal]}`.
+- `POST /api/actions` with `{type, asset_id, value, target_id?, reason?}` → a PENDING proposal (422 if the action is invalid).
+- `POST /api/actions/{id}/confirm` and `POST /api/actions/{id}/reject` (optional body `{"by": "name"}`) → the updated proposal. 404 for an unknown id, 409 if it isn't PENDING.
+
+### `POST /api/jarvis`
+
+Request: `{"message": "What am I looking at?", "selected_asset_ids": ["PUMP_3"], "image_png_base64": "<optional screenshot of the 3D view>"}`
+
+Response 200:
+
+```json
+{ "reply": "Pump 3 is stopped, moving 0 barrels an hour. Pump 3 tripped: it reports stopped.",
+  "source": "rules",
+  "ui": [{ "type": "ui", "action": "focus", "asset_id": "PUMP_3" }],
+  "proposals": [] }
+```
+
+- `source` is `rules` (instant answers that need no API key: what's failing, how long until shutdown, show or explain an asset, what am I looking at with a selection, the cheapest plan, and fixes like "open the crossover", "send truck 1 to tank 3", "shut in well 9", "turn off pump 2") or `claude`.
+- Jarvis's fixes are proposals (PENDING) in `proposals`. It never changes equipment itself.
+- With no `ANTHROPIC_API_KEY` and no rules match: **503** `{"detail": "Jarvis needs ANTHROPIC_API_KEY on the server."}`. Other Claude failures are also 503 with a `detail` saying why.
+
+### Connectors and demo controls
+
+- `GET /api/live/connectors` → `{"connectors": [...], "jarvis": {"mode", "model", "llm_available"}, "push": {"enabled", "last_error"}}`.
+- `POST /api/live/readings/{connector_id}` (webhook connectors only) with `{"readings": [{"asset_id", "signal", "value"} | {"address", "value"}]}` → `{"accepted": [...], "rejected": [...]}`. Only signals the blueprint declares for that connector are accepted. If the connector has `token_env`, send the token in `X-Freeboard-Token`.
+- `POST /api/live/sim` with `{speed?, paused?, advance_min?}` → the live clock.
+- `POST /api/live/faults` with `{asset_id, type: TRIP | STUCK_VALVE | SENSOR_STALE | LEAK | REPAIR, reason?, rate_bbl_hr?}` injects a fault into the simulator.
+
+### `WS /ws`
+
+Connect to `ws://127.0.0.1:8000/ws?role=web` (`role` is `web`, `phone`, `device`, or `other`). Every message is one JSON object with a `type` and a `seq` counter:
+
+| `type` | Payload | When |
+|---|---|---|
+| `state` | `{"type": "state", "seq": 1, "state": <GET /api/live/state body>}` | On connect, every tick, and after each confirm |
+| `alert` | `{"type": "alert", "seq": 2, "alert": <alert>}` | Raised or resolved |
+| `proposal` | `{"type": "proposal", "seq": 3, "proposal": <proposal>}` | Created, confirmed, rejected, or failed |
+| `ui` | `{"type": "ui", "seq": 4, "action": "focus", "asset_id": "PUMP_3", "reason": "...", "source": "jarvis"}` | Jarvis, a new ALARM, a proposal, or a phone wants every screen on an asset |
+
+Clients may send `{"type": "ping"}` (answered with `pong`) and `{"type": "ui", "action": "focus", "asset_id": "TANK_3"}` to point every console at an asset.
+
+### Environment
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `ANTHROPIC_API_KEY` | unset | Enables Claude in Jarvis. Without it, only the rules answer. |
+| `JARVIS_MODEL` | `claude-sonnet-5-5` | Claude model for Jarvis. |
+| `JARVIS_MODE` | `auto` | `auto` (rules first, Claude for the rest), `rules`, or `llm`. |
+| `JARVIS_CONFIRM` | `1` | `0` lets Jarvis's proposals run without a person, **only** for the simulator. Real equipment always waits for confirm. |
+| `FREEBOARD_SPEED` | `0.25` | Live minutes per real second. |
+| `NTFY_TOPIC` | unset | Phone push of ALARM and WARNING alerts through ntfy. Off when unset. |
+| `NTFY_SERVER` | `https://ntfy.sh` | ntfy server. |
+| `PUBLIC_URL` | unset | Where a phone can reach this server, for the notification's buttons. |
+| `CORS_ORIGINS` | unset | Extra allowed origins, comma separated. Localhost is always allowed. |
+| `*_env` in connector config | | Names the variable holding a connector secret, e.g. `"token_env": "HOOK_TOKEN"`. |
