@@ -8,10 +8,18 @@
   stale tank is UNKNOWN, never OK.
 - VALVE_MISMATCH (WARNING): a valve's reported position differs from the position a
   person confirmed, for CONFIRM_READINGS evaluations after a short grace period.
+- TANK_HIGH (WARNING): a fresh tank level at or over its warning_pct.
+- TANK_HIGH_HIGH (ALARM): a fresh tank level at or over high_high_pct (shutdown_pct - 5).
+  Both clear LEVEL_DEADBAND below the threshold, so a level riding the line can't chatter.
 
-Alerts: {id, asset_id, kind, severity, message, t, clock, active}. `t` is ISO wall
-time. One active alert per (asset, kind); it resolves (active false) when the
-condition clears.
+Alerts: {id, asset_id, kind, severity, message, t, clock, active, root_id, priority, ...}.
+`t` is ISO wall time. One active alert per (asset, kind); it resolves (active false) when
+the condition clears.
+
+CF-7: `root_id` points a consequential alarm at its cause (a tank's high level at the
+pump trip on that tank, see root_for). `priority` and the consequence fields come from
+the baseline forecast (consequence_of, called by live.py); the shelve fields are set by
+live.py's shelve().
 """
 from __future__ import annotations
 
@@ -21,10 +29,14 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from .fieldmap import FieldMap, name
+from .forecast import clock_at
 
 CONFIRM_READINGS = 2
 MISMATCH_GRACE_MIN = 1.0
 RATE_WINDOW_MIN = 10.0
+LEVEL_DEADBAND = 1.0      # a high-level alert clears this many % below its threshold
+P1_MIN, P2_MIN = 60, 180  # CF-7: a shutdown within this many minutes is P1, then P2, else P3
+TANK_KINDS = ("TANK_HIGH", "TANK_HIGH_HIGH")
 
 Key = tuple  # (asset_id, signal)
 
@@ -45,6 +57,67 @@ def slope_bbl_hr(points: list[tuple[float, float]], capacity_bbl: float) -> Opti
         return None
     pct_per_min = sum((t - mt) * (v - mv) for t, v in points) / den
     return pct_per_min / 100.0 * capacity_bbl * 60.0
+
+
+def priority_for(minutes: Optional[int]) -> str:
+    """P1 if the consequence is within P1_MIN minutes, P2 within P2_MIN, else P3."""
+    if minutes is None:
+        return "P3"
+    return "P1" if minutes <= P1_MIN else "P2" if minutes <= P2_MIN else "P3"
+
+
+def tanks_hit_by(fmap: FieldMap, alert: dict) -> list[str]:
+    """The tanks whose shutdown this alarm leads to if it is left alone.
+
+    A pump trip, a high level, or a valve that isn't where a person put it all end in a
+    tank shutting in. A stale sensor is a loss of sight, not a cause (consequence_of
+    ranks a stale tank level P2, never safe, and every other stale signal P3)."""
+    aid, kind = alert["asset_id"], alert["kind"]
+    if kind == "PUMP_TRIP" and aid in fmap.pumps:
+        return [fmap.pumps[aid]["tank_id"]]
+    if kind in TANK_KINDS and aid in fmap.tanks:
+        return [aid]
+    if kind == "VALVE_MISMATCH" and aid in fmap.valves:
+        ends = [e for e in (fmap.valves[aid].get("connects") or [])[:2] if e in fmap.tanks]
+        if ends:
+            return ends  # a crossover: either of its tanks
+        return [fmap.pumps[p]["tank_id"] for p, v in fmap.pump_valve.items() if v == aid and p in fmap.pumps]
+    return []
+
+
+def consequence_of(fmap: FieldMap, alert: dict, shutdowns: dict, horizon_min: float,
+                   restart_usd: float, now_t: float = 0.0, start_clock: str = "00:00") -> dict:
+    """Priority and consequence fields for one alert, from the baseline forecast's
+    SHUTDOWN_LEVEL events (`shutdowns`: tank id -> event, its t_min counted from now,
+    which is live minute `now_t` and clock `start_clock`, the forecast's start).
+
+    usd_at_risk is what the forecast charges for that shutdown: the shut-in wells' lost
+    production to the end of the horizon, plus a restart for each well."""
+    blank = {"minutes_to_consequence": None, "minutes_to_consequence_low": None, "consequence": None,
+             "consequence_asset_id": None, "consequence_clock": None, "consequence_t": None, "usd_at_risk": 0}
+    if alert["kind"] == "SENSOR_STALE":
+        if alert["asset_id"] in fmap.tanks:
+            return {**blank, "priority": "P2",
+                    "consequence": f"{name(alert['asset_id'])} has no fresh level, so when it shuts in "
+                                   f"is unknown. Treat it as at risk."}
+        return {**blank, "priority": "P3"}
+    events = [shutdowns[tid] for tid in tanks_hit_by(fmap, alert) if tid in shutdowns]
+    if not events:
+        return {**blank, "priority": "P3"}
+    ev = min(events, key=lambda e: e["t_min"])
+    minutes = int(ev["t_min"] + 0.5)   # whole minutes, as the console shows them
+    # Ranked on the early end of the forecast's give-or-take (inflow 15% high), so a tank
+    # forecast at 61 minutes, give or take 9, is P1: it can shut in within the hour.
+    low = ev.get("t_min_low")
+    low = minutes if low is None else min(int(low + 0.5), minutes)
+    lost = [w for w in ev.get("wells_lost", []) if w in fmap.wells]
+    lost_hr = sum(float(fmap.wells[w].get("lost_usd_hr", 0)) for w in lost)
+    usd = lost_hr * max(horizon_min - ev["t_min"], 0.0) / 60.0 + restart_usd * len(lost)
+    return {"priority": priority_for(low), "minutes_to_consequence": minutes,
+            "minutes_to_consequence_low": low,
+            "consequence": ev.get("text"), "consequence_asset_id": ev["asset_id"],
+            "consequence_clock": clock_at(start_clock, ev["t_min"]),
+            "consequence_t": round(now_t + ev["t_min"], 2), "usd_at_risk": int(round(usd))}
 
 
 class Detector:
@@ -115,6 +188,18 @@ class Detector:
             bad, msg = self._pump_check(t, pid, pump, latest, history, commanded, fresh)
             changed += self._set(pid, "PUMP_TRIP", "ALARM", msg, bad, t, clock)
 
+        # TANK_HIGH, TANK_HIGH_HIGH (fresh levels only: a stale tank is SENSOR_STALE, never OK)
+        for tid, tank in self.f.tanks.items():
+            if not fresh((tid, "level_pct")):
+                continue
+            lvl = float(latest[(tid, "level_pct")]["value"])
+            for kind, sev, at, what in (("TANK_HIGH", "WARNING", self.f.warning_pct(tid), "high"),
+                                        ("TANK_HIGH_HIGH", "ALARM", self.f.high_high_pct(tid), "high-high")):
+                bad = True if lvl >= at else False if lvl < at - LEVEL_DEADBAND else None
+                msg = (f"{name(tid)} is at {lvl:.0f}%, over its {what} level of {at:g}%. "
+                       f"It shuts in at {float(tank['shutdown_pct']):g}%.")
+                changed += self._set(tid, kind, sev, msg, bad, t, clock)
+
         # VALVE_MISMATCH
         for vid in self.f.valves:
             cmd = commanded.get(vid)
@@ -127,6 +212,39 @@ class Detector:
                    f"Check it in the field.")
             changed += self._set(vid, "VALVE_MISMATCH", "WARNING", msg, bad, t, clock)
         return changed
+
+    # ---------- root cause (CF-7) ----------
+    def root_for(self, asset_id: str, kind: str) -> Optional[dict]:
+        """The active alarm this one is a consequence of, or None when it is a root itself.
+
+        A tank's high or high-high level points at a trip of one of its pumps, else at a
+        mismatch on one of its pumps' discharge valves. A high-high with neither points at
+        the same tank's high alert, so the pair still folds into one row."""
+        f = self.f
+        if kind not in TANK_KINDS or asset_id not in f.tanks:
+            return None
+        pumps = sorted(f.pumps_by_tank.get(asset_id, []))
+        keys = [(p, "PUMP_TRIP") for p in pumps] + \
+               [(f.pump_valve[p], "VALVE_MISMATCH") for p in pumps if p in f.pump_valve]
+        for key in keys:
+            if key in self.active:
+                return self.active[key]
+        if kind == "TANK_HIGH_HIGH":
+            return self.active.get((asset_id, "TANK_HIGH"))
+        return None
+
+    def link_roots(self) -> list[dict]:
+        """Give an active alert with no root the root that appeared since (a trip confirmed
+        after its tank already read high). A root, once set, is kept even after it resolves:
+        it is still why this alarm happened. Returns the alerts it changed."""
+        out = []
+        for (aid, kind), a in self.active.items():
+            if a.get("root_id") is None:
+                root = self.root_for(aid, kind)
+                if root is not None and root["id"] != a["id"]:
+                    a["root_id"] = root["id"]
+                    out.append(a)
+        return out
 
     def _rate_points(self, tid: str, t: float, history: dict) -> list[tuple[float, float]]:
         """Level readings in the rate window, starting no earlier than the last state change."""
@@ -252,8 +370,15 @@ class Detector:
             self.good[key] = 0
             self.bad[key] = self.bad.get(key, 0) + 1
             if key not in self.active and self.bad[key] >= confirm:
+                root = self.root_for(aid, kind)
                 alert = {"id": f"alert_{next(self._ids)}", "asset_id": aid, "kind": kind, "severity": severity,
-                         "message": msg, "t": now_iso(), "clock": clock, "active": True}
+                         "message": msg, "t": now_iso(), "clock": clock, "active": True,
+                         "root_id": root["id"] if root else None, "priority": "P3",
+                         "minutes_to_consequence": None, "minutes_to_consequence_low": None,
+                         "consequence": None, "consequence_asset_id": None,
+                         "consequence_clock": None, "consequence_t": None, "usd_at_risk": 0,
+                         "shelved_until": None, "shelved_until_t": None, "shelve_reason": None,
+                         "shelved_by": None, "shelved_t": None}
                 self.active[key] = alert
                 self.alerts.append(alert)
                 return [alert]

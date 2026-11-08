@@ -80,6 +80,11 @@ class FieldMap:
         t = self.tanks[tid]
         return float(t.get("warning_pct", t["shutdown_pct"] - 10))
 
+    def high_high_pct(self, tid: str) -> float:
+        """TANK_HIGH_HIGH threshold (CF-7): high_high_pct, else 5 points under shutdown."""
+        t = self.tanks[tid]
+        return float(t.get("high_high_pct", t["shutdown_pct"] - 5))
+
     def low_pct(self, tid: str) -> float:
         """Level a running pump works its tank down to."""
         t = self.tanks[tid]

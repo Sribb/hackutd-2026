@@ -7,6 +7,8 @@
     POST /api/live/faults                 demo: inject a fault into the simulator
     GET  /api/alerts                      every alert, newest last
     POST /api/alerts/{id}/ack             acknowledge (the ntfy button calls this)
+    POST /api/alerts/{id}/shelve          {minutes 15..240, reason}: hide it for a while (CF-7)
+    POST /api/alerts/{id}/unshelve        bring it back before the timer ends
     GET  /api/actions                     every proposal
     POST /api/actions                     propose a command (PENDING, changes nothing)
     POST /api/actions/{id}/confirm        send it through the asset's connector
@@ -17,7 +19,7 @@
 
 Control tokens (#103, auth.py): with FREEBOARD_TOKEN, OPERATOR_PIN, or FREEBOARD_PHONE_TOKEN
 set, every POST here needs X-Freeboard-Token (the webhook readings route keeps its own
-connector token). The phone token may only confirm, reject, and ack. decided_by comes from
+connector token). The phone token may only confirm, reject, ack, shelve, and unshelve. decided_by comes from
 the token's role, never from the body's "by". /ws takes ?token=.
 """
 from __future__ import annotations
@@ -31,14 +33,14 @@ from typing import Callable, List, Optional, Union
 
 from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from . import auth
 from .auth import Caller, require_role
 from .connectors.webhook import WebhookConnector
 from .forecast import forecast
 from .jarvis import Jarvis, JarvisUnavailable
-from .live import ActionError, LiveField
+from .live import SHELVE_MAX, SHELVE_MIN, ActionError, LiveField
 from .planner import make_plans
 
 log = logging.getLogger("freeboard.live_api")
@@ -77,6 +79,19 @@ class FaultIn(BaseModel):
 
 class DecideIn(BaseModel):
     by: str = ""
+
+
+class ShelveIn(BaseModel):
+    minutes: float = Field(..., ge=SHELVE_MIN, le=SHELVE_MAX)
+    reason: str = Field(..., max_length=500)
+    by: str = ""
+
+    @field_validator("reason")
+    @classmethod
+    def _reason_required(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("A reason is required to shelve an alert.")
+        return v.strip()
 
 
 def _raw(scenario: dict) -> dict:
@@ -143,6 +158,23 @@ def build_router(live: LiveField, jarvis: Jarvis) -> APIRouter:
         if a is None:
             raise HTTPException(404, f"No alert {alert_id}.")
         return a
+
+    @r.post("/api/alerts/{alert_id}/shelve")
+    async def shelve_alert(alert_id: str, body: ShelveIn, caller: Caller = PHONE) -> dict:
+        try:
+            return await live.shelve(alert_id, body.minutes, body.reason, by=caller.decided_by(body.by) or "",
+                                     role=caller.role, source=caller.source(body.by))
+        except ActionError as e:
+            fail(e)
+
+    @r.post("/api/alerts/{alert_id}/unshelve")
+    async def unshelve_alert(alert_id: str, body: Optional[DecideIn] = None, caller: Caller = PHONE) -> dict:
+        by = body.by if body else ""
+        try:
+            return await live.unshelve(alert_id, by=caller.decided_by(by) or "", role=caller.role,
+                                       source=caller.source(by))
+        except ActionError as e:
+            fail(e)
 
     @r.get("/api/actions")
     def get_actions() -> dict:
