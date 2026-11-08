@@ -7,3 +7,5 @@ anthropic==2.6.0
 python-multipart==0.0.33
 # For /api/blueprints (#41): validates uploads against docs/blueprint.schema.json
 jsonschema==4.25.1
+# For /ws (#38): uvicorn needs a WebSocket library, or /ws returns 404
+websockets==15.0.1
