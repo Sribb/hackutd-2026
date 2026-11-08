@@ -6,9 +6,16 @@ by default), and the endpoint resamples it onto a regular grid that ends at "now
 
 A point is what the console showed at that moment: the latest reading at or before it,
 while that reading was fresh. Fresh uses the live layer's own rule (stale after
-`stale_after_min`, 5 by default), so a null point is exactly a SENSOR_STALE period, or a
-time before the first reading. A stale period is always null: the last value is never
-carried forward into it, and a number never stands in for a reading nobody has.
+`stale_after_min`, 5 by default) and the field connectors' own quality (#126): on every
+sync the Recorder notes each signal a connector reports as not good (now.bad_quality)
+and stores a null at the minute the connector said so, the same moment /api/state turns
+the asset UNKNOWN. So a null point is a SENSOR_STALE period, a period the connector did
+not vouch for (comm_lost, bad, out of range, ...), however short, or a time before the
+first reading. A tank level is recorded through now.usable_level, the rule /api/state
+uses, so a level /api/state refuses (NaN, infinite, -20 %, 130 %) is null here as well,
+and a point at time t shows what /api/state showed at t. Such a period is always null: the last value is never carried forward
+into it, and a number never stands in for a reading nobody has. The next good reading
+ends it.
 
 `timeline` has the same shape as POST /api/forecast's timeline, with t_min <= 0, so the
 console draws the past and the future as one trend (CF-3): history.timeline, then the
@@ -61,10 +68,11 @@ class Recorder:
             self.started_t = None
 
     def sync(self, live) -> int:
-        """Copy the readings the live layer took since the last call. Call it on the event
-        loop the live layer ticks on, so a tick is never read halfway. A new connector
-        registry means a blueprint was activated: the history starts over. Returns how
-        many readings were added."""
+        """Copy the readings the live layer took since the last call, and a null marker
+        for every signal a connector reports as not good now. Call it on the event loop
+        the live layer ticks on, so a tick is never read halfway. A new connector registry
+        means a blueprint was activated: the history starts over. Returns how many
+        readings were added (markers not counted)."""
         added = 0
         with self._lock:
             registry = getattr(live, "registry", None)
@@ -80,17 +88,46 @@ class Recorder:
                 for t, v in reversed(hist):   # newest first; stop at what we already have
                     if t <= last:
                         break
-                    fresh.append((float(t), v))
+                    fresh.append((float(t), _recorded(key, v)))
                 buf = self._series.get(key)
                 if fresh:
                     if buf is None:
                         buf = self._series[key] = deque()
-                    buf.extend(reversed(fresh))
-                    self._last_t[key] = buf[-1][0]
+                    fresh.reverse()
+                    if buf and fresh[0][0] < buf[-1][0]:   # a null marker is newer: keep time order
+                        merged = sorted(list(buf) + fresh, key=lambda p: p[0])
+                        buf.clear()
+                        buf.extend(merged)
+                    else:
+                        buf.extend(fresh)
+                    self._last_t[key] = fresh[-1][0]
                     added += len(fresh)
+            self._mark_bad(live)
+            for buf in self._series.values():
                 while buf and buf[0][0] < cutoff:
                     buf.popleft()
         return added
+
+    def _mark_bad(self, live) -> None:
+        """A null at the minute a connector stopped vouching for a signal, unless the
+        series already ends in one. Holds self._lock."""
+        try:
+            bad = now.bad_quality(live)
+        except Exception:  # noqa: BLE001 - a broken connector must not stop the history
+            log.exception("reading connector quality failed")
+            return
+        now_t = float(live.t)
+        for key, q in bad.items():
+            buf = self._series.get(key)
+            if buf and buf[-1][1] is None:
+                continue
+            t = q.get("t")
+            t = now_t if t is None or t > now_t else float(t)
+            if buf:
+                t = max(t, buf[-1][0])
+            else:
+                buf = self._series[key] = deque()
+            buf.append((t, None))
 
     def readings(self, key: tuple) -> list:
         with self._lock:
@@ -99,6 +136,15 @@ class Recorder:
     def keys(self) -> set:
         with self._lock:
             return set(self._series)
+
+
+def _recorded(key: tuple, v):
+    """A reading as the history keeps it. A tank level goes through now.usable_level, the
+    rule /api/state uses, so a level /api/state refuses (NaN, -20 %, 130 %) is the null
+    marker here too, never an empty or overflowing tank on the trend."""
+    if key[1] == "level_pct":
+        return now.usable_level(v)
+    return v
 
 
 _recorder = Recorder()
