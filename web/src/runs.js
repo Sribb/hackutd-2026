@@ -283,7 +283,7 @@ async function loadReplan(id) {
     const nr = await call(`/api/runs/${encodeURIComponent(id)}`);
     // The answer may be late: only show it if it is still this run's offer and still on offer.
     if (!run || run.replan_run_id !== id || nr.status !== "PAUSED" || nr.started !== false) { draw(); return; }
-    offer = { kind: "replan", run: nr, text: `${nr.summary.split(". ")[0]}. ${hooks.usd(nr.cost_usd)}${run && run.replan_source ? ` (picked by ${run.replan_source === "claude" ? "Jarvis" : "the rules: cheapest that holds"})` : ""}${run && run.excluded && run.excluded.length ? `. Avoids ${run.excluded.map(hooks.nice).join(", ")}.` : "."}${run && run.note ? ` ${run.note}` : ""}` };
+    offer = { kind: "replan", run: nr, text: `${nr.summary.split(". ")[0]}. ${hooks.usd(nr.cost_usd)}${run && run.replan_source ? ` (picked by ${run.replan_source === "claude" ? "gaia" : "the rules: cheapest that holds"})` : ""}${run && run.excluded && run.excluded.length ? `. Avoids ${run.excluded.map(hooks.nice).join(", ")}.` : "."}${run && run.note ? ` ${run.note}` : ""}` };
   } catch { /* the paused run still shows its reason */ }
   draw();
 }

@@ -244,8 +244,10 @@ function tankForecastPhrase(s, m) {
   const move = r == null ? "" : Math.abs(r) < 0.5 ? "holds about steady" : `${r > 0 ? "rises" : "falls"} about ${pts(r)} points an hour`;
   const who = `${s.label} `;
   if (s.cross) {
-    const range = s.cross.low != null && s.cross.high != null && (s.cross.low !== s.cross.x || s.cross.high !== s.cross.x)
-      ? ` (give or take: ${clockText(m.nowMin + s.cross.low)} to ${clockText(m.nowMin + s.cross.high)})` : "";
+    const lo = s.cross.low != null ? clockText(m.nowMin + s.cross.low) : null, hi = s.cross.high != null ? clockText(m.nowMin + s.cross.high) : null;
+    const at = clockText(m.nowMin + s.cross.x);
+    // One time when both ends print the same (EOG's p10 = p90), and nothing when that is the crossing itself.
+    const range = lo != null && hi != null && !(lo === hi && lo === at) ? ` (give or take: ${lo === hi ? lo : `${lo} to ${hi}`})` : "";
     return `${who}${move ? `${move} and ` : ""}crosses shutdown at ${clockText(m.nowMin + s.cross.x)}${range} if nobody acts`;
   }
   if (!ahead.length) return `${who}has no forecast line`;

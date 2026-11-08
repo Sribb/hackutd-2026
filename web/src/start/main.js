@@ -28,7 +28,8 @@ const params = new URLSearchParams(location.search);
 let step = "intro";
 let film = null, filmP = null, filmErr = null;
 const setStep = (s) => { step = s; document.body.dataset.step = s; };
-window.__start = { step: () => step, phone: () => readPhone(), built: () => !!(film && film.built()), filmError: () => filmErr && String(filmErr.message || filmErr) };
+window.__start = { step: () => step, phone: () => readPhone(), built: () => !!(film && film.built()), filmError: () => filmErr && String(filmErr.message || filmErr),
+  film: () => (film ? { ...film.source, assets: film.assets } : null) };
 
 const tree = mountTree($("sTree"));
 
