@@ -1,0 +1,238 @@
+#!/usr/bin/env python3
+"""Lanes: keep each agent inside its own folder so agents don't overwrite each other.
+
+The owner table in AGENTS.md ("Who owns what") is the only source of truth.
+Each row is a lane. The lane's name is its first folder, e.g. `web/` is lane `web`.
+
+  tools/lane                          list lanes, owners, and this checkout's lane
+  tools/lane set <lane>               fence this checkout to one lane
+  tools/lane start <lane> <branch>    new worktree for one agent: ../<repo>-<lane> on <branch> from fresh main
+  tools/lane check [--staged]         list changed files outside this checkout's lane (exit 1 if any)
+  tools/lane owner <path>             who owns a path
+  tools/lane hook                     Claude Code PreToolUse hook (reads the tool call on stdin)
+
+A checkout with no lane set is not fenced (the team lead's checkout, for example).
+To edit outside your lane after a handoff on the board, run with LANE_FENCE=off.
+Standard library only. Python 3.9+.
+"""
+from __future__ import annotations
+
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+from typing import Dict, List, Optional
+
+ROOT = Path(__file__).resolve().parents[1]
+
+# Files outside every lane that a lane may still edit, with the reminder to show.
+SHARED_OK = {
+    "docs/CONTRACT.md": "CONTRACT.md is shared: change it in the same commit as the code and post on the board.",
+}
+
+
+def git(*args: str, cwd: Path = ROOT) -> str:
+    return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True).stdout.strip()
+
+
+def lanes() -> Dict[str, dict]:
+    """Parse the owner table in AGENTS.md -> {lane: {owner, area, folders}}."""
+    text = (ROOT / "AGENTS.md").read_text()
+    m = re.search(r"^##[^\n]*Who owns what[^\n]*$(.*?)(?=^## |\Z)", text, re.S | re.M)
+    if not m:
+        sys.exit("lane: no 'Who owns what' table in AGENTS.md")
+    out: Dict[str, dict] = {}
+    for line in m.group(1).splitlines():
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        if len(cells) < 3 or cells[0] in ("Area", "") or set(cells[0]) <= set("-: "):
+            continue
+        folders = re.findall(r"`([^`]+)`", cells[2])
+        if not folders:
+            continue
+        owner = re.findall(r"`@?([A-Za-z0-9-]+)`", cells[1])
+        name = folders[0].strip("/").split("/")[0]
+        out[name] = {"area": cells[0], "owner": owner[0] if owner else None, "folders": folders}
+    return out
+
+
+def my_lane(cwd: Path = ROOT) -> Optional[str]:
+    return os.environ.get("LANE") or git("config", "--get", "freeboard.lane", cwd=cwd) or None
+
+
+def rel(path: str, top: Path) -> Optional[str]:
+    p = Path(path)
+    if not p.is_absolute():
+        p = Path.cwd() / p
+    try:
+        return p.resolve().relative_to(top.resolve()).as_posix()
+    except ValueError:
+        return None  # outside the repo: not our business
+
+
+def in_folder(path: str, folder: str) -> bool:
+    folder = folder.rstrip("/")
+    return path == folder or path.startswith(folder + "/")
+
+
+def owner_of(path: str, table: Dict[str, dict]) -> Optional[str]:
+    for name, lane in table.items():
+        if any(in_folder(path, f) for f in lane["folders"]):
+            return name
+    return None
+
+
+def verdict(path: str, lane: str, table: Dict[str, dict]) -> Optional[str]:
+    """None if allowed, else a message saying why not."""
+    if lane not in table:
+        return f"this checkout's lane '{lane}' is not in the AGENTS.md owner table"
+    if any(in_folder(path, f) for f in table[lane]["folders"]):
+        return None
+    if path in SHARED_OK:
+        return None
+    other = owner_of(path, table)
+    if other:
+        who = table[other]["owner"]
+        who = f"@{who}" if who else "unclaimed, so ask the team lead"
+        return (f"{path} is in lane '{other}' ({who}). You are in lane '{lane}'. "
+                f"Ask for a handoff on the board (tools/board post) and wait for the owner or the team lead.")
+    return (f"{path} is a shared file (outside every lane). Only the team lead changes shared files. "
+            f"Propose the change on the board instead.")
+
+
+# ---------------------------------------------------------------- commands ----
+
+def cmd_list() -> None:
+    table, mine = lanes(), my_lane()
+    for name, lane in table.items():
+        mark = "  <- this checkout" if name == mine else ""
+        print(f"{name:10} {('@' + lane['owner']) if lane['owner'] else 'unclaimed':22} "
+              f"{' '.join(lane['folders']):28} {lane['area']}{mark}")
+    if not mine:
+        print("\nThis checkout has no lane, so it is not fenced. Run: tools/lane set <lane>")
+
+
+def fence(cwd: Path, lane: str) -> None:
+    git("config", "extensions.worktreeConfig", "true", cwd=cwd)
+    git("config", "--worktree", "freeboard.lane", lane, cwd=cwd)
+    git("config", "--worktree", "core.hooksPath", ".githooks", cwd=cwd)
+
+
+def cmd_set(lane: str) -> None:
+    table = lanes()
+    if lane not in table:
+        sys.exit(f"lane: no lane '{lane}'. Lanes: {', '.join(table)}")
+    fence(ROOT, lane)
+    print(f"This checkout is fenced to lane '{lane}': {' '.join(table[lane]['folders'])}")
+
+
+def cmd_start(lane: str, branch: str) -> None:
+    table = lanes()
+    if lane not in table:
+        sys.exit(f"lane: no lane '{lane}'. Lanes: {', '.join(table)}")
+    if not re.match(r"^\d+-[a-z0-9-]+$", branch):
+        sys.exit("lane: branch must be <issue#>-<slug>, e.g. 12-gltf-loader (AGENTS.md workflow)")
+    main_root = Path(git("rev-parse", "--path-format=absolute", "--git-common-dir")).parent
+    dest = main_root.parent / f"{main_root.name}-{lane}"
+    if dest.exists():
+        sys.exit(f"lane: {dest} already exists. One worktree per lane; cd there instead.")
+    subprocess.run(["git", "fetch", "-q", "origin"], cwd=ROOT, check=True)
+    subprocess.run(["git", "worktree", "add", "-q", "-b", branch, str(dest), "origin/main"], cwd=ROOT, check=True)
+    fence(dest, lane)
+    print(f"Worktree ready: {dest}\n  branch {branch}, fenced to lane '{lane}'\n  next: cd {dest} && claude")
+
+
+def changed(staged: bool) -> List[str]:
+    if staged:
+        return [p for p in git("diff", "--cached", "--name-only").splitlines() if p]
+    base = git("merge-base", "HEAD", "origin/main") or "HEAD"
+    files = set(git("diff", "--name-only", base).splitlines())
+    files |= set(git("ls-files", "--others", "--exclude-standard").splitlines())
+    return sorted(p for p in files if p)
+
+
+def cmd_check(staged: bool) -> int:
+    lane = my_lane()
+    if not lane:
+        print("lane: this checkout has no lane, nothing to check")
+        return 0
+    if os.environ.get("LANE_FENCE") == "off":
+        print("lane: LANE_FENCE=off, skipping the fence")
+        return 0
+    table, bad = lanes(), []
+    for p in changed(staged):
+        why = verdict(p, lane, table)
+        if why:
+            bad.append(why)
+    for b in bad:
+        print("OUTSIDE LANE  " + b)
+    if not bad:
+        print(f"lane '{lane}': every changed file is inside the lane")
+    return 1 if bad else 0
+
+
+def cmd_owner(path: str) -> None:
+    table = lanes()
+    r = rel(path, ROOT) or path
+    name = owner_of(r, table)
+    if not name:
+        print(f"{r}: shared (team lead)" if r not in SHARED_OK else f"{r}: shared. {SHARED_OK[r]}")
+    else:
+        o = table[name]["owner"]
+        print(f"{r}: lane '{name}', {'@' + o if o else 'unclaimed'}")
+
+
+def cmd_hook() -> int:
+    """PreToolUse: exit 2 blocks the tool call and shows stderr to the agent."""
+    try:
+        call = json.load(sys.stdin)
+    except Exception:  # noqa: BLE001
+        return 0
+    tool_input = call.get("tool_input") or {}
+    path = tool_input.get("file_path") or tool_input.get("notebook_path")
+    if not path or os.environ.get("LANE_FENCE") == "off":
+        return 0
+    cwd = Path(call.get("cwd") or os.getcwd())
+    top = git("rev-parse", "--show-toplevel", cwd=cwd)
+    if not top:
+        return 0
+    top_p = Path(top)
+    lane = my_lane(top_p)
+    if not lane:
+        return 0
+    r = rel(path, top_p)
+    if r is None:
+        return 0
+    why = verdict(r, lane, lanes())
+    if why:
+        print(f"Blocked by the lane fence (tools/lane). {why}", file=sys.stderr)
+        return 2
+    if r in SHARED_OK:
+        print(SHARED_OK[r], file=sys.stderr)
+    return 0
+
+
+def main(argv: List[str]) -> int:
+    if not argv or argv[0] in ("list", "ls"):
+        cmd_list()
+        return 0
+    cmd, rest = argv[0], argv[1:]
+    if cmd == "set" and len(rest) == 1:
+        cmd_set(rest[0])
+    elif cmd == "start" and len(rest) == 2:
+        cmd_start(*rest)
+    elif cmd == "check":
+        return cmd_check("--staged" in rest)
+    elif cmd == "owner" and len(rest) == 1:
+        cmd_owner(rest[0])
+    elif cmd == "hook":
+        return cmd_hook()
+    else:
+        print(__doc__)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

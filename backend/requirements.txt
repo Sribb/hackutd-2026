@@ -2,3 +2,8 @@ fastapi==0.115.6
 uvicorn==0.34.0
 httpx==0.28.1
 pytest==8.3.4
+# For ingest/ (POST /api/ingest), mounted by backend/app/main.py
+anthropic==2.6.0
+python-multipart==0.0.33
+# For /ws (#38): uvicorn needs a WebSocket library, or /ws returns 404
+websockets==15.0.1

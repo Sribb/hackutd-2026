@@ -1,0 +1,2 @@
+# Fields built from a --blueprint with no --out land here; they are rebuilt on demand.
+out/

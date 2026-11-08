@@ -30,16 +30,42 @@ def scenario_path() -> Path:
     return TEAM_SCENARIO if TEAM_SCENARIO.exists() else DEFAULT_SCENARIO
 
 
+class ScenarioError(ValueError):
+    """The field file can't be used. `problems` lists every reason, in plain English."""
+
+    def __init__(self, source: str, problems: list[str]):
+        self.source, self.problems = source, problems
+        super().__init__(f"{source}: " + " ".join(problems))
+
+
 def load_scenario(path: str | Path | None = None) -> dict:
     path = Path(path) if path else scenario_path()
-    data = json.loads(path.read_text(encoding="utf-8"))
-    if "field" not in data and "tanks" in data:
-        data = from_team_shape(data)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as e:
+        raise ScenarioError(str(path), [f"Not valid JSON: {e}."]) from e
+    return prepare(data, str(path))
+
+
+def prepare(data: dict, source: str = "upload") -> dict:
+    """Converts (if needed) and checks a field definition. Raises ScenarioError."""
+    from .validate import problems  # local import keeps this module free of cycles
+
+    if not isinstance(data, dict):
+        raise ScenarioError(source, ["The file must be a JSON object."])
+    team_shape = "field" not in data and "tanks" in data
+    if team_shape:
+        try:
+            data = from_team_shape(data)
+        except (TypeError, ValueError, AttributeError, KeyError) as e:
+            raise ScenarioError(source, [f"Couldn't read the field file ({type(e).__name__}: {e}). "
+                                         "Check clock_start is HH:MM and every list holds objects."]) from e
+    found = problems(data)
+    if found:
+        raise ScenarioError(source, found)
+    if team_shape:
         _preroll(data)
-    missing = [k for k in FIELD_KEYS if k not in data.get("field", {})]
-    if missing:
-        raise ValueError(f"{path}: field is missing {missing}")
-    data["_source"] = str(path)
+    data["_source"] = source
     return data
 
 
@@ -75,17 +101,18 @@ def from_team_shape(d: dict) -> dict:
     start_offset = min((f.get("at_min", 0) for f in faults), default=0)
     start = _add_minutes(d.get("clock_start", "00:00"), start_offset)
     levels = dict(d.get("initial", {}).get("tank_pct", {}))
-    pumps_by_id = {p["id"]: p for p in d["pumps"]}
+    pumps_by_id = {p.get("id"): p for p in d.get("pumps", []) if isinstance(p, dict)}
 
     tanks = []
-    for t in d["tanks"]:
+    for t in d.get("tanks", []):
         t = dict(t)
         # A running pump works the tank down toward pump_low_pct, as in scenario/.
         t.setdefault("setpoint_pct", t.get("pump_low_pct", levels.get(t["id"], 50)))
         tanks.append(t)
-    valves = [{**v, "position": v.get("default", v.get("position", "CLOSED"))} for v in d["valves"]]
+    valves = [{**v, "position": v.get("default", v.get("position", "CLOSED"))}
+              for v in d.get("valves", []) if isinstance(v, dict)]
     trucks = []
-    for tr in d["trucks"]:
+    for tr in d.get("trucks", []):
         tr = dict(tr)
         tr.setdefault("load_min", tr.get("load_minutes", 20))
         tr.setdefault("haul_to_swd_min", tr.get("minutes_to_disposal", 30))
@@ -93,18 +120,19 @@ def from_team_shape(d: dict) -> dict:
 
     failures = []
     for f in faults:
-        pump = pumps_by_id.get(f["asset_id"])
-        tank = pump["tank_id"].replace("TANK_", "Tank ") if pump else None
-        name = f["asset_id"].replace("PUMP_", "Pump ")
+        aid = str(f.get("asset_id", ""))
+        pump = pumps_by_id.get(aid)
+        tank = str(pump.get("tank_id", "")).replace("TANK_", "Tank ") if pump else None
+        name = aid.replace("PUMP_", "Pump ")
         failures.append({
-            "asset_id": f["asset_id"],
+            "asset_id": aid,
             "at_clock": _add_minutes(d.get("clock_start", "00:00"), f.get("at_min", 0)),
             "reason": f.get("reason", "Failed."),
             "summary": f"{name} failed. {tank} is filling." if tank else f"{name} failed.",
         })
 
-    field = {"tanks": tanks, "pumps": d["pumps"], "valves": valves, "wells": d["wells"],
-             "disposal_wells": d["disposal_wells"], "trucks": trucks}
+    field = {"tanks": tanks, "pumps": d.get("pumps"), "valves": valves, "wells": d.get("wells"),
+             "disposal_wells": d.get("disposal_wells"), "trucks": trucks}
     for extra in ("lead_min", "costs", "yards"):
         if extra in d:
             field[extra] = d[extra]

@@ -1,0 +1,209 @@
+{
+  "ok": true,
+  "errors": [],
+  "warnings": [],
+  "timing": {
+    "plan": 0.0,
+    "field": 1.49,
+    "scenery": 1.58,
+    "checks": 0.0,
+    "look": 0.2,
+    "optimize": 0.91,
+    "export": 1.25,
+    "blend": 0.04,
+    "report": 0.01
+  },
+  "blueprint": "blender/templates/delaware/blueprint.json",
+  "name": "Uploaded field",
+  "counts": {
+    "tanks": 4,
+    "pumps": 4,
+    "discharge_valves": 4,
+    "crossover_valves": 1,
+    "wells": 8,
+    "disposal_wells": 1,
+    "trucks": 1,
+    "yards": 1,
+    "equipment": 0
+  },
+  "look": {
+    "mode": "fast",
+    "textures": true,
+    "materials": {
+      "M_BUILDING": 7,
+      "M_CONCRETE": 34,
+      "M_CONTAINMENT": 8,
+      "M_GALV": 57,
+      "M_GLASS": 27,
+      "M_HDPE": 8,
+      "M_LINER": 5,
+      "M_MOTOR": 21,
+      "M_PIPE": 50,
+      "M_PJ_DARK": 16,
+      "M_PJ_PAINT": 32,
+      "M_PUMP_PAINT": 4,
+      "M_RUBBER": 8,
+      "M_STEEL": 10,
+      "M_STEEL_DARK": 65,
+      "M_STENCIL": 35,
+      "M_TANK": 7,
+      "M_TRUCK_CAB": 1,
+      "M_TRUCK_TANK": 1,
+      "M_WOOD": 5
+    },
+    "styled": 401,
+    "looks": 205,
+    "theirs": 24,
+    "gaps_filled": 0,
+    "ao_uv_meshes": 0,
+    "seconds": {
+      "roles": 0.04,
+      "uvs": 0.13,
+      "weather": 0.02,
+      "ao": 0.0,
+      "total": 0.2
+    }
+  },
+  "outputs": {
+    "glb": "blender/templates/delaware/field.glb",
+    "blend": "blender/templates/delaware/field.blend",
+    "report": "blender/templates/delaware/build_report.json"
+  },
+  "kinds": {
+    "disposal_well": 1,
+    "pump": 4,
+    "tank": 4,
+    "truck": 1,
+    "valve": 5,
+    "well": 8,
+    "yard": 1
+  },
+  "placed": {
+    "given": [
+      "PUMP_1",
+      "PUMP_2",
+      "PUMP_3",
+      "PUMP_4",
+      "SWD_1",
+      "TANK_1",
+      "TANK_2",
+      "TANK_3",
+      "TANK_4",
+      "WELL_1",
+      "WELL_2",
+      "WELL_3",
+      "WELL_4",
+      "WELL_5",
+      "WELL_6",
+      "WELL_7",
+      "WELL_8",
+      "YARD_1"
+    ],
+    "auto": [
+      "TRUCK_1",
+      "VALVE_D_1",
+      "VALVE_D_2",
+      "VALVE_D_3",
+      "VALVE_D_4",
+      "VALVE_XO_23"
+    ]
+  },
+  "layout": {
+    "rows": 1,
+    "pad_pitch_m": 55.0,
+    "road_m": 297.5,
+    "road_x": [
+      -150.0,
+      147.5
+    ],
+    "ground": [
+      -160.0,
+      157.5,
+      -95.0,
+      162.0
+    ],
+    "crossovers": {
+      "VALVE_XO_23": "straight"
+    }
+  },
+  "detail": {
+    "level": "full",
+    "dropped": [],
+    "passes": [
+      {
+        "detail": "full",
+        "estimated": 120697,
+        "triangles": 124671
+      }
+    ]
+  },
+  "iot": {
+    "sensors": 8,
+    "rtus": 4
+  },
+  "scenery": {
+    "on": true,
+    "seed": "Uploaded field",
+    "textures": [
+      "ground_dry_soil",
+      "ground_caliche"
+    ],
+    "fence_m": 1115.0,
+    "cattle_guards": 2,
+    "terrain_m": 5400.0,
+    "mesas": 24,
+    "other_leases": 10,
+    "power_spans": 18,
+    "brush_past_fence": 50,
+    "items": {
+      "boulder": 6,
+      "branch": 6,
+      "creosote": 2,
+      "grass": 134,
+      "lease_sign": 1,
+      "prickly_pear": 31,
+      "rock": 16,
+      "yucca": 84
+    },
+    "dropped": [],
+    "triangles": 133401,
+    "field_triangles": 124671,
+    "images_mb": 6.14
+  },
+  "triangles": 258072,
+  "glb_mb": 15.48,
+  "nodes": 550,
+  "objects": 707,
+  "draw_calls": 482,
+  "compressed": false,
+  "optimize": {
+    "baked_modifiers": 404,
+    "merged": 0,
+    "meshes_before": 482,
+    "meshes_after": 250,
+    "unshared": 0,
+    "instanced": {
+      "SCENERY_boulder_1_instances": 3,
+      "SCENERY_boulder_2_instances": 3,
+      "SCENERY_creosote_1_instances": 2,
+      "SCENERY_dead_branch_1_instances": 3,
+      "SCENERY_dead_branch_2_instances": 3,
+      "SCENERY_dry_grass_2_instances": 134,
+      "SCENERY_rock_1_instances": 8,
+      "SCENERY_rock_2_instances": 8
+    },
+    "instances": 164,
+    "no_shadow": 32,
+    "purged": 242,
+    "seconds": 0.91,
+    "glb_meshes": 250,
+    "instanced_nodes": 8
+  },
+  "budget": {
+    "triangles": 300000,
+    "mb": 30.0,
+    "draw_calls": 1600
+  },
+  "seconds": 5.47,
+  "cpu_seconds": 15.36
+}
