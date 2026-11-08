@@ -179,7 +179,7 @@ export function mountConsole(H) {
 
   // --------------------------------------------------------- helpers ----
   function nowMin() { return toMin(liveFeed.live.clock) ?? toMin(H.clockNow()); }
-  function nowClock() { return liveFeed.live.clock ? clock12(toMin(liveFeed.live.clock)) : H.clockNow(); }
+  function nowClock() { return liveFeed.live.dataset && liveFeed.live.clock ? `${liveFeed.live.clock} utc` : liveFeed.live.clock ? clock12(toMin(liveFeed.live.clock)) : H.clockNow(); }
   function post(path, body, ms = 15000) { return authPost(`${BASE}${path}`, body, ms); }
   async function getJson(path) {
     const r = await fetch(`${BASE}${path}`);
