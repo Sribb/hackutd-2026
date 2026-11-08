@@ -147,3 +147,27 @@ def test_approve_radio_script_matches_the_plan():
         radio = client.post(f"/api/plans/{p['id']}/approve").json()["radio_script"]
         if not p["robust"]:
             assert "every tank stays below shutdown" not in radio.lower(), radio
+
+
+# ---------- SpacetimeDB writer lock (D2) ----------
+
+def test_spacetime_push_claims_the_writer_role_first(monkeypatch):
+    from backend.app import spacetime_sync
+    from backend.app.scenario import load_scenario, state_payload
+
+    calls = []
+    monkeypatch.setattr(spacetime_sync, "_config", lambda: ("http://x", "db", "tok"))
+    monkeypatch.setattr(spacetime_sync, "call_reducer", lambda r, a, timeout=3.0: calls.append(r))
+    monkeypatch.setattr(spacetime_sync, "_claimed", False)
+    assert spacetime_sync.push_state(state_payload(load_scenario()))
+    assert calls[0] == "claim_writer" and "upsert_asset" in calls
+    spacetime_sync.push_state(state_payload(load_scenario()))
+    assert calls.count("claim_writer") == 1
+
+
+def test_spacetime_module_locks_every_live_state_writer():
+    from pathlib import Path
+    src = (Path(__file__).resolve().parents[1] / "spacetime" / "src" / "index.ts").read_text(encoding="utf-8")
+    for reducer in ("upsert_asset", "set_clock", "set_plan", "mark_step_done", "clear_actions"):
+        body = src.split(f"export const {reducer} =", 1)[1].split("export const", 1)[0]
+        assert "requireWriter(ctx)" in body, reducer
