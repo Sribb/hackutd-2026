@@ -9,6 +9,9 @@ import { ICON } from "../gaia/icons.js";
 const SUGGEST = [["what's failing", "What's failing?"], ["how long do we have", "Time left"], ["cheapest fix", "What's the cheapest fix?"], ["show tank 3", "show tank 3"]];
 const CHIPS_SEL = [["open", "open it"], ["sensors", "show its sensors"], ["pipes", "trace its pipes"], ["isolate", "isolate it"], ["reset", "reset"]];
 
+// What to say, under the big mic: the examples follow the field (dataset mode names its own tank).
+const talkEg = (asset) => ["walk me through it", asset, "what's the cheapest fix?"].map((t) => `<span>"${esc(t)}"</span>`).join(" ");
+
 export function mountSidebar(app, on) {
   const side = document.createElement("section");
   side.id = "csJarvis";
@@ -26,23 +29,31 @@ export function mountSidebar(app, on) {
       <button type="button" class="cs-icon" id="csClose" title="Hide the chat (J)" aria-label="Hide the chat">${ICON.expand}</button>
     </header>
     <div class="cs-help" id="csHelpCard" hidden>
-      keys: j chat · / ask · hold space to talk · esc reset view · t time<br>
+      voice: hold space (or hold a mic) and talk; release to send. try "walk me through it", "show its sensors", "trace its pipes", "open the plans", "go to 3 am", "reset".<br>
+      keys: j chat · / type · esc reset view · t time<br>
       hands: point to look · pinch to select · pinch and drag to turn · open palm to stop · two hands to zoom. hands never confirm a fix.
     </div>
     <div class="cs-scroll" id="csScroll">
-      <div class="cs-hello" id="csHello"><h1 id="csHelloText">what's happening on the field?</h1></div>
+      <div class="cs-hello" id="csHello"><h1 id="csHelloText">what's happening on the field?</h1>
+        <div class="cs-talk-hero">
+          <button type="button" class="cs-talk" id="csTalk" aria-label="Talk to gaia">${ICON.mic}</button>
+          <p class="cs-talk-hint"><kbd>hold space</kbd> and talk, or hold the mic</p>
+          <p class="cs-talk-eg" id="csTalkEg">${talkEg("show tank 3")}</p>
+          <button type="button" class="cs-talk-hands" id="csHandsHero" aria-pressed="false">or use your hands: point, pinch, open palm</button>
+        </div>
+      </div>
       <ol class="cs-stream" id="csStream" aria-live="polite"></ol>
       <section class="cs-fix" id="csFix" hidden aria-live="assertive"></section>
     </div>
     <div class="cs-dock">
       <div class="cs-quick" id="csQuick"></div>
       <form class="cs-ask" id="csAsk" autocomplete="off">
-        <input id="csInput" placeholder="ask gaia anything" aria-label="Ask gaia" enterkeyhint="send">
+        <input id="csInput" placeholder="or type to gaia" aria-label="Ask gaia" enterkeyhint="send">
         <div class="cs-ask-row">
           <span class="cs-selchip" id="csSel" hidden></span>
           <label class="cs-hands" title="Hand control: the camera stays on this laptop. Hands never confirm."><input type="checkbox" id="csHands" role="switch" aria-label="Hand control"><i></i><span>hands</span></label>
           <span class="cs-grow"></span>
-          <button type="button" class="cs-mic" id="csMic" title="Speak to gaia" aria-label="Speak to gaia">${ICON.mic}</button>
+          <button type="button" class="cs-mic cs-mic-main" id="csMic" aria-label="Talk to gaia">${ICON.mic}</button>
           <button type="submit" class="cs-send" id="csSend" aria-label="Send">${ICON.up}</button>
         </div>
       </form>
@@ -57,6 +68,7 @@ export function mountSidebar(app, on) {
   $("csNewTop").onclick = () => on("new");
   $("csHelp").onclick = () => { $("csHelpCard").hidden = !$("csHelpCard").hidden; };
   $("csHands").onchange = (e) => on("hands", e.target.checked);
+  $("csHandsHero").onclick = () => { const box = $("csHands"); box.checked = !box.checked; on("hands", box.checked); };
   $("csAsk").onsubmit = (e) => {
     e.preventDefault();
     const v = $("csInput").value;
@@ -74,11 +86,17 @@ export function mountSidebar(app, on) {
     fix: $("csFix"),
     input: $("csInput"),
     mic: $("csMic"),
+    talk: $("csTalk"),
     send: $("csSend"),
     setTitle(t) { if ($("csTitle").textContent !== t) $("csTitle").textContent = t; },
     setHello(t) { if ($("csHelloText").textContent !== t) $("csHelloText").textContent = t; },
     // The "show tank 3" pill names an asset this field has (dataset mode: its first tank).
-    suggestAsset(say) { const b = $("csSugg").querySelector("[data-k=asset]"); if (b) { b.textContent = say; b.dataset.say = say; } },
+    suggestAsset(say) {
+      const b = $("csSugg").querySelector("[data-k=asset]");
+      if (b) { b.textContent = say; b.dataset.say = say; }
+      const eg = $("csTalkEg"), html = talkEg(say);
+      if (eg._h !== html) { eg.innerHTML = html; eg._h = html; }
+    },
     setLive(level, text) {
       const html = `<span class="cs-dot ${level}"></span> <span>${esc(text)}</span>`;
       if ($("csLive")._h !== html) { $("csLive").innerHTML = html; $("csLive")._h = html; }
@@ -88,6 +106,9 @@ export function mountSidebar(app, on) {
       box.checked = state === "live" || state === "starting";
       box.closest(".cs-hands").dataset.state = state;
       box.closest(".cs-hands").querySelector("span").textContent = state === "starting" ? "starting…" : "hands";
+      const hero = $("csHandsHero");
+      hero.setAttribute("aria-pressed", String(box.checked));
+      hero.textContent = state === "starting" ? "starting the camera…" : box.checked ? "hands on: point to look, pinch to select, open palm to stop" : state === "unavailable" ? "hand control needs a camera" : "or use your hands: point, pinch, open palm";
     },
     setSelection(id, nice) {
       const key = id ? `sel:${id}` : "none";

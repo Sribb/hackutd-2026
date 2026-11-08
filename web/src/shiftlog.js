@@ -48,8 +48,8 @@ export function flushEarly() {
 
 // With a live layer, the backend's clock is the shift clock (#42 one clock): "HH:MM" plus
 // the live minute's fraction for seconds. Without one, the boot clock runs in real time.
-let follow = null;
-export function followClock(fn) { follow = fn; }
+let follow = null, utc = null;
+export function followClock(fn, isUtc = null) { follow = fn; utc = isUtc; }
 
 export function clockNow(seconds = false, plusMin = 0) {
   let x;
@@ -64,6 +64,7 @@ export function clockNow(seconds = false, plusMin = 0) {
   x = ((x % 86400) + 86400) % 86400;
   const hh = Math.floor(x / 3600), mm = Math.floor(x / 60) % 60, ss = x % 60;
   const sec = seconds ? `:${String(ss).padStart(2, "0")}` : "";
+  if (utc && utc()) return `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}${sec} utc`;
   return `${hh % 12 || 12}:${String(mm).padStart(2, "0")}${sec} ${hh < 12 ? "AM" : "PM"}`;
 }
 

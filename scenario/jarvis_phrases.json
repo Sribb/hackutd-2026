@@ -1,0 +1,1221 @@
+{
+ "_doc": "Jarvis phrases (docs/JARVIS_CONSOLE.md section 5). Shared by backend/tests/test_jarvis_phrases.py and the web's Playwright suite. Each row: apply `setup` (API calls, below) to a fresh field, POST /api/jarvis {message: text, selected_asset_ids: selected}, then expect HTTP 200, source 'rules', the reply's ui[] actions in this order (a listed asset_id or args must match; unlisted ones may be anything), proposals: exactly one of type `proposal` ('*' any type) or none when null, offers: one of type `offer` or none, and the reply text checks. No reply may contain any of `never`. Route L rows are answered in the browser by the console (web/src/console/intents.js) with no network; the backend gives the same directive for phones and for this test. Against a shared server, reject PENDING proposals between rows.",
+ "never": [
+  "All quiet",
+  "all quiet",
+  "all clear",
+  "All clear",
+  "every tank is safe",
+  "Every tank is safe"
+ ],
+ "setups": {
+  "trip": [
+   {
+    "post": "/api/live/faults",
+    "body": {
+     "asset_id": "PUMP_3",
+     "type": "TRIP",
+     "reason": "phrase test"
+    }
+   },
+   {
+    "post": "/api/live/sim",
+    "body": {
+     "advance_min": 0.5
+    }
+   },
+   {
+    "post": "/api/live/sim",
+    "body": {
+     "advance_min": 0.5
+    }
+   },
+   {
+    "post": "/api/live/sim",
+    "body": {
+     "advance_min": 0.5
+    }
+   }
+  ],
+  "stale_tank_5": [
+   {
+    "post": "/api/live/faults",
+    "body": {
+     "asset_id": "PUMP_3",
+     "type": "TRIP",
+     "reason": "phrase test"
+    }
+   },
+   {
+    "post": "/api/live/faults",
+    "body": {
+     "asset_id": "TANK_5",
+     "type": "SENSOR_STALE"
+    }
+   },
+   {
+    "post": "/api/live/sim",
+    "body": {
+     "advance_min": 2
+    }
+   },
+   {
+    "post": "/api/live/sim",
+    "body": {
+     "advance_min": 2
+    }
+   },
+   {
+    "post": "/api/live/sim",
+    "body": {
+     "advance_min": 2
+    }
+   }
+  ]
+ },
+ "phrases": [
+  {
+   "text": "open pump 3",
+   "route": "L",
+   "setup": "trip",
+   "ui": [
+    {
+     "action": "explode",
+     "asset_id": "PUMP_3"
+    }
+   ],
+   "proposal": null,
+   "reply_has": [
+    "taken apart"
+   ]
+  },
+  {
+   "text": "open well 9",
+   "route": "L",
+   "setup": "trip",
+   "ui": [
+    {
+     "action": "explode",
+     "asset_id": "WELL_9"
+    }
+   ],
+   "proposal": null,
+   "reply_has": [
+    "taken apart"
+   ]
+  },
+  {
+   "text": "open tank 3",
+   "route": "L",
+   "setup": "trip",
+   "ui": [
+    {
+     "action": "explode",
+     "asset_id": "TANK_3"
+    }
+   ],
+   "proposal": null,
+   "reply_has": [
+    "taken apart"
+   ]
+  },
+  {
+   "text": "break down pump 3",
+   "route": "L",
+   "setup": "trip",
+   "ui": [
+    {
+     "action": "explode",
+     "asset_id": "PUMP_3"
+    }
+   ],
+   "proposal": null,
+   "reply_has": [
+    "taken apart"
+   ]
+  },
+  {
+   "text": "take apart tank 3",
+   "route": "L",
+   "setup": "trip",
+   "ui": [
+    {
+     "action": "explode",
+     "asset_id": "TANK_3"
+    }
+   ],
+   "proposal": null,
+   "reply_has": [
+    "taken apart"
+   ]
+  },
+  {
+   "text": "show parts of pump 3",
+   "route": "L",
+   "setup": "trip",
+   "ui": [
+    {
+     "action": "explode",
+     "asset_id": "PUMP_3"
+    }
+   ],
+   "proposal": null,
+   "reply_has": [
+    "taken apart"
+   ]
+  },
+  {
+   "text": "break down valve d 3",
+   "route": "L",
+   "setup": "trip",
+   "ui": [
+    {
+     "action": "explode",
+     "asset_id": "VALVE_D_3"
+    }
+   ],
+   "proposal": null,
+   "reply_has": [
+    "taken apart"
+   ]
+  },
+  {
+   "text": "open it",
+   "route": "L",
+   "setup": "trip",
+   "selected": [
+    "PUMP_3"
+   ],
+   "ui": [
+    {
+     "action": "explode",
+     "asset_id": "PUMP_3"
+    }
+   ],
+   "proposal": null
+  },
+  {
+   "text": "open the crossover",
+   "route": "R",
+   "setup": "trip",
+   "ui": [
+    {
+     "action": "focus",
+     "asset_id": "VALVE_XO_34"
+    }
+   ],
+   "proposal": "SET_VALVE",
+   "reply_has": [
+    "waiting for your confirmation"
+   ],
+   "note": "Equipment: one PENDING proposal and no explode."
+  },
+  {
+   "text": "open it",
+   "route": "R",
+   "setup": "trip",
+   "selected": [
+    "VALVE_XO_34"
+   ],
+   "ui": [
+    {
+     "action": "focus",
+     "asset_id": "VALVE_XO_34"
+    }
+   ],
+   "proposal": "SET_VALVE",
+   "note": "A selected valve: 'open it' is the valve itself. Say 'break down' to take a valve apart."
+  },
+  {
+   "text": "open the pump 3 discharge valve",
+   "route": "R",
+   "setup": "trip",
+   "ui": [
+    {
+     "action": "focus",
+     "asset_id": "VALVE_D_3"
+    }
+   ],
+   "proposal": "SET_VALVE"
+  },
+  {
+   "text": "close it",
+   "route": "L",
+   "setup": "trip",
+   "ui": [
+    {
+     "action": "collapse"
+    }
+   ],
+   "proposal": null
+  },
+  {
+   "text": "put it back",
+   "route": "L",
+   "setup": "trip",
+   "ui": [
+    {
+     "action": "collapse"
+    }
+   ],
+   "proposal": null
+  },
+  {
+   "text": "collapse",
+   "route": "L",
+   "setup": "trip",
+   "ui": [
+    {
+     "action": "collapse"
+    }
+   ],
+   "proposal": null
+  },
+  {
+   "text": "show tank 3's sensors",
+   "route": "L",
+   "setup": "trip",
+   "ui": [
+    {
+     "action": "show_sensors",
+     "asset_id": "TANK_3"
+    }
+   ],
+   "proposal": null,
+   "reply_has": [
+    "Tank 3"
+   ]
+  },
+  {
+   "text": "sensors on pump 3",
+   "route": "L",
+   "setup": "trip",
+   "ui": [
+    {
+     "action": "show_sensors",
+     "asset_id": "PUMP_3"
+    }
+   ],
+   "proposal": null,
+   "reply_has": [
+    "Pump 3"
+   ]
+  },
+  {
+   "text": "show all sensors",
+   "route": "L",
+   "setup": "trip",
+   "ui": [
+    {
+     "action": "show_sensors",
+     "asset_id": "ALL"
+    }
+   ],
+   "proposal": null
+  },
+  {
+   "text": "which sensors are stale",
+   "route": "R",
+   "setup": "stale_tank_5",
+   "ui": [
+    {
+     "action": "show_sensors",
+     "asset_id": "ALL"
+    }
+   ],
+   "proposal": null,
+   "reply_has": [
+    "Tank 5",
+    "unknown"
+   ]
+  },
+  {
+   "text": "sensor ages",
+   "route": "R",
+   "setup": "stale_tank_5",
+   "ui": [
+    {
+     "action": "show_sensors",
+     "asset_id": "ALL"
+    }
+   ],
+   "proposal": null,
+   "reply_has": [
+    "Tank 5"
+   ]
+  },
+  {
+   "text": "isolate tank 3",
+   "route": "L",
+   "setup": "trip",
+   "ui": [
+    {
+     "action": "isolate",
+     "asset_id": "TANK_3"
+    }
+   ],
+   "proposal": null
+  },
+  {
+   "text": "only pump 3",
+   "route": "L",
+   "setup": "trip",
+   "ui": [
+    {
+     "action": "isolate",
+     "asset_id": "PUMP_3"
+    }
+   ],
+   "proposal": null
+  },
+  {
+   "text": "just tank 3",
+   "route": "L",
+   "setup": "trip",
+   "ui": [
+    {
+     "action": "isolate",
+     "asset_id": "TANK_3"
+    }
+   ],
+   "proposal": null
+  },
+  {
+   "text": "trace tank 3's pipes",
+   "route": "L",
+   "setup": "trip",
+   "ui": [
+    {
+     "action": "trace_pipes",
+     "asset_id": "TANK_3",
+     "args": {
+      "direction": "both"
+     }
+    }
+   ],
+   "proposal": null
+  },
+  {
+   "text": "where does tank 3 drain",
+   "route": "L",
+   "setup": "trip",
+   "ui": [
+    {
+     "action": "trace_pipes",
+     "asset_id": "TANK_3",
+     "args": {
+      "direction": "downstream"
+     }
+    }
+   ],
+   "proposal": null
+  },
+  {
+   "text": "follow well 9",
+   "route": "L",
+   "setup": "trip",
+   "ui": [
+    {
+     "action": "trace_pipes",
+     "asset_id": "WELL_9",
+     "args": {
+      "direction": "both"
+     }
+    }
+   ],
+   "proposal": null
+  },
+  {
+   "text": "show tank 3",
+   "route": "L",
+   "setup": "trip",
+   "ui": [
+    {
+     "action": "focus",
+     "asset_id": "TANK_3"
+    }
+   ],
+   "proposal": null,
+   "reply_has": [
+    "Tank 3"
+   ]
+  },
+  {
+   "text": "go to pump 3",
+   "route": "L",
+   "setup": "trip",
+   "ui": [
+    {
+     "action": "focus",
+     "asset_id": "PUMP_3"
+    }
+   ],
+   "proposal": null,
+   "reply_has": [
+    "Pump 3"
+   ]
+  },
+  {
+   "text": "where is tank 3",
+   "route": "L",
+   "setup": "trip",
+   "ui": [
+    {
+     "action": "focus",
+     "asset_id": "TANK_3"
+    }
+   ],
+   "proposal": null,
+   "reply_has": [
+    "Tank 3"
+   ]
+  },
+  {
+   "text": "reset",
+   "route": "L",
+   "setup": "trip",
+   "ui": [
+    {
+     "action": "reset_view"
+    }
+   ],
+   "proposal": null
+  },
+  {
+   "text": "reset view",
+   "route": "L",
+   "setup": "trip",
+   "ui": [
+    {
+     "action": "reset_view"
+    }
+   ],
+   "proposal": null
+  },
+  {
+   "text": "home",
+   "route": "L",
+   "setup": "trip",
+   "ui": [
+    {
+     "action": "reset_view"
+    }
+   ],
+   "proposal": null
+  },
+  {
+   "text": "overview",
+   "route": "L",
+   "setup": "trip",
+   "ui": [
+    {
+     "action": "reset_view"
+    }
+   ],
+   "proposal": null
+  },
+  {
+   "text": "start over",
+   "route": "L",
+   "setup": "trip",
+   "ui": [
+    {
+     "action": "reset_view"
+    }
+   ],
+   "proposal": null
+  },
+  {
+   "text": "in 1 hour",
+   "route": "L",
+   "setup": "trip",
+   "ui": [
+    {
+     "action": "set_time",
+     "args": {
+      "t_min": 60
+     }
+    }
+   ],
+   "proposal": null
+  },
+  {
+   "text": "+30 min",
+   "route": "L",
+   "setup": "trip",
+   "ui": [
+    {
+     "action": "set_time",
+     "args": {
+      "t_min": 30
+     }
+    }
+   ],
+   "proposal": null
+  },
+  {
+   "text": "at 3 am",
+   "route": "L",
+   "setup": "trip",
+   "ui": [
+    {
+     "action": "set_time"
+    }
+   ],
+   "proposal": null
+  },
+  {
+   "text": "back to now",
+   "route": "L",
+   "setup": "trip",
+   "ui": [
+    {
+     "action": "set_time",
+     "args": {
+      "t_min": 0
+     }
+    }
+   ],
+   "proposal": null
+  },
+  {
+   "text": "live",
+   "route": "L",
+   "setup": "trip",
+   "ui": [
+    {
+     "action": "set_time",
+     "args": {
+      "t_min": 0
+     }
+    }
+   ],
+   "proposal": null
+  },
+  {
+   "text": "hands on",
+   "route": "L",
+   "setup": "trip",
+   "ui": [],
+   "proposal": null,
+   "note": "The browser toggles hands; the server only says where the switch is."
+  },
+  {
+   "text": "hands off",
+   "route": "L",
+   "setup": "trip",
+   "ui": [],
+   "proposal": null
+  },
+  {
+   "text": "what's failing",
+   "route": "R",
+   "setup": "trip",
+   "ui": [
+    {
+     "action": "focus",
+     "asset_id": "PUMP_3"
+    }
+   ],
+   "proposal": null,
+   "reply_has": [
+    "Pump 3"
+   ]
+  },
+  {
+   "text": "what's wrong",
+   "route": "R",
+   "setup": "trip",
+   "ui": [
+    {
+     "action": "focus",
+     "asset_id": "PUMP_3"
+    }
+   ],
+   "proposal": null,
+   "reply_has": [
+    "Pump 3"
+   ]
+  },
+  {
+   "text": "status",
+   "route": "R",
+   "setup": "trip",
+   "ui": [
+    {
+     "action": "focus",
+     "asset_id": "PUMP_3"
+    }
+   ],
+   "proposal": null,
+   "reply_has": [
+    "Pump 3"
+   ]
+  },
+  {
+   "text": "alarms",
+   "route": "R",
+   "setup": "trip",
+   "ui": [
+    {
+     "action": "focus",
+     "asset_id": "PUMP_3"
+    }
+   ],
+   "proposal": null,
+   "reply_has": [
+    "Pump 3"
+   ]
+  },
+  {
+   "text": "sitrep",
+   "route": "R",
+   "setup": "trip",
+   "ui": [
+    {
+     "action": "focus",
+     "asset_id": "PUMP_3"
+    }
+   ],
+   "proposal": null,
+   "reply_has": [
+    "Pump 3"
+   ]
+  },
+  {
+   "text": "what's failing",
+   "route": "R",
+   "setup": "stale_tank_5",
+   "ui": [
+    {
+     "action": "focus"
+    }
+   ],
+   "proposal": null,
+   "reply_has": [
+    "Tank 5"
+   ]
+  },
+  {
+   "text": "status of tank 3",
+   "route": "R",
+   "setup": "trip",
+   "ui": [
+    {
+     "action": "focus",
+     "asset_id": "TANK_3"
+    }
+   ],
+   "proposal": null,
+   "reply_starts": "Tank 3"
+  },
+  {
+   "text": "status of PUMP_3",
+   "route": "R",
+   "setup": "trip",
+   "ui": [
+    {
+     "action": "focus",
+     "asset_id": "PUMP_3"
+    }
+   ],
+   "proposal": null,
+   "reply_starts": "Pump 3",
+   "note": "The pinch's question."
+  },
+  {
+   "text": "what's going on with pump 3",
+   "route": "R",
+   "setup": "trip",
+   "ui": [
+    {
+     "action": "focus",
+     "asset_id": "PUMP_3"
+    }
+   ],
+   "proposal": null,
+   "reply_starts": "Pump 3"
+  },
+  {
+   "text": "how's pump 3",
+   "route": "R",
+   "setup": "trip",
+   "ui": [
+    {
+     "action": "focus",
+     "asset_id": "PUMP_3"
+    }
+   ],
+   "proposal": null,
+   "reply_starts": "Pump 3"
+  },
+  {
+   "text": "status of it",
+   "route": "R",
+   "setup": "trip",
+   "selected": [
+    "TANK_3"
+   ],
+   "ui": [
+    {
+     "action": "focus",
+     "asset_id": "TANK_3"
+    }
+   ],
+   "proposal": null,
+   "reply_starts": "Tank 3"
+  },
+  {
+   "text": "tell me about valve xo 34",
+   "route": "R",
+   "setup": "trip",
+   "ui": [
+    {
+     "action": "focus",
+     "asset_id": "VALVE_XO_34"
+    }
+   ],
+   "proposal": null,
+   "reply_starts": "The Tank 3 to 4 crossover"
+  },
+  {
+   "text": "why is tank 3 rising",
+   "route": "R",
+   "setup": "trip",
+   "ui": [
+    {
+     "action": "focus",
+     "asset_id": "TANK_3"
+    }
+   ],
+   "proposal": null,
+   "reply_starts": "Tank 3",
+   "reply_has": [
+    "Pump 3",
+    "shutdown"
+   ],
+   "note": "Exempt from COMPLEX: rules even with an API key."
+  },
+  {
+   "text": "why is tank 3 filling",
+   "route": "R",
+   "setup": "trip",
+   "ui": [
+    {
+     "action": "focus",
+     "asset_id": "TANK_3"
+    }
+   ],
+   "proposal": null,
+   "reply_starts": "Tank 3",
+   "reply_has": [
+    "Pump 3",
+    "shutdown"
+   ],
+   "note": "Exempt from COMPLEX: rules even with an API key."
+  },
+  {
+   "text": "why is tank 3 red",
+   "route": "R",
+   "setup": "trip",
+   "ui": [
+    {
+     "action": "focus",
+     "asset_id": "TANK_3"
+    }
+   ],
+   "proposal": null,
+   "reply_starts": "Tank 3",
+   "reply_has": [
+    "Pump 3",
+    "shutdown"
+   ],
+   "note": "Exempt from COMPLEX: rules even with an API key."
+  },
+  {
+   "text": "why is pump 3 down",
+   "route": "R",
+   "setup": "trip",
+   "ui": [
+    {
+     "action": "focus",
+     "asset_id": "PUMP_3"
+    }
+   ],
+   "proposal": null,
+   "reply_starts": "Pump 3"
+  },
+  {
+   "text": "time left",
+   "route": "R",
+   "setup": "trip",
+   "ui": [
+    {
+     "action": "focus",
+     "asset_id": "TANK_3"
+    }
+   ],
+   "proposal": null,
+   "reply_has": [
+    "Tank 3 reaches shutdown"
+   ]
+  },
+  {
+   "text": "how long",
+   "route": "R",
+   "setup": "trip",
+   "ui": [
+    {
+     "action": "focus",
+     "asset_id": "TANK_3"
+    }
+   ],
+   "proposal": null,
+   "reply_has": [
+    "Tank 3 reaches shutdown"
+   ]
+  },
+  {
+   "text": "countdown",
+   "route": "R",
+   "setup": "trip",
+   "ui": [
+    {
+     "action": "focus",
+     "asset_id": "TANK_3"
+    }
+   ],
+   "proposal": null,
+   "reply_has": [
+    "Tank 3 reaches shutdown"
+   ]
+  },
+  {
+   "text": "when does tank 3 shut down",
+   "route": "R",
+   "setup": "trip",
+   "ui": [
+    {
+     "action": "focus",
+     "asset_id": "TANK_3"
+    }
+   ],
+   "proposal": null,
+   "reply_has": [
+    "Tank 3"
+   ]
+  },
+  {
+   "text": "time left",
+   "route": "R",
+   "setup": "stale_tank_5",
+   "ui": [
+    {
+     "action": "focus"
+    }
+   ],
+   "proposal": null,
+   "reply_starts": "I have no current reading for Tank 5"
+  },
+  {
+   "text": "cheapest fix",
+   "route": "R",
+   "setup": "trip",
+   "ui": [
+    {
+     "action": "focus"
+    }
+   ],
+   "proposal": null,
+   "reply_has": [
+    "Cheapest plan"
+   ]
+  },
+  {
+   "text": "what should I do",
+   "route": "R",
+   "setup": "trip",
+   "ui": [
+    {
+     "action": "focus"
+    }
+   ],
+   "proposal": null,
+   "reply_has": [
+    "Cheapest plan"
+   ]
+  },
+  {
+   "text": "plans",
+   "route": "R",
+   "setup": "trip",
+   "ui": [
+    {
+     "action": "focus"
+    }
+   ],
+   "proposal": null,
+   "reply_has": [
+    "Cheapest plan"
+   ]
+  },
+  {
+   "text": "options",
+   "route": "R",
+   "setup": "trip",
+   "ui": [
+    {
+     "action": "focus"
+    }
+   ],
+   "proposal": null,
+   "reply_has": [
+    "Cheapest plan"
+   ]
+  },
+  {
+   "text": "last call",
+   "route": "R",
+   "setup": "trip",
+   "ui": [],
+   "proposal": null
+  },
+  {
+   "text": "deadline",
+   "route": "R",
+   "setup": "trip",
+   "ui": [],
+   "proposal": null
+  },
+  {
+   "text": "what if I open the crossover",
+   "route": "R",
+   "setup": "trip",
+   "ui": [
+    {
+     "action": "try_whatif"
+    }
+   ],
+   "proposal": null,
+   "reply_has": [
+    "Nothing was sent"
+   ]
+  },
+  {
+   "text": "what if I send truck 1",
+   "route": "R",
+   "setup": "trip",
+   "ui": [
+    {
+     "action": "try_whatif"
+    }
+   ],
+   "proposal": null,
+   "reply_has": [
+    "Nothing was sent"
+   ]
+  },
+  {
+   "text": "what if I shut in well 9",
+   "route": "R",
+   "setup": "trip",
+   "ui": [
+    {
+     "action": "try_whatif"
+    }
+   ],
+   "proposal": null,
+   "reply_has": [
+    "Nothing was sent"
+   ]
+  },
+  {
+   "text": "send truck 1 to tank 3",
+   "route": "R",
+   "setup": "trip",
+   "ui": [
+    {
+     "action": "focus",
+     "asset_id": "TRUCK_1"
+    }
+   ],
+   "proposal": "SEND_TRUCK"
+  },
+  {
+   "text": "shut in well 9",
+   "route": "R",
+   "setup": "trip",
+   "ui": [
+    {
+     "action": "focus",
+     "asset_id": "WELL_9"
+    }
+   ],
+   "proposal": "CHOKE_WELL"
+  },
+  {
+   "text": "choke well 9 to 50%",
+   "route": "R",
+   "setup": "trip",
+   "ui": [
+    {
+     "action": "focus",
+     "asset_id": "WELL_9"
+    }
+   ],
+   "proposal": "CHOKE_WELL"
+  },
+  {
+   "text": "turn off pump 2",
+   "route": "R",
+   "setup": "trip",
+   "ui": [
+    {
+     "action": "focus",
+     "asset_id": "PUMP_2"
+    }
+   ],
+   "proposal": "SET_PUMP"
+  },
+  {
+   "text": "fix it",
+   "route": "R",
+   "setup": "trip",
+   "ui": [
+    {
+     "action": "focus"
+    }
+   ],
+   "proposal": "*",
+   "reply_has": [
+    "Step 1 of"
+   ]
+  },
+  {
+   "text": "run the plan",
+   "route": "R",
+   "setup": "trip",
+   "ui": [
+    {
+     "action": "focus"
+    }
+   ],
+   "proposal": "*",
+   "reply_has": [
+    "Step 1 of"
+   ]
+  },
+  {
+   "text": "approve the cheapest plan",
+   "route": "R",
+   "setup": "trip",
+   "ui": [
+    {
+     "action": "focus"
+    }
+   ],
+   "proposal": "*",
+   "reply_has": [
+    "Step 1 of"
+   ]
+  },
+  {
+   "text": "don't run the plan",
+   "route": "R",
+   "setup": "trip",
+   "ui": [],
+   "proposal": null,
+   "reply_has": [
+    "Nothing started"
+   ]
+  },
+  {
+   "text": "fix it?",
+   "route": "R",
+   "setup": "trip",
+   "ui": [
+    {
+     "action": "focus"
+    }
+   ],
+   "proposal": null,
+   "reply_has": [
+    "run the plan"
+   ]
+  },
+  {
+   "text": "acknowledge it",
+   "route": "R",
+   "setup": "trip",
+   "selected": [
+    "PUMP_3"
+   ],
+   "ui": [],
+   "proposal": null,
+   "offer": "ack"
+  },
+  {
+   "text": "ack the pump alarm",
+   "route": "R",
+   "setup": "trip",
+   "ui": [],
+   "proposal": null,
+   "offer": "ack"
+  },
+  {
+   "text": "shelve the tank 5 alarm for 30 min because crew is on it",
+   "route": "R",
+   "setup": "stale_tank_5",
+   "ui": [],
+   "proposal": null,
+   "offer": "shelve"
+  },
+  {
+   "text": "shelve the pump 3 alarm for 30 min",
+   "route": "R",
+   "setup": "trip",
+   "ui": [],
+   "proposal": null,
+   "reply_starts": "Why? A shelve needs a reason."
+  },
+  {
+   "text": "who opened the crossover",
+   "route": "R",
+   "setup": "trip",
+   "ui": [],
+   "proposal": null
+  },
+  {
+   "text": "what did we do",
+   "route": "R",
+   "setup": "trip",
+   "ui": [],
+   "proposal": null
+  },
+  {
+   "text": "audit",
+   "route": "R",
+   "setup": "trip",
+   "ui": [],
+   "proposal": null
+  },
+  {
+   "text": "what am I looking at",
+   "route": "R",
+   "setup": "trip",
+   "selected": [
+    "TANK_3"
+   ],
+   "ui": [
+    {
+     "action": "focus",
+     "asset_id": "TANK_3"
+    }
+   ],
+   "proposal": null,
+   "reply_has": [
+    "Tank 3"
+   ]
+  }
+ ]
+}

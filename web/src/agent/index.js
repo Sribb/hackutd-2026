@@ -1,8 +1,9 @@
-// gaia as an agent (#171): it works on the screen in steps, talks, and listens.
+// gaia as an agent (#171): it works on the screen in steps and listens. Speech is the main
+// control and typing the fallback; gaia answers on screen only, never aloud.
 //   steps.js     plays a reply's UI directives one by one under a ticking step list
-//   voice.js     push to talk (hold space or click the mic) and spoken replies, with mute
+//   voice.js     push to talk: hold space, or hold or click any mic
 //   playbook.js  "walk me through it" with no Claude: the same steps from the console's data
-// console/index.js mounts this once and calls play(), spoke(), before() and stop(); the open
+// console/index.js mounts this once and calls play(), before() and stop(); the open
 // palm (hands.js, agentic mode) calls stop() through the "gaia:palm" event.
 
 import { makeSteps } from "./steps.js";
@@ -15,14 +16,15 @@ const ABOUT = /\b(this|it|its|it's|that|this one|that one)\b/;
 const ASKS = /\b(wrong|status|how'?s|how is|doing|explain|tell me|about|happening|going on|okay)\b/;
 
 // H: { side, stream, apply(d), nice, hasId, selected, brief, alerts, unknown, tankOf,
-//      say(text, extra), ask(text), closePanels(), chart(text) -> Promise, BASE, getJson(path) }
+//      say(text, extra), ask(text), closePanels(), chart(text) -> Promise, BASE, getJson(path),
+//      now() -> minutes, clock(min) -> the console's clock words, dataset() -> bool }
 export function mountAgent(H) {
   // A "chart" step is a chart card (#159, drawn from the data, no AI); the rest are directives.
   const chartText = (d) => d.text || (d.asset_id ? `plot ${String(H.nice(d.asset_id)).toLowerCase()} ${/^(PUMP|WELL|SWD)_/.test(d.asset_id) ? "flow" : "level"}` : "");
   const apply = (d) => (d.action === "chart" ? (H.chart && chartText(d) ? H.chart(chartText(d)) : "") : H.apply(d));
-  const steps = makeSteps({ stream: H.stream, apply, nice: H.nice });
+  const steps = makeSteps({ stream: H.stream, apply, nice: H.nice, hasId: H.hasId });
   const voice = mountVoice({
-    dock: H.side.el.querySelector(".cs-dock"), input: H.side.input, mic: H.side.mic,
+    dock: H.side.el.querySelector(".cs-dock"), input: H.side.input, mic: H.side.mic, mics: H.mics || [],
     send: (text) => H.ask(text),
   });
 
@@ -39,7 +41,8 @@ export function mountAgent(H) {
   function before(text) {
     const t = normalize(text).trim();
     if (WALK.test(t) && !llm) {
-      const w = walkthrough({ brief: H.brief, alerts: H.alerts, unknown: H.unknown, nice: H.nice, hasId: H.hasId, tankOf: H.tankOf, selected: H.selected });
+      const w = walkthrough({ brief: H.brief, alerts: H.alerts, unknown: H.unknown, nice: H.nice, hasId: H.hasId, tankOf: H.tankOf, selected: H.selected,
+        now: H.now, clock: H.clock, dataset: H.dataset });
       H.stream.showTyping("J");
       setTimeout(async () => {
         H.stream.hideTyping("J");
@@ -57,7 +60,6 @@ export function mountAgent(H) {
 
   function stop() {
     steps.cancel();
-    voice.hush();
     voice.stopListening();
     H.closePanels();
   }
@@ -65,10 +67,9 @@ export function mountAgent(H) {
 
   return {
     play: (list) => steps.play(list),
-    spoke: (text) => voice.speak(text),
-    hush: () => voice.hush(),
+    addMic: (b) => voice.addMic(b),
     before,
     stop,
-    state: () => ({ llm, busy: steps.busy(), listening: voice.listening(), muted: voice.muted(), voice: voice.supported() }),
+    state: () => ({ llm, busy: steps.busy(), listening: voice.listening(), voice: voice.supported() }),
   };
 }

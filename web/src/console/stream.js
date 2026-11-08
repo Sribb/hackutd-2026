@@ -17,6 +17,9 @@ export const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&a
 const reEsc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const mark = (agent) => (agent === "J" ? `<span class="cs-mark g" aria-hidden="true">g</span>` : `<span class="cs-mark a-${agent}" aria-hidden="true"></span>`);
 
+// A rounded rate reads "0", never "-0" or "+0" ("changing -0 barrels an hour").
+const noSignedZero = (d) => (d && typeof d.text === "string" ? { ...d, text: d.text.replace(/(^|[^\w.:/-])[-−+]0(?![.\d]|,\d)/g, "$10") } : d);
+
 export function makeStream(list, H) {
   const live = new Map();     // agent -> { li, data, at }
   const typing = new Map();   // agent -> li
@@ -109,6 +112,7 @@ export function makeStream(list, H) {
   }
 
   function place(agent, d) {
+    d = noSignedZero(d);
     hideTyping(agent);
     const prev = live.get(agent);
     if (prev) { prev.li.classList.add("frozen"); prev.li.classList.remove("live"); }
@@ -144,6 +148,7 @@ export function makeStream(list, H) {
 
   // say(agent, data, { news, urgent }): news posts a new bubble (rate-limited unless urgent).
   function say(agent, d, { news = true, urgent = false } = {}) {
+    d = noSignedZero(d);
     const cur = live.get(agent);
     const waiting = pending.get(agent);
     // A post is already behind its typing dots: it goes out with the newest words, once.

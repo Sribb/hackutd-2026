@@ -11,7 +11,8 @@
 .ag-steps li[data-state="done"] { opacity: .9; color: var(--g-ink-2); }
 .ag-steps li[data-state="done"] i { border-color: var(--g-green); background: var(--g-green); }
 .ag-steps li[data-state="done"] i::after { content: "" !important; position: absolute; left: 3.5px; top: 1px; width: 3px; height: 6px; border: solid var(--g-bg); border-width: 0 1.5px 1.5px 0; transform: rotate(45deg); }
-.ag-steps li[data-state="skip"] { text-decoration: line-through; }
+.ag-steps li[data-state="skip"] { opacity: .75; color: var(--g-mute); }
+.ag-steps li[data-state="skip"] i { border-style: dashed; }
 @keyframes ag-spin { to { transform: rotate(360deg); } }
 
 /* The listening orb, in the dock above the composer. */
@@ -28,18 +29,39 @@
 @keyframes ag-breathe { 0%, 100% { transform: scale(.92); box-shadow: 0 0 0 0 rgba(47, 111, 237, .3); } 50% { transform: scale(1); box-shadow: 0 0 0 10px rgba(47, 111, 237, 0); } }
 @keyframes ag-rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 
-/* The mute toggle (a .cs-mic sibling) and the one-line note where voice can't work. */
-.ag-mute .ag-x { display: none; }
-.ag-mute.off .ag-x { display: inline; }
-.ag-mute.off .ag-wave { display: none; }
-.ag-mute.off { color: var(--g-faint); }
-.ag-mute.talking { color: var(--g-bubble); }
-.ag-mute.talking .ag-wave { animation: ag-talk 1.2s ease-in-out infinite; }
-@keyframes ag-talk { 50% { opacity: .35; } }
+/* The one-line note where voice can't work. */
 .ag-voice-note { margin: 4px 0 0; font-size: 12px; color: var(--g-mute); text-align: center; }
 .ag-voice-note[hidden] { display: none; }
 
 @media (prefers-reduced-motion: reduce) {
   .ag-steps li, .ag-orb { transition: none; animation: none; }
-  .ag-ball, .ag-mute.talking .ag-wave, .ag-steps li[data-state="now"] i { animation: none; }
+  .ag-ball, .ag-steps li[data-state="now"] i { animation: none; }
 }
+
+/* Speech is the main control (Sriyan, board Nov 8): a big mic in the empty chat, a filled mic
+   in the composer, and a "talk" button in the field toolbar. Typing is the fallback. */
+.cs-talk-hero { display: grid; justify-items: center; gap: 10px; margin: 0 0 26px; }
+.cs-talk { all: unset; box-sizing: border-box; width: 96px; height: 96px; border-radius: 50% !important; display: grid; place-items: center; cursor: pointer;
+  background: var(--g-bubble); color: var(--g-bubble-ink); box-shadow: 0 0 0 0 rgba(47, 111, 237, .35); animation: ag-invite 2.8s ease-in-out infinite;
+  transition: transform .2s ease, background-color .2s ease; }
+.cs-talk svg { width: 38px; height: 38px; }
+.cs-talk:hover:not(:disabled) { transform: scale(1.04); }
+.cs-talk:focus-visible { outline: 2px solid var(--g-focus); outline-offset: 4px; }
+.cs-talk.on { background: var(--g-red); animation: ag-breathe 1.4s ease-in-out infinite; }
+.cs-talk:disabled { opacity: .35; cursor: default; animation: none; }
+.cs-talk-hint { margin: 0; font: 15px/1.4 var(--sans); color: var(--g-ink-2); }
+.cs-talk-hint kbd { font: 500 13px var(--sans); padding: 2px 8px; border-radius: 6px !important; border: 1px solid var(--g-line); background: var(--g-raise); color: var(--g-ink); }
+.cs-talk-eg { margin: 0; display: flex; flex-wrap: wrap; justify-content: center; gap: 6px 12px; font: 13px/1.4 var(--sans); color: var(--g-mute); }
+.cs-mic.cs-mic-main { width: 40px; height: 40px; background: var(--g-bubble); color: var(--g-bubble-ink); }
+.cs-mic.cs-mic-main:hover:not(:disabled) { background: #2a62d4; color: var(--g-bubble-ink); }
+.cs-mic.cs-mic-main.on { background: var(--g-red); color: #fff; }
+.cs-talkbar { width: auto !important; padding: 0 12px 0 9px !important; gap: 6px; display: inline-flex !important; align-items: center;
+  border-radius: 999px !important; background: var(--g-bubble) !important; color: var(--g-bubble-ink) !important; font: 500 13px var(--sans); }
+.cs-talkbar svg { width: 16px; height: 16px; }
+.cs-talkbar.on { background: var(--g-red) !important; }
+.cs-talkbar:disabled { opacity: .4; }
+@keyframes ag-invite { 0%, 100% { box-shadow: 0 0 0 0 rgba(47, 111, 237, .35); } 50% { box-shadow: 0 0 0 14px rgba(47, 111, 237, 0); } }
+@media (prefers-reduced-motion: reduce) { .cs-talk, .cs-talk.on { animation: none; } }
+.cs-talk-hands { all: unset; cursor: pointer; margin-top: 4px; padding: 6px 14px; border-radius: 999px !important; border: 1px solid var(--g-line); font: 13px var(--sans); color: var(--g-ink-2); }
+.cs-talk-hands:hover { background: var(--g-hover); }
+.cs-talk-hands[aria-pressed="true"] { border-color: rgba(31, 157, 91, .5); color: var(--g-green); }
