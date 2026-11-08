@@ -28,7 +28,7 @@ import * as intents from "./intents.js";
 import { makeCharts } from "./chartask.js";
 import {
   normalizeBrief, fallbackBrief, toMin, clock12, clockSpan, minsUntil, usd, andList,
-  countdownBar, planBars, dot, prioOf, levelOf, watchText, forecastText, plannerText,
+  countdownBar, planBars, dot, prioOf, levelOf, watchText, forecastText, plannerText, useUtcClock,
 } from "./agents.js";
 import "./console.css";
 import { mountIntro } from "../gaia/intro.js";
@@ -36,6 +36,9 @@ import { mountThreads } from "../gaia/threads.js";
 import { mountAgent } from "../agent/index.js";
 import { makeLayout } from "../gaia/layout.js";
 import { mountRail } from "../gaia/rail.js";
+
+// One clock on a dataset: every clock12() the console draws reads "13:25 utc" there (#153).
+useUtcClock(() => !!liveFeed.live.dataset);
 
 const POLL_MS = 30000;
 const BRIEF_RETRY_MS = 5 * 60000;
