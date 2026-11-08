@@ -86,7 +86,7 @@ def test_ui_action_enum_is_the_console_whitelist():
     m = re.search(r"const WHITELIST = new Set\(\[(.*?)\]\)", js, re.S)
     assert m, "directives.js WHITELIST not found"
     whitelist = set(re.findall(r'"([a-z_]+)"', m.group(1)))
-    assert set(UI_ACTIONS) == whitelist
+    assert set(UI_ACTIONS) == whitelist | {"chart"}  # chart: a card the console draws (agent/index.js)
     tool = next(t for t in TOOLS if t["name"] == "ui_action")
     assert tool["input_schema"]["properties"]["action"]["enum"] == UI_ACTIONS
     # Strict tools: every property is required.
@@ -194,3 +194,12 @@ def test_route_accepts_selected():
     assert r.status_code == 200, r.text
     body = r.json()
     assert "Tank 3" in body["reply"] and body["ui"][0]["asset_id"] == "TANK_3"
+
+
+def test_chart_step_names_its_asset():
+    j = make(tripped_field())
+    ctx = {"ui": [], "proposals": []}
+    assert "error" in run(j.run_tool("ui_action", {"action": "chart", "asset_id": None}, ctx))
+    out = run(j.run_tool("ui_action", {"action": "chart", "asset_id": "TANK_3", "step": "drawing the level"}, ctx))
+    assert out["ok"]
+    assert ctx["ui"] == [{"type": "ui", "action": "chart", "source": "gaia", "asset_id": "TANK_3", "step": "drawing the level"}]

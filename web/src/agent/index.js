@@ -18,7 +18,8 @@ const ASKS = /\b(wrong|status|how'?s|how is|doing|explain|tell me|about|happenin
 //      say(text, extra), ask(text), closePanels(), chart(text) -> Promise, BASE, getJson(path) }
 export function mountAgent(H) {
   // A "chart" step is a chart card (#159, drawn from the data, no AI); the rest are directives.
-  const apply = (d) => (d.action === "chart" ? (H.chart ? H.chart(d.text) : "") : H.apply(d));
+  const chartText = (d) => d.text || (d.asset_id ? `plot ${String(H.nice(d.asset_id)).toLowerCase()} ${/^(PUMP|WELL|SWD)_/.test(d.asset_id) ? "flow" : "level"}` : "");
+  const apply = (d) => (d.action === "chart" ? (H.chart && chartText(d) ? H.chart(chartText(d)) : "") : H.apply(d));
   const steps = makeSteps({ stream: H.stream, apply, nice: H.nice });
   const voice = mountVoice({
     dock: H.side.el.querySelector(".cs-dock"), input: H.side.input, mic: H.side.mic,

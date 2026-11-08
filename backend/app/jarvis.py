@@ -92,11 +92,13 @@ class JarvisUnavailable(Exception):
         self.detail = detail
 
 
-# The console's whitelist (web/src/console/directives.js). ui_action can only ask for these.
+# The console's whitelist (web/src/console/directives.js), plus "chart": a chart card of an
+# asset's numbers over time that the console draws from its own data (web/src/agent, #159).
+# ui_action can only ask for these.
 UI_ACTIONS = ["focus", "highlight", "explode", "collapse", "isolate", "show_sensors", "trace_pipes",
-              "set_time", "reset_view", "open_panel", "try_whatif"]
+              "set_time", "reset_view", "open_panel", "try_whatif", "chart"]
 UI_PANELS = ["plans", "walk", "whatif", "asset", "log", "tanks", "alerts"]
-UI_NEEDS_ID = {"focus", "explode", "isolate", "trace_pipes"}
+UI_NEEDS_ID = {"focus", "explode", "isolate", "trace_pipes", "chart"}
 MAX_UI_STEPS = 8
 SAFE_ID = re.compile(r"^[A-Z0-9][A-Z0-9_\-]{0,63}$")
 # "this", "it", "that": the asset selected on screen.
@@ -168,6 +170,7 @@ TOOLS = [
                        "trace_pipes and collapse take asset_id; highlight takes ids; set_time takes clock "
                        "(from a tool result, e.g. '2:47 AM') or t_min (minutes from now, 0 = now); "
                        "open_panel takes panel; try_whatif takes actions (shown on the forecast only); "
+                       "chart takes asset_id and draws its level (or flow) past and forecast as a card; "
                        "reset_view takes nothing. Unused fields are null.",
         "strict": True,
         "input_schema": {"type": "object", "additionalProperties": False,
@@ -585,10 +588,10 @@ class Jarvis:
             "through something, move the view with ui_action, one call per step, in the order a person would "
             "look. The console plays the steps one by one and ticks them off. A walk-through of what's wrong: "
             "list_alerts; ui_action focus on the failed asset; ui_action trace_pipes from it to the tank it "
-            "feeds; get_forecast; ui_action set_time to the shutdown clock the forecast gave; get_plans; "
-            "ui_action open_panel plans; then propose_action for the cheapest plan's first step. Give each "
-            "step a short lowercase label ('flying to pump 3', 'tracing pipes to tank 3', 'jumping to 2:47 "
-            "am', 'opening the plans').\n\n"
+            "feeds; get_forecast; ui_action set_time to the shutdown clock the forecast gave; ui_action "
+            "chart on that tank; get_plans; ui_action open_panel plans; then propose_action for the cheapest "
+            "plan's first step. Give each step a short lowercase label ('flying to pump 3', 'tracing pipes "
+            "to tank 3', 'jumping to 2:47 am', 'drawing the level', 'opening the plans').\n\n"
             "\"This\", \"it\" and \"that\" mean the asset selected on screen, named in the note before the "
             "question. If nothing is selected and the question needs one, ask which asset.\n\n"
             "How to answer:\n"
