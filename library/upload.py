@@ -51,9 +51,10 @@ def sha256(data):
 def upload_presets(lib):
     field = json.loads((ROOT / "scenario" / "field.json").read_text())
     presets = [("avon_field_6_tanks", field.get("name", "Avon field"), "The demo field: 6 tanks, 24 wells, 2 disposal wells. Pump 3 trips at 1:47 AM.", field)]
-    for sample in sorted((ROOT / "blender" / "samples").glob("*.json")):
-        bp = json.loads(sample.read_text())
-        presets.append((f"sample_{sample.stem}", bp.get("name", sample.stem), f"Generator sample blender/samples/{sample.name}", bp))
+    for folder, what in (("scenario/samples", "Demo kit sample"), ("blender/samples", "Generator sample")):
+        for sample in sorted((ROOT / folder).glob("*.json")):
+            bp = json.loads(sample.read_text())
+            presets.append((f"sample_{sample.stem}", bp.get("name", sample.stem), f"{what} {folder}/{sample.name}", bp))
     for pid, name, desc, bp in presets:
         lib.call("upsert_field_preset", pid, name, desc, json.dumps(bp))
         print(f"field preset {pid}: {len(bp.get('tanks', []))} tanks")
