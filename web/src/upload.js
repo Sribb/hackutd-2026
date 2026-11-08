@@ -170,7 +170,7 @@ function drawCheck() {
     const f = st.fixes.get(i) || { checked: false, values: {} };
     const inputs = fields.map((k) => k === "manual"
       ? `<label>${k}<select data-i="${i}" data-k="${k}"><option value="">?</option><option value="true" ${f.values[k] === true ? "selected" : ""}>manual (rover)</option><option value="false" ${f.values[k] === false ? "selected" : ""}>remote</option></select></label>`
-      : `<label>${k}<input data-i="${i}" data-k="${k}" inputmode="decimal" value="${f.values[k] ?? ""}" placeholder="?"></label>`).join("");
+      : `<label>${k === "minutes_to" ? "minutes to each tank" : k}<input data-i="${i}" data-k="${k}" inputmode="decimal" value="${f.values[k] ?? ""}" placeholder="?"></label>`).join("");
     return `<li class="${fields.length ? "" : "tick"}">
       <div><b>${esc(item.id || item.label)}</b> <span class="muted">${esc(item.label && item.label !== item.id ? item.label : "")}</span></div>
       <div class="issue">${esc(item.issue)}</div>
@@ -261,7 +261,15 @@ function fixedBlueprint() {
     const f = st.fixes.get(i);
     if (!f) return;
     const a = (() => { for (const [k] of KINDS) for (const x of bp[k] || []) if (x.id === item.id) return x; return null; })();
-    if (a) for (const [k, v] of Object.entries(f.values)) if (v !== "") a[k] = v;
+    if (!a) return;
+    for (const [k, v] of Object.entries(f.values)) {
+      if (v === "") continue;
+      // A truck's minutes_to is a map {TANK_n: minutes}. One typed number means "that many
+      // minutes to every tank"; a value the file already had for a tank is kept.
+      if (k === "minutes_to" && typeof v === "number") {
+        a.minutes_to = Object.fromEntries((bp.tanks || []).map((tk) => [tk.id, (a.minutes_to || {})[tk.id] ?? v]));
+      } else a[k] = v;
+    }
   });
   return bp;
 }
