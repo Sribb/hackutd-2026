@@ -4,13 +4,14 @@
   "warnings": [],
   "timing": {
     "plan": 0.0,
-    "field": 3.66,
-    "scenery": 13.86,
+    "field": 3.42,
+    "scenery": 2.61,
     "checks": 0.0,
-    "optimize": 0.84,
-    "export": 1.72,
-    "blend": 0.04,
-    "report": 0.01
+    "look": 0.51,
+    "optimize": 1.77,
+    "export": 2.58,
+    "blend": 0.11,
+    "report": 0.03
   },
   "blueprint": "scenario/field.json",
   "name": "Avon field - night shift",
@@ -24,6 +25,44 @@
     "trucks": 2,
     "yards": 1,
     "equipment": 0
+  },
+  "look": {
+    "mode": "fast",
+    "textures": true,
+    "materials": {
+      "M_BUILDING": 10,
+      "M_CONCRETE": 62,
+      "M_CONTAINMENT": 12,
+      "M_GALV": 98,
+      "M_GLASS": 3,
+      "M_HDPE": 24,
+      "M_LINER": 8,
+      "M_MOTOR": 12,
+      "M_PIPE": 99,
+      "M_PJ_DARK": 48,
+      "M_PJ_PAINT": 48,
+      "M_PUMP_PAINT": 6,
+      "M_RUBBER": 12,
+      "M_STEEL": 8,
+      "M_STEEL_DARK": 121,
+      "M_STENCIL": 64,
+      "M_TANK": 10,
+      "M_TRUCK_CAB": 2,
+      "M_TRUCK_TANK": 2,
+      "M_WOOD": 5
+    },
+    "styled": 654,
+    "looks": 270,
+    "theirs": 46,
+    "gaps_filled": 0,
+    "ao_uv_meshes": 0,
+    "seconds": {
+      "roles": 0.12,
+      "uvs": 0.35,
+      "weather": 0.04,
+      "ao": 0.0,
+      "total": 0.51
+    }
   },
   "outputs": {
     "glb": "blender/field.glb",
@@ -117,7 +156,7 @@
       {
         "detail": "full",
         "estimated": 151698,
-        "triangles": 148435
+        "triangles": 154587
       }
     ]
   },
@@ -130,59 +169,62 @@
     "seed": "Avon field - night shift",
     "textures": [
       "ground_dry_soil",
-      "dirt_road_tracks"
+      "ground_caliche"
     ],
     "fence_m": 1216.0,
     "cattle_guards": 2,
+    "terrain_m": 5400.0,
+    "mesas": 24,
+    "other_leases": 10,
+    "power_spans": 18,
+    "brush_past_fence": 50,
     "items": {
-      "boulder": 6,
-      "branch": 6,
-      "creosote": 2,
-      "grass": 110,
+      "boulder": 4,
+      "branch": 4,
+      "creosote": 1,
+      "grass": 102,
       "lease_sign": 1,
-      "mesquite": 1,
-      "prickly_pear": 28,
-      "rock": 15,
+      "prickly_pear": 23,
+      "rock": 11,
       "yucca": 65
     },
     "dropped": [],
-    "triangles": 114650,
-    "field_triangles": 148435,
-    "images_mb": 9.43
+    "triangles": 103782,
+    "field_triangles": 154587,
+    "images_mb": 6.14
   },
-  "triangles": 263085,
-  "glb_mb": 16.38,
-  "nodes": 779,
-  "objects": 1014,
-  "draw_calls": 669,
+  "triangles": 258369,
+  "glb_mb": 16.33,
+  "nodes": 864,
+  "objects": 1018,
+  "draw_calls": 750,
   "compressed": false,
   "optimize": {
-    "merged": 103,
-    "meshes_before": 665,
-    "meshes_after": 275,
+    "merged": 39,
+    "meshes_before": 750,
+    "meshes_after": 318,
     "unshared": 0,
     "instanced": {
-      "SCENERY_boulder_1_instances": 3,
-      "SCENERY_boulder_2_instances": 3,
-      "SCENERY_creosote_1_instances": 2,
-      "SCENERY_dead_branch_1_instances": 3,
-      "SCENERY_dead_branch_2_instances": 3,
-      "SCENERY_dry_grass_2_instances": 110,
-      "SCENERY_rock_1_instances": 8,
-      "SCENERY_rock_2_instances": 7
+      "SCENERY_boulder_1_instances": 2,
+      "SCENERY_boulder_2_instances": 2,
+      "SCENERY_dead_branch_1_instances": 2,
+      "SCENERY_dead_branch_2_instances": 2,
+      "SCENERY_dry_grass_2_instances": 102,
+      "SCENERY_rock_1_instances": 6,
+      "SCENERY_rock_2_instances": 5
     },
-    "instances": 139,
-    "no_shadow": 18,
-    "purged": 604,
-    "seconds": 0.84,
-    "glb_meshes": 275,
-    "instanced_nodes": 8
+    "instances": 121,
+    "no_shadow": 32,
+    "purged": 520,
+    "seconds": 1.77,
+    "glb_meshes": 318,
+    "instanced_nodes": 7
   },
   "budget": {
     "triangles": 300000,
     "mb": 30.0,
     "draw_calls": 1500
   },
-  "seconds": 20.13,
-  "cpu_seconds": 24.97
+  "seconds": 11.04,
+  "cpu_seconds": 15.35
 }
