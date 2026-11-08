@@ -1,0 +1,29 @@
+/* The gaia intro (intro.js): white lowercase cursive on a black, slightly tinted screen. */
+.gaia-intro { position: fixed; inset: 0; z-index: 1000; display: grid; place-items: center; align-content: center; gap: 6px;
+  background: radial-gradient(ellipse at 50% 46%, #141414 0%, #0a0a0a 55%, #060606 100%);
+  transition: opacity .7s ease, background-color .3s ease, backdrop-filter .3s ease; }
+.gaia-intro.tint { background: rgba(6, 6, 6, .82); -webkit-backdrop-filter: blur(18px) saturate(.6); backdrop-filter: blur(18px) saturate(.6); }
+.gaia-intro.out { opacity: 0; pointer-events: none; }
+.gaia-word { width: min(620px, 84vw); height: auto; overflow: visible; filter: drop-shadow(0 0 22px rgba(255,255,255,.10)); }
+.gaia-word text { font: 400 236px "Great Vibes", "Snell Roundhand", cursive; letter-spacing: 0; }
+.gaia-word .l { fill: #fff; fill-opacity: 0; stroke: #fff; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round;
+  stroke-dasharray: 1400; stroke-dashoffset: 1400; }
+.gaia-intro.go .l { animation: gaia-write 1.15s cubic-bezier(.55,.1,.35,1) forwards, gaia-fill .7s ease-out forwards; }
+.gaia-intro.go .l0 { animation-delay: 0s, 1.05s; }
+.gaia-intro.go .l1 { animation-delay: .32s, 1.25s; }
+.gaia-intro.go .l2 { animation-delay: .58s, 1.4s; }
+.gaia-intro.go .l3 { animation-delay: .76s, 1.5s; }
+@keyframes gaia-write { to { stroke-dashoffset: 0; } }
+@keyframes gaia-fill { to { fill-opacity: 1; stroke-opacity: .25; } }
+.gaia-intro.out .gaia-word { transform: scale(1.03); transition: transform .7s ease; }
+.gaia-sub { margin: 0; font: 400 13px/1.4 Inter, system-ui, sans-serif; color: rgba(255,255,255,.38); text-align: center;
+  animation: gaia-pulse 1.6s ease-in-out infinite; }
+.gaia-sub[hidden] { display: none; }
+@keyframes gaia-pulse { 50% { opacity: .45; } }
+.gaia-intro.still .l { fill-opacity: 1; stroke-dashoffset: 0; stroke-opacity: .25; animation: none !important; }
+.gaia-intro.still .gaia-sub { animation: none; }
+@media (prefers-reduced-motion: reduce) {
+  .gaia-intro .l { fill-opacity: 1; stroke-dashoffset: 0; stroke-opacity: .25; animation: none !important; }
+  .gaia-intro, .gaia-intro.out .gaia-word { transition: opacity .2s linear; transform: none; }
+}
+body.gaia-intro-on { overflow: hidden; }

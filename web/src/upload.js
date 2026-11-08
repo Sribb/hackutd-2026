@@ -9,6 +9,7 @@
 // new field.glb. Asset IDs only ever come from /api/field.
 
 import { BASE } from "./api.js";
+import { authFetch } from "./auth.js";
 import { holdButton } from "./fx.js";
 
 const $ = (id) => document.getElementById(id);
@@ -58,7 +59,7 @@ function close() {
 function shell(step, body) {
   const steps = ["Drop", "Check", "Build"].map((s, i) => `<span class="${i === step ? "on" : i < step ? "done" : ""}">0${i + 1} ${s}</span>`).join("");
   return `<header class="up-head">
-      <div class="brand">FREEBOARD</div>
+      <div class="brand">GAIA</div>
       <nav class="up-steps">${steps}</nav>
       <span class="up-clock" id="upClock">${st && st.t0 ? "" : "--.-"}</span>
       <button id="upClose">Close</button>
@@ -112,7 +113,7 @@ async function ingest(file) {
 async function postIngest(file) {
   const fd = new FormData();
   fd.append("file", file);
-  const r = await fetch(`${BASE}/api/ingest`, { method: "POST", body: fd });
+  const r = await authFetch(`${BASE}/api/ingest`, { method: "POST", body: fd });
   const body = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(body.detail || `Upload failed: HTTP ${r.status}`);
   return body;
@@ -310,7 +311,7 @@ async function build() {
 }
 
 async function call(path, body) {
-  const r = await fetch(`${BASE}${path}`, body === undefined ? undefined
+  const r = await authFetch(`${BASE}${path}`, body === undefined ? undefined
     : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
   const out = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(out.detail ? (typeof out.detail === "string" ? out.detail : JSON.stringify(out.detail)) : `HTTP ${r.status} from ${path}`);

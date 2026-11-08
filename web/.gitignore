@@ -1,0 +1,3 @@
+# Playwright (npm run test:e2e) output. web/console-screens/ is committed on purpose.
+test-results/
+playwright-report/
