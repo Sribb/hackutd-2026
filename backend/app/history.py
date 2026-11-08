@@ -92,6 +92,48 @@ class Recorder:
                     buf.popleft()
         return added
 
+    def backfill(self, key: tuple, readings) -> int:
+        """Put older (t, value) pairs, such as a historian's archive, in front of what was
+        recorded for `key`. Returns how many were added.
+
+        Only pairs older than the first recorded reading are taken, so a recorded live
+        reading is never overwritten and nothing is added twice: calling it again with
+        the same pairs adds nothing. Pairs with the same t keep the first one. A None,
+        NaN, or inf value, or a t that isn't a finite number, is dropped, so a gap stays
+        a gap. Pairs older than `retention_min` before the newest reading are dropped.
+
+        Call it after sync(live): sync() starts the history over when it sees a new
+        connector registry (or on its first call), and that would drop the backfill too.
+        Before the first sync it adds nothing and returns 0."""
+        pts: dict[float, object] = {}
+        for item in readings or ():
+            try:
+                t, v = item
+                t = float(t)
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(t) or v is None:
+                continue
+            if isinstance(v, float) and not math.isfinite(v):
+                continue
+            pts.setdefault(t, v)
+        with self._lock:
+            if self.started_t is None:
+                return 0
+            buf = self._series.get(key)
+            first = buf[0][0] if buf else math.inf
+            older = sorted((t, v) for t, v in pts.items() if t < first - EPS)
+            if not older:
+                return 0
+            newest = buf[-1][0] if buf else older[-1][0]
+            older = [p for p in older if p[0] >= newest - self.retention]
+            if not older:
+                return 0
+            if buf is None:
+                buf = self._series[key] = deque()
+            buf.extendleft(reversed(older))
+            return len(older)
+
     def readings(self, key: tuple) -> list:
         with self._lock:
             return list(self._series.get(key, ()))
