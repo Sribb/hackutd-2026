@@ -1,6 +1,7 @@
 """A fake PI Web API server for tests and the demo. 127.0.0.1 only; no real PI System.
 
-It serves the two endpoints the piwebapi connector uses, behind Basic auth:
+It serves the two endpoints the piwebapi connector uses, behind Basic auth (and a
+bearer token too, when one is given):
 
     GET /piwebapi/streamsets/value?webId=...&webId=...       current values
     GET /piwebapi/streams/{webId}/recorded?startTime=*-60m    archive values
@@ -18,6 +19,8 @@ prints its base URL, user, and the WebIds it serves. In process:
     fake.set_age(TANK_6_LEVEL, 900)      # stamp the current value 900 s ago
     fake.set_digital(TANK_6_LEVEL, "Bad Input")
     fake.set_recorded(TANK_6_LEVEL, [(age_s, value), ...])
+    fake.streamset_body = {"Message": "not PI"}   # answer streamsets/value with this instead
+    fake = start(token="tok-...")        # also accept "Authorization: Bearer tok-..."
     fake.stop(); fake = start(port=fake.port)    # the same address again
 """
 from __future__ import annotations
@@ -90,8 +93,10 @@ class FakePiWebApi:
     request; `requests` counts the GETs served."""
 
     def __init__(self, port: int = 0, username: str = "freeboard", password: Optional[str] = None,
-                 points: Optional[dict] = None) -> None:
+                 points: Optional[dict] = None, token: Optional[str] = None) -> None:
         self.username = username
+        self.token = token
+        self.streamset_body: Any = None     # when set, streamsets/value answers 200 with this
         self.password = password or "pi-fake-" + secrets.token_hex(6)
         self.lock = threading.Lock()
         self.points = {w: Point(n, v) for w, (n, v) in (points or DEFAULT_POINTS).items()}
@@ -116,8 +121,11 @@ class FakePiWebApi:
 
     # ---------- the HTTP side ----------
     def _authorized(self, request: Request) -> bool:
+        got = request.headers.get("authorization", "")
         want = "Basic " + base64.b64encode(f"{self.username}:{self.password}".encode()).decode()
-        return secrets.compare_digest(request.headers.get("authorization", ""), want)
+        if secrets.compare_digest(got, want):
+            return True
+        return bool(self.token) and secrets.compare_digest(got, "Bearer " + self.token)
 
     def _app(self) -> FastAPI:
         app = FastAPI()
@@ -130,6 +138,8 @@ class FakePiWebApi:
             items = []
             with self.lock:
                 self.requests += 1
+                if self.streamset_body is not None:
+                    return self.streamset_body
                 for w in request.query_params.getlist("webId"):
                     p = self.points.get(w)
                     if p is None:
@@ -215,9 +225,10 @@ class FakePiWebApi:
 
 
 def start(port: int = 0, username: str = "freeboard", password: Optional[str] = None,
-          points: Optional[dict] = None) -> FakePiWebApi:
+          points: Optional[dict] = None, token: Optional[str] = None) -> FakePiWebApi:
     """Start a fake on 127.0.0.1 (a free port unless one is given) and return its handle."""
-    return FakePiWebApi(port=port, username=username, password=password, points=points).start()
+    return FakePiWebApi(port=port, username=username, password=password, points=points,
+                        token=token).start()
 
 
 def main() -> None:

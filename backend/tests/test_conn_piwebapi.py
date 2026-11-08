@@ -326,9 +326,9 @@ def test_backfill_into_the_recorder(fake, live):
 
 # ---------- Recorder.backfill ----------
 
-def _recorder_with(series):
+def _recorder_with(series, started_t=10.0):
     rec = history.Recorder(retention_min=100)
-    rec.started_t = 0.0
+    rec.started_t = started_t
     rec._series[("TANK_1", "level_pct")] = deque(series)
     return rec
 
@@ -352,7 +352,7 @@ def test_recorder_backfill_drops_gaps_junk_and_old():
 
 def test_recorder_backfill_new_key_and_before_sync():
     rec = _recorder_with([])
-    assert rec.backfill(("WELL_1", "flow_bbl_hr"), [(2.0, 5.0), (1.0, 4.0)]) == 2
+    assert rec.backfill(("WELL_1", "flow_bbl_hr"), [(2.0, 5.0), (1.0, 4.0), (10.5, 6.0)]) == 2
     assert rec.readings(("WELL_1", "flow_bbl_hr")) == [(1.0, 4.0), (2.0, 5.0)]
     fresh = history.Recorder()
     assert fresh.backfill(("TANK_1", "level_pct"), [(1.0, 2.0)]) == 0
@@ -376,3 +376,99 @@ def test_bearer_token_is_sent_but_never_shown(fake, monkeypatch):
         assert s["status"] == "unavailable" and "tok-secret-123" not in str(lf.state())
     finally:
         lf.registry.close()
+
+
+def test_recorder_backfill_stops_where_recording_started():
+    # A signal with no live reading yet: archive values from after recording started
+    # are left out, so the live reading synced next lands after the backfill (the
+    # series stays in time order) and the minutes it was stale on the console stay null.
+    rec = _recorder_with([], started_t=10.0)
+    key = ("TANK_6", "level_pct")
+    assert rec.backfill(key, [(5.0, 40.0), (9.0, 41.0), (12.0, 42.0)]) == 2
+    assert rec.readings(key) == [(5.0, 40.0), (9.0, 41.0)]
+
+    class Live:
+        t, registry = 11.0, None
+        history = {key: [(10.5, 43.0)]}
+
+    rec._registry = None
+    rec.sync(Live())
+    ts = [t for t, _ in rec.readings(key)]
+    assert ts == sorted(ts) == [5.0, 9.0, 10.5]
+
+
+# ---------- review round 1 ----------
+
+@pytest.mark.parametrize("token", ["tok-secret-987\r", "tok-sécret-987", "tok secret-987\n x"])
+def test_a_token_a_header_cannot_carry_is_never_shown(fake, monkeypatch, token):
+    # A CRLF .env file leaves a carriage return on the token. httpx then raises an error
+    # that quotes the whole Authorization header; that text must never reach the status.
+    monkeypatch.setenv("FREEBOARD_CONN_PI_TOKEN", token)
+    spec = spec_for(fake.base_url)
+    spec["config"] = {"base_url": fake.base_url, "auth": "bearer", "token_env": "FREEBOARD_CONN_PI_TOKEN",
+                      "poll_ms": 100, "timeout_s": 2}
+    lf = live_with(spec)
+    try:
+        # A trailing CR is trimmed and the token sent (this fake refuses it: 401); the
+        # others are refused before sending, by the variable's name.
+        s = wait_for(lambda: (s := conn_status(lf))["status"] == "unavailable"
+                     and ("FREEBOARD_CONN_PI_TOKEN" in s["detail"] or "HTTP 401" in s["detail"]) and s)
+        shown = str(lf.state()) + repr(lf.registry.get(CID).quality)
+        for part in ("secret-987", "cret-987", "\\xe9", "987"):
+            assert part not in shown
+    finally:
+        lf.registry.close()
+
+
+def test_why_cuts_out_secrets_and_request_errors(fake):
+    import httpx
+    lf = live_with(spec_for(fake.base_url))
+    try:
+        conn = lf.registry.get(CID)
+        pw = fake.password
+        assert pw not in conn._why(httpx.LocalProtocolError(f"Illegal header value b'Basic {pw}'"))
+        assert pw not in conn._why(UnicodeEncodeError("ascii", pw, 0, 1, "nope"))
+        assert pw not in conn._why(httpx.ConnectError(f"refused, {pw}"))
+        assert "ConnectError: refused" in conn._why(httpx.ConnectError("refused"))
+    finally:
+        lf.registry.close()
+
+
+def test_bearer_token_accepted_by_the_server(fake, monkeypatch):
+    monkeypatch.setenv("FREEBOARD_CONN_PI_TOKEN", "tok-good-456")
+    fake.token = "tok-good-456"
+    spec = spec_for(fake.base_url)
+    spec["config"] = {"base_url": fake.base_url, "auth": "bearer", "token_env": "FREEBOARD_CONN_PI_TOKEN",
+                      "poll_ms": 100, "timeout_s": 2}
+    lf = live_with(spec)
+    try:
+        fake.set(fake_pi.TANK_6_LEVEL, 58.25)
+        r = wait_for(lambda: (r := reading_of(lf, "TANK_6", "level_pct")) and r["value"] == 58.25 and r,
+                     step=lambda: lf.step(0.05))
+        assert r["value"] == 58.25
+        s = conn_status(lf)
+        assert s["status"] == "connected" and "bearer" in s["detail"] and "tok-good-456" not in str(lf.state())
+    finally:
+        fake.token = None
+        lf.registry.close()
+
+
+def test_a_200_answer_that_is_not_pi_means_the_link_is_down(fake, live):
+    wait_for(lambda: reading_of(live, "TANK_6", "level_pct"), step=lambda: live.step(0.05))
+    conn = live.registry.get(CID)
+    try:
+        fake.streamset_body = {"Message": "Welcome to the proxy"}
+        s = wait_for(lambda: (s := conn_status(live))["status"] == "unavailable" and s)
+        assert "Items" in s["detail"]
+        assert all(q["quality"] == "comm_lost" for q in conn.quality.values())
+    finally:
+        fake.streamset_body = None
+    wait_for(lambda: conn_status(live)["status"] == "connected", timeout=15)
+
+
+def test_read_after_close_gives_nothing(fake, live):
+    conn = live.registry.get(CID)
+    wait_for(lambda: conn.status()["available"])
+    conn.close()
+    conn.inbox.put("TANK_6", "level_pct", conn.smap.apply("TANK_6", "level_pct", 50.0))  # a poll that was in flight
+    assert conn.read() == []

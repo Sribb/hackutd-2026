@@ -96,9 +96,12 @@ class Recorder:
         """Put older (t, value) pairs, such as a historian's archive, in front of what was
         recorded for `key`. Returns how many were added.
 
-        Only pairs older than the first recorded reading are taken, so a recorded live
-        reading is never overwritten and nothing is added twice: calling it again with
-        the same pairs adds nothing. Pairs with the same t keep the first one. A None,
+        Only pairs older than the first recorded reading, and older than the moment
+        recording started (started_t), are taken. So a recorded live reading is never
+        overwritten, nothing is added twice (calling it again with the same pairs adds
+        nothing), a live reading synced later always lands after the backfill, and a
+        period since recording started with no live reading stays null, as it was on the
+        console. Pairs with the same t keep the first one. A None,
         NaN, or inf value, or a t that isn't a finite number, is dropped, so a gap stays
         a gap. Pairs older than `retention_min` before the newest reading are dropped.
 
@@ -121,7 +124,7 @@ class Recorder:
             if self.started_t is None:
                 return 0
             buf = self._series.get(key)
-            first = buf[0][0] if buf else math.inf
+            first = min(buf[0][0] if buf else math.inf, self.started_t)
             older = sorted((t, v) for t, v in pts.items() if t < first - EPS)
             if not older:
                 return 0

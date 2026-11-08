@@ -205,7 +205,13 @@ class PiWebApiConnector(Connector):
         if self.auth == "basic":
             auth = httpx.BasicAuth(self.config["username"], sm.env_secret(self.config, "password") or "")
         elif self.auth == "bearer":
-            headers["Authorization"] = "Bearer " + (sm.env_secret(self.config, "token") or "")
+            token = (sm.env_secret(self.config, "token") or "").strip()
+            if not token or not all("!" <= ch <= "~" for ch in token):
+                # A header with a CR, a space, or a non-ASCII letter makes httpx raise an
+                # error that quotes the whole header, token included. Refuse it here, by name.
+                raise RuntimeError(f"the token in {self.config['token_env']} is empty or has characters "
+                                   f"an HTTP header can't carry (only visible ASCII is allowed)")
+            headers["Authorization"] = "Bearer " + token
         verify: Any = self.verify_tls
         if self.base_url.startswith("http://"):
             verify = False      # plain http to a local fake: no TLS, so skip loading the CA store
@@ -218,10 +224,13 @@ class PiWebApiConnector(Connector):
         return httpx.Client(auth=auth, headers=headers, verify=verify, timeout=self.timeout_s,
                             follow_redirects=False)
 
-    @staticmethod
-    def _why(e: BaseException) -> str:
-        """A failure as text with no secret in it: the status code for an HTTP error, else
-        the exception's type and a short message (httpx never puts headers in one)."""
+    def _why(self, e: BaseException) -> str:
+        """A failure as text with no secret in it: the status code for an HTTP error, our
+        own RuntimeError text, or the message of a network error (connect, read, timeout,
+        TLS, or the server breaking the protocol). Any other exception shows only its type:
+        an error about what we sent, such as httpx's LocalProtocolError or a
+        UnicodeEncodeError, can quote a request header, and the header carries the login.
+        Secret values are also cut out of whatever text is kept."""
         resp = getattr(e, "response", None)
         code = getattr(resp, "status_code", None)
         if code in (401, 403):
@@ -229,9 +238,27 @@ class PiWebApiConnector(Connector):
         if code is not None:
             return f"PI Web API answered HTTP {code}"
         if isinstance(e, RuntimeError):
-            return str(e)
-        msg = str(e).splitlines()[0][:160] if str(e) else ""
+            return self._redact(str(e))
+        if isinstance(e, ValueError) and type(e).__name__ == "JSONDecodeError":
+            return "PI Web API sent a body that isn't JSON"
+        httpx, _ = sm.import_optional("httpx", "httpx")
+        safe: tuple = (ssl.SSLError,)
+        if httpx is not None:
+            safe += (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError)
+        msg = str(e).splitlines()[0][:160] if isinstance(e, safe) and str(e) else ""
+        msg = self._redact(msg)
         return f"{type(e).__name__}: {msg}" if msg else type(e).__name__
+
+    def _redact(self, text: str) -> str:
+        """text with every configured secret value, plain or as Python escapes it, cut out."""
+        for key in ("password", "token"):
+            value = sm.env_secret(self.config, key)
+            if not value:
+                continue
+            for form in sorted({value, value.strip(), repr(value)[1:-1]}, key=len, reverse=True):
+                if len(form) >= 4 and form in text:
+                    text = text.replace(form, "***")
+        return text
 
     # ---------- the I/O thread ----------
     def _run(self) -> None:
@@ -248,6 +275,11 @@ class PiWebApiConnector(Connector):
                     resp.raise_for_status()
                     raise RuntimeError(f"PI Web API answered HTTP {resp.status_code}")
                 body = resp.json()
+                if not (isinstance(body, dict) and isinstance(body.get("Items"), list)):
+                    # A proxy or a wrong path can answer 200 with some other JSON. That is
+                    # not PI, so the link counts as down, not as connected with no values.
+                    raise RuntimeError("the answer has no Items list, so it isn't from PI Web API "
+                                       "(check base_url)")
                 if self._stop.is_set():
                     break
                 self._take(body)
@@ -274,6 +306,8 @@ class PiWebApiConnector(Connector):
 
     def _set_quality(self, key: tuple, m: sm.Mapped) -> None:
         with self._lock:
+            if self._stop.is_set():
+                return
             self.quality[key] = {"quality": m.quality, "detail": m.detail, "t": self.now()}
 
     def _take(self, body: Any) -> None:
@@ -309,6 +343,10 @@ class PiWebApiConnector(Connector):
 
     # ---------- the interface ----------
     def read(self) -> list[Reading]:
+        if self._stop.is_set():
+            # A poll that was already in flight when close() ran may still fill the inbox.
+            self.inbox.clear()
+            return []
         return [self.reading(aid, sig, v) for aid, sig, v in self.inbox.drain()]
 
     def send(self, command: dict) -> dict:
@@ -342,7 +380,9 @@ class PiWebApiConnector(Connector):
         now() - a: the newest archive value sits at the live "now", and an hour of
         archive fills the hour before it, minute for minute, whatever the live speed.
         Values stamped in the future are left out. Signals whose request fails are
-        missing from the result; last_backfill says which and why."""
+        missing from the result; last_backfill says which and why. Recorder.backfill
+        then keeps only the values from before recording started, so the archive never
+        fills a minute the console itself showed as stale."""
         m = sm.finite(minutes)
         if m is None or m <= 0:
             return []
