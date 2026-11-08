@@ -579,11 +579,15 @@ function renderSelected(view) {
   decode(box);
 }
 
+// No fresh reading: NO_DATA, UNKNOWN, or a stale reading kept in ALARM (an alarm is never
+// hidden by a lost signal, but the number under it is still old).
+const isBlind = (v) => !!v && (v.status === "NO_DATA" || v.status === "UNKNOWN" || v.stale === true);
+
 // Tanks with no level reading right now. The console never vouches for them.
 function blindTanks() {
   return (field.tanks || []).map((t) => t.id).filter((id) => {
     const s = (data.state.assets || {})[id], v = lastView[id];
-    return !s || s.level_pct == null || (v && (v.status === "NO_DATA" || v.status === "UNKNOWN"));
+    return !s || s.level_pct == null || isBlind(v);
   });
 }
 
@@ -767,9 +771,9 @@ function renderTanks(view) {
       <span class="name">${nice(t.id)}</span>
       <div class="bar"><div class="fill ${s.status}" style="width:${pct == null ? 0 : Math.min(100, pct)}%"></div>
         <div class="stop" style="left:${t.shutdown_pct}%"></div></div>
-      <span class="pct ${s.status === "UNKNOWN" ? "stale" : ""}">${pct == null ? "no data" : `${s.status === "UNKNOWN" ? "last " : ""}${pct.toFixed(1)}%`}${tMin === 0 && liveFeed.ageText(t.id) ? `<small class="age">${liveFeed.ageText(t.id)}</small>` : ""}</span></div>`;
+      <span class="pct ${isBlind(s) ? "stale" : ""}">${pct == null ? "no data" : `${isBlind(s) ? "last " : ""}${pct.toFixed(1)}%`}${tMin === 0 && liveFeed.ageText(t.id) ? `<small class="age">${liveFeed.ageText(t.id)}</small>` : ""}</span></div>`;
   }).join("");
-  const blind = (field.tanks || []).filter((t) => (view[t.id] || {}).status === "UNKNOWN");
+  const blind = (field.tanks || []).filter((t) => isBlind(view[t.id]) && (view[t.id] || {}).status !== "NO_DATA");
   if (blind.length) {
     $("tanks").insertAdjacentHTML("beforeend", `<div class="vouch">${blind.map((t) =>
       `Can't vouch for ${nice(t.id)}: no reading for ${ago(liveFeed.staleMinutes(t.id))}. Its forecast starts from the last value we had.`).join("<br>")}</div>`);
@@ -922,7 +926,7 @@ function handoffText() {
   }
 
   head(3, "BLIND SENSORS");
-  const blindIds = Object.keys(nowView).filter((id) => nowView[id] && (nowView[id].status === "UNKNOWN" || nowView[id].status === "NO_DATA"));
+  const blindIds = Object.keys(nowView).filter((id) => isBlind(nowView[id]));
   for (const id of blindTanks()) if (!blindIds.includes(id)) blindIds.push(id);
   if (!blindIds.length) L.push("  None. Every monitored asset has a fresh reading.");
   for (const id of blindIds) {
@@ -968,7 +972,7 @@ function handoffText() {
   L.push("", `TANK LEVELS as of ${shiftlog.clockNow()}${liveFeed.live.available ? (liveFeed.live.lostSince ? " (live feed LOST: last known values)" : " (live)") : ` (snapshot from ${dataAt})`}`);
   for (const t of field.tanks || []) {
     const s = nowView[t.id] || {};
-    if (s.status === "UNKNOWN") L.push(`  ${nice(t.id)}: NO FRESH READING${s.level_pct != null ? ` (last ${s.level_pct.toFixed(1)}%)` : ""}. Not safe until checked.`);
+    if (isBlind(s) && s.status !== "NO_DATA") L.push(`  ${nice(t.id)}: NO FRESH READING${s.level_pct != null ? ` (last ${s.level_pct.toFixed(1)}%)` : ""}${s.status === "ALARM" ? ", still in ALARM" : ""}. Not safe until checked.`);
     else L.push(s.level_pct != null ? `  ${nice(t.id)}: ${s.level_pct.toFixed(1)}% (shutdown ${t.shutdown_pct}%)` : `  ${nice(t.id)}: NO READING. Not safe until checked.`);
   }
   L.push("", "FULL SHIFT LOG");
@@ -1264,7 +1268,9 @@ async function boot() {
   const [baseline, lc, plans] = await Promise.all([api.forecast([]), api.lastCall(), api.plans()]);
   data = { field, state, baseline, lc, plans };
   shiftlog.start(state.clock || "00:00", (state.incident && state.incident.summary) || "");
-  shiftlog.followClock(() => (liveFeed.live.available && !liveFeed.live.lostSince ? liveFeed.live : null));
+  // The live clock, carried on at the last known speed while the feed is lost, so the header
+  // and log stamps never jump back to the page-load clock.
+  shiftlog.followClock(() => liveFeed.clockEstimate());
   let built = null;
   try { built = JSON.parse(sessionStorage.getItem("freeboard.built") || "null"); sessionStorage.removeItem("freeboard.built"); } catch { /* ignore */ }
   if (built) shiftlog.add("open", `Field "${built.name}" built from an uploaded blueprint in ${built.secs} s${built.status === "fallback" ? `, on the standard model (${built.note})` : ""}.`);

@@ -25,7 +25,15 @@ assert.equal(W.exposure(p2, field).length, 0, "remote valve + choke send nobody"
 assert.equal(W.remoteOnly([p1, p2], field).i, 1);
 assert.equal(W.hazards({ status: "unavailable" }).length, 0);
 assert.match(W.summary({ status: "unavailable", why: "offline mode" }), /not checked/);
-const base = { status: "ok", alerts: [], source: "t", thunderPct: 0, gustKmh: 10, visM: 16000 };
+const base = { status: "ok", alerts: [], alertsChecked: true, source: "t", thunderPct: 0, gustKmh: 10, visM: 16000, at: Date.now() };
+// Never "no risk" from missing or old data (review #3), and Wind Chill is not wind (#16).
+assert.doesNotMatch(W.summary(base), /no .*risk/i);
+assert.match(W.summary({ ...base, alertsChecked: false }), /warnings not checked/);
+assert.match(W.summary({ ...base, thunderPct: null, gustKmh: null, visM: null }), /thunder, wind, visibility not checked/);
+assert.match(W.summary({ ...base, at: Date.now() - 25 * 60000 }), /last checked 25 min ago/);
+assert.equal(W.hazards({ ...base, thunderPct: 90, at: Date.now() - 25 * 60000 }).length, 0, "old readings flag nothing, and the summary says they're old");
+assert.equal(W.hazards({ ...base, alerts: [{ event: "Wind Chill Advisory" }] }).length, 0);
+assert.deepEqual(W.hazards({ ...base, alerts: [{ event: "High Wind Warning" }] }).map((h) => h.key), ["wind"]);
 assert.equal(W.hazards(base).length, 0);
 assert.deepEqual(W.hazards({ ...base, thunderPct: 25 }).map((h) => h.key), ["lightning"]);
 assert.deepEqual(W.hazards({ ...base, visM: 1000 }).map((h) => h.key), ["visibility"]);

@@ -57,7 +57,9 @@ function over(series, from, to, pick) {
 }
 
 async function getJson(url) {
-  const r = await fetch(url, { headers: { Accept: "application/geo+json" } });
+  // Slow venue Wi-Fi must not leave "Checking the weather" up forever: 6 s, then "not checked".
+  const signal = typeof AbortSignal !== "undefined" && AbortSignal.timeout ? AbortSignal.timeout(6000) : undefined;
+  const r = await fetch(url, { headers: { Accept: "application/geo+json" }, signal });
   if (!r.ok) throw new Error(`NWS ${r.status}`);
   return r.json();
 }
@@ -78,25 +80,30 @@ async function fetchWx(site) {
   const p = pt.properties || {};
   const [grid, alerts] = await Promise.all([
     getJson(p.forecastGridData),
-    getJson(`https://api.weather.gov/alerts/active?point=${lat},${lon}`).catch(() => null),
+    getJson(`https://api.weather.gov/alerts/active?point=${lat},${lon}`).catch(() => null), // null: warnings not checked
   ]);
   const g = grid.properties || {};
   const now = Date.now(), end = now + WINDOW_H * 3600000;
   return {
-    status: "ok", drill: false, source: `NWS ${p.gridId || "office"} forecast, updated ${g.updateTime ? new Date(g.updateTime).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "?"}`,
+    status: "ok", drill: false, source: `NWS ${p.gridId || "office"} forecast (real weather, real time), updated ${g.updateTime ? new Date(g.updateTime).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "?"}`,
     office: p.gridId, at: now, windowEnd: end,
     thunderPct: over(g.probabilityOfThunder, now, end, Math.max),
     gustKmh: over(g.windGust, now, end, Math.max),
     visM: over(g.visibility, now, end, Math.min),
+    alertsChecked: !!alerts,
     alerts: ((alerts && alerts.features) || []).map((f) => f.properties || {})
       .filter((a) => a.status !== "Test")
       .map((a) => ({ event: a.event, ends: Date.parse(a.ends || a.expires) || null, headline: a.headline || a.event })),
   };
 }
 
+// A reading older than two refreshes is not current: say when it was checked instead.
+const STALE_MS = 2 * CACHE_MS;
+const fresh = (w) => w && w.status === "ok" && (w.drill || Date.now() - w.at <= STALE_MS);
+
 // What the weather means for people outside, per rule. Empty when nothing applies.
 export function hazards(w = state) {
-  if (!w || w.status !== "ok") return [];
+  if (!fresh(w)) return [];
   const ev = (re) => w.alerts.find((a) => re.test(a.event || ""));
   const out = [];
   const storm = ev(/thunderstorm|tornado/i);
@@ -107,7 +114,8 @@ export function hazards(w = state) {
   if (dust || (w.visM != null && w.visM < MILE_M)) {
     out.push({ key: "visibility", text: dust ? dust.event : `visibility down to ${(w.visM / MILE_M).toFixed(1)} mi`, why: "Low visibility: NWS Midland tells drivers in blowing dust to pull off and park, so truck times don't hold." });
   }
-  const wind = ev(/wind/i);
+  // Wind warnings and advisories, not "Wind Chill Advisory".
+  const wind = ev(/\b(high |extreme )?wind (warning|advisory|watch)\b|extreme wind/i);
   if (wind || (w.gustKmh ?? 0) >= GUST_KMH) {
     out.push({ key: "wind", text: wind ? wind.event : `gusts to ${mph(w.gustKmh)} mph`, why: "High wind: hard driving for high-profile tank trucks." });
   }
@@ -164,11 +172,17 @@ export async function startWeather(site, { offline = false } = {}) {
 export function summary(w = state) {
   if (w.status === "idle" || w.status === "loading") return "Checking the weather on the lease…";
   if (w.status !== "ok") return `Weather not checked (${w.why}). Look outside before sending anyone.`;
+  if (!fresh(w)) return `Weather last checked ${Math.round((Date.now() - w.at) / 60000)} min ago; no newer answer. Look outside before sending anyone.`;
   const hz = hazards(w);
   const bits = [];
   if (w.thunderPct != null) bits.push(`thunder ${w.thunderPct}%`);
   if (w.gustKmh != null) bits.push(`gusts ${mph(w.gustKmh)} mph`);
   if (w.visM != null) bits.push(`visibility ${w.visM >= 16000 ? "10+" : (w.visM / MILE_M).toFixed(1)} mi`);
-  const head = hz.length ? hz.map((h) => h.text).join(" · ") : "No storm, dust or wind risk";
+  // Never "no risk": only what NWS flagged, and what wasn't checked.
+  const missing = [w.thunderPct == null && "thunder", w.gustKmh == null && "wind", w.visM == null && "visibility"].filter(Boolean);
+  const unchecked = [w.alertsChecked === false && "warnings", ...missing];
+  const head = hz.length ? hz.map((h) => h.text).join(" · ")
+    : unchecked.length ? `No NWS storm, dust or wind flags, but ${unchecked.join(", ")} not checked`
+    : "No NWS storm, dust or wind flags";
   return `${w.drill ? "DRILL · " : ""}${head}. Next ${WINDOW_H} h: ${bits.join(", ") || "no grid data"}. ${w.source}.`;
 }

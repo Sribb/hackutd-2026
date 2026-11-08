@@ -49,7 +49,7 @@ export function start(apiBase, as = "web") {
 function mergeState(s) {
   if (!s) return;
   const now = Date.now();
-  if (s.clock) live.clock = s.clock;
+  if (s.clock) { live.clock = s.clock; live.clockAt = now; }
   if (typeof s.t === "number") live.t = s.t;
   if (typeof s.speed === "number" && s.speed > 0) live.speed = s.speed; // live minutes (CF-7 consequence_t / shelved_until_t use it)
   for (const [id, a] of Object.entries(s.assets || {})) {
@@ -73,13 +73,14 @@ async function poll() {
     if (r.ok) {
       mergeState(await r.json());
       if (!live.connectors.length) await healthConnectors();
-      if (!live.connected) markLost(false); // the REST poll works even while the socket is down
+      markLost(false); // the REST poll works even while the socket is down
       emit("state", live);
     } else if (r.status === 404) {
       return; // this backend has no live layer yet; stay quiet and don't mark anything
     }
   } catch {
-    markLost(true);
+    // One failed poll while the socket still carries state is a blip, not a lost feed.
+    if (!live.connected) markLost(true);
   }
   // While the socket is up it carries state; poll slowly as a safety net, faster when it's down.
   pollTimer = setTimeout(poll, live.connected ? 15000 : 3000);
@@ -105,7 +106,6 @@ function connect() {
     return retry();
   }
   ws.onopen = () => {
-    tries = 0;
     const t = token();
     if (t && !queryToken && t !== rejected) {
       try { ws.send(JSON.stringify({ type: "auth", token: t })); sentAuth = t; } catch { /* closing */ }
@@ -120,6 +120,9 @@ function connect() {
     emit("feed", live);
   };
   ws.onmessage = (m) => {
+    // Back-off resets only once the socket delivers: a server that accepts and then closes
+    // (a refused ?token=) must not get a 1 Hz loop, each try counted as a wrong token.
+    if (!heard) tries = 0;
     heard = true;
     let msg;
     try { msg = JSON.parse(m.data); } catch { return; }
@@ -129,6 +132,7 @@ function connect() {
       emit("auth", msg);
     } else if (msg.type === "state") {
       mergeState(msg.state || msg);
+      markLost(false);
       emit("state", live);
     } else {
       emit(msg.type, msg);
@@ -138,7 +142,8 @@ function connect() {
     ws = null;
     // A token the server refused (1008 after our auth message): reconnect read-only rather
     // than knock with it forever. A new token (the PIN prompt) is tried again.
-    if (ev && ev.code === 1008 && sentAuth) rejected = sentAuth;
+    // A lockout ("Too many wrong PINs") refuses even the right token for a while: not a verdict on it.
+    if (ev && ev.code === 1008 && sentAuth && !/too many/i.test(ev.reason || "")) rejected = sentAuth;
     else if (!heard && !queryToken && token() && [1008, 4001, 4003, 4401, 4403].includes(ev && ev.code)) queryToken = true;
     sentAuth = "";
     const was = live.connected;
@@ -170,12 +175,37 @@ function markLost(lost) {
   if (before !== live.lostSince) emit("feed", live);
 }
 
+// Live minutes since a wall-clock moment. speed is live minutes per real second
+// (FREEBOARD_SPEED); without one the field runs in real time.
+const liveSince = (ms) => ((Date.now() - ms) / 1000) * (live.speed || 1 / 60);
+
+// The backend's age_min as of now: its value when the message came, plus the live time since.
+// While the feed is lost this extrapolates at the last known speed, so a 12 min old reading
+// never turns into "just now" when the connection drops.
+function ageNow(a) {
+  return typeof a.age_min === "number" ? a.age_min + liveSince(a.recvAt || Date.now()) : null;
+}
+
+// The live clock and minute as of now, extrapolated from the last message when the feed is
+// lost (the field keeps running without us). Null with no live layer.
+export function clockEstimate() {
+  if (!live.available || !live.clock || !/^\d{1,2}:\d{2}/.test(live.clock)) return null;
+  const extra = live.lostSince && live.clockAt ? liveSince(live.clockAt) : 0;
+  const [h, m] = live.clock.split(":").map(Number);
+  const t = typeof live.t === "number" ? live.t + extra : null;
+  const frac = typeof live.t === "number" ? live.t - Math.floor(live.t) : 0;
+  const x = Math.floor(h * 60 + m + frac + extra);
+  const hh = Math.floor(((x % 1440) + 1440) % 1440 / 60), mm = ((x % 60) + 60) % 60;
+  return { clock: `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}`, t, estimated: extra > 0 };
+}
+
 // How long this asset has gone without a good reading, in whole minutes. Null if we never had one.
 export function staleMinutes(id) {
   const a = live.assets[id];
   if (!a) return null;
-  // #38 sends age_min (live minutes since the newest reading). Prefer it while the feed is up.
-  if (!live.lostSince && typeof a.age_min === "number") return Math.round(a.age_min);
+  // #38 sends age_min (live minutes since the newest reading), counted on since it came.
+  const age = ageNow(a);
+  if (age != null) return Math.round(age);
   if (typeof a.stale === "number") return Math.round(a.stale);
   const since = Math.min(a.staleSince || Infinity, live.lostSince || Infinity, a.staleSince || live.lostSince ? Infinity : a.seenAt);
   return Math.max(0, Math.round((Date.now() - since) / 60000));
@@ -209,9 +239,7 @@ export function reading(id) {
 export function ageText(id) {
   const a = live.assets[id];
   if (!a || !live.available) return null;
-  let min;
-  if (typeof a.age_min === "number" && !live.lostSince) min = a.age_min + ((Date.now() - (a.recvAt || Date.now())) / 60000) * (live.speed || 1);
-  else min = staleMinutes(id);
+  const min = ageNow(a) ?? staleMinutes(id);
   if (min == null) return null;
   if (min < 1) { const sec = Math.round((min * 60) / 5) * 5; return sec < 5 ? "just now" : `${sec} s ago`; }
   return min < 90 ? `${Math.round(min)} min ago` : `${Math.round(min / 60)} h ago`;
