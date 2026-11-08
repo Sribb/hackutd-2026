@@ -117,7 +117,7 @@ def setup_render(scene, quality, engine, width, height):
     else:
         ee = scene.eevee
         ee.taa_render_samples = 96 if quality == "final" else 24
-        for k, v in (("use_raytracing", quality == "final"), ("volumetric_end", 4000.0), ("volumetric_start", 0.5),
+        for k, v in (("use_raytracing", quality == "final"), ("volumetric_end", 8000.0), ("volumetric_start", 0.5),
                      ("volumetric_tile_size", "4" if quality == "final" else "8"), ("volumetric_samples", 96),
                      ("volumetric_sample_distribution", 0.85), ("use_volumetric_shadows", True),
                      ("shadow_ray_count", 3 if quality == "final" else 1), ("shadow_step_count", 8),

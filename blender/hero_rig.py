@@ -86,11 +86,16 @@ class Rig:
         self.saved_mats = {}
 
     def horizon_ground(self):
-        """A 12 km ground ring around the lease, in M_GROUND with the same 8 m UV tiling, so the
-        field sits on desert all the way to the haze instead of floating."""
-        g = self.f.get("SITE_ground")
-        lo, hi = (box_of([g]) if g else (self.f.lo, self.f.hi))
-        x0, y0, x1, y1, z, R = lo.x + 2, lo.y + 2, hi.x - 2, hi.y - 2, -0.42, 6000.0
+        """A ground ring around the lease, in M_GROUND with the same 8 m UV tiling, so the field
+        sits on desert all the way to the haze instead of floating. When the build has its own
+        terrain (SCENERY_terrain, #98), the ring only fills in past the terrain's far edge."""
+        g, terrain = self.f.get("SITE_ground"), self.f.get("SCENERY_terrain")
+        if terrain and terrain.type == "MESH":
+            lo, hi = box_of([terrain])
+            x0, y0, x1, y1, z, R = lo.x + 100, lo.y + 100, hi.x - 100, hi.y - 100, lo.z - 0.5, 2.5 * max(hi.x, hi.y, 6000.0)
+        else:
+            lo, hi = (box_of([g]) if g else (self.f.lo, self.f.hi))
+            x0, y0, x1, y1, z, R = lo.x + 2, lo.y + 2, hi.x - 2, hi.y - 2, -0.42, 6000.0
         vs = [(-R, -R), (R, -R), (R, R), (-R, R), (x0, y0), (x1, y0), (x1, y1), (x0, y1)]
         faces = [(0, 1, 5, 4), (1, 2, 6, 5), (2, 3, 7, 6), (3, 0, 4, 7)]
         me = bpy.data.meshes.new("HERO_horizon")
@@ -261,7 +266,7 @@ class Rig:
         if density <= 0:
             return
         me = bpy.data.meshes.new("HERO_haze")
-        R, top = 3000.0, 6 * height
+        R, top = 8000.0, 6 * height  # past the terrain's mesas (#98), so they sit in the haze too
         vs = [(x, y, z) for z in (-2.0, top) for x, y in ((-R, -R), (R, -R), (R, R), (-R, R))]
         me.from_pydata(vs, [], [(0, 3, 2, 1), (4, 5, 6, 7), (0, 1, 5, 4), (1, 2, 6, 5), (2, 3, 7, 6), (3, 0, 4, 7)])
         mat = new_material("HERO_haze")

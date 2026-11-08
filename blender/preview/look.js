@@ -91,13 +91,13 @@ export function createLook({ renderer, scene, camera, container, initial }) {
   scene.add(dome, floor, sun, sun.target, fill);
   scene.fog = new THREE.Fog(0xffffff, 100, 1000);
 
-  const state = { mode: null, field: null, span: 200, center: new THREE.Vector3(), lamps: [], spots: [], moving: null, ready: null };
+  const state = { mode: null, field: null, span: 200, center: new THREE.Vector3(), floorY: -0.45, lamps: [], spots: [], moving: null, ready: null };
 
   function fitToField() {
     const { span, center } = state;
     dome.scale.setScalar(Math.max(camera.far * 0.9, 10));
     floor.scale.setScalar(span * 30);
-    floor.position.set(center.x, -0.45, center.z);
+    floor.position.set(center.x, state.floorY, center.z);
     const c = sun.shadow.camera, h = span * 0.62;
     Object.assign(c, { left: -h, right: h, top: h, bottom: -h, near: 1, far: span * 4 });
     c.updateProjectionMatrix();
@@ -124,6 +124,9 @@ export function createLook({ renderer, scene, camera, container, initial }) {
     state.span = Math.max(size.x, size.z, 60);
     box.getCenter(state.center);
     sampleGround(root);
+    // A build with its own terrain (SCENERY_terrain, #98): the floor drops below it and only shows past its edge.
+    const terrain = root.getObjectByName("SCENERY_terrain");
+    state.floorY = terrain ? Math.min(-0.45, new THREE.Box3().setFromObject(terrain).min.y - 0.5) : -0.45;
     for (const s of state.spots) { s.target.removeFromParent(); s.removeFromParent(); }
     state.lamps = []; state.spots = [];
     root.traverse((o) => {
