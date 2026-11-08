@@ -111,6 +111,11 @@ With a backend, `src/live.js` reads `GET /api/live/state` and keeps one `/ws` so
 - **A stale sensor is UNKNOWN, never OK**, and never a stale alarm passed off as current. It shows hatched in the panel, dimmed in 3D with a slow gray lamp, and says "No reading for N min. Last known: ALARM at 71.2%." A tank with no reading gets "Can't vouch for Tank N" under the tank levels, because its forecast starts from an old value.
 - The connector badge under the clock lists each connector (sim, mqtt, modbus, opcua, webhook) and marks any that are unavailable. It reads `connectors` from `/api/live/state`, then from `/api/health`. If neither has it, it shows `sim`.
 - If the socket is down for 4 s, the badge turns into **Live feed lost, m:ss ago**, and every OK value becomes UNKNOWN until the feed is back. REST polling runs every 3 s while the socket is down, and the socket reconnects with backoff.
+- **Watchdog (every 2 s):** the console sends `{"type":"ping"}` and the backend answers `pong`.
+  - A socket that has ticked or answered a ping, then goes 6 s with nothing at all, is half-open (a Wi-Fi drop with no close event). The feed is lost, and the socket is replaced at once instead of waiting up to a minute for `onclose`.
+  - Pongs but no state for 6 s, while the sim isn't paused, means the server stopped sending state to this screen, so alerts and runs stopped too. The socket is replaced, and the feed is marked lost only if the new one isn't up within 4 s.
+  - A paused sim (`POST /api/live/sim {"paused": true}`) is not a lost feed, and its readings don't age while it stands still.
+- **Deadlines that passed say so.** When the shift clock is past the Last Call, the point of no return, the shutdown time or a plan's "Start by", the console says that time passed and which readings the forecast was made from. It never presents that time as still ahead.
 - A backend without `/api/live/state` (404) leaves the console as it was.
 
 ## Phone view (#55)
