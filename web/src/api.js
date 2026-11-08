@@ -4,7 +4,7 @@
 // serves /api/field and /api/state still works. The console shows which data is fake.
 // It never treats missing data as safe.
 
-const BASE = (import.meta.env.VITE_API || "").replace(/\/$/, "");
+export const BASE = (import.meta.env.VITE_API || "").replace(/\/$/, "");
 const fakeCache = new Map();
 
 async function getJson(url, init) {

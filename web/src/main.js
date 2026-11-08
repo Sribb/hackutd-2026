@@ -8,6 +8,7 @@ import * as api from "./api.js";
 import { buildPlaceholder } from "./placeholder.js";
 import { decode, holdButton } from "./fx.js";
 import * as shiftlog from "./shiftlog.js";
+import { mountUpload } from "./upload.js";
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
@@ -59,6 +60,17 @@ resize();
 
 // ---------------------------------------------------------------- model ----
 async function loadModel() {
+  // A field built from an uploaded blueprint (upload.js) wins over the repo's model.
+  let built = null;
+  try { built = sessionStorage.getItem("freeboard.glb"); } catch { /* storage blocked */ }
+  if (built) {
+    try {
+      const gltf = await new GLTFLoader().loadAsync(built);
+      return { root: gltf.scene, from: "your uploaded blueprint" };
+    } catch {
+      try { sessionStorage.removeItem("freeboard.glb"); } catch { /* ignore */ }
+    }
+  }
   try {
     const head = await fetch("/field.glb", { method: "HEAD" });
     if (!head.ok) throw new Error("no field.glb");
@@ -887,6 +899,7 @@ addEventListener("keydown", (e) => {
 });
 
 // ----------------------------------------------------------------- boot ----
+mountUpload();
 async function boot() {
   const [f, state, model] = await Promise.all([api.getField(), api.getState(), loadModel()]);
   field = f;
@@ -894,6 +907,9 @@ async function boot() {
   const [baseline, lc, plans] = await Promise.all([api.forecast([]), api.lastCall(), api.plans()]);
   data = { field, state, baseline, lc, plans };
   shiftlog.start(state.clock || "00:00", (state.incident && state.incident.summary) || "");
+  let built = null;
+  try { built = JSON.parse(sessionStorage.getItem("freeboard.built") || "null"); sessionStorage.removeItem("freeboard.built"); } catch { /* ignore */ }
+  if (built) shiftlog.add("open", `Field "${built.name}" built from an uploaded blueprint in ${built.secs} s${built.status === "fallback" ? `, on the standard model (${built.note})` : ""}.`);
   if (!shiftlog.entries().length) {
     const ev = shutdownOf(baseline);
     shiftlog.add("open", `Console opened. ${(state.incident && state.incident.summary) || "No incident."}${ev ? ` ${nice(ev.asset_id)} hits shutdown at ${clockAt(ev.t_min)} if nobody acts.` : ""}`);
@@ -909,7 +925,7 @@ async function boot() {
   $("warnings").innerHTML = notes.map((n) => `<div>${esc(n)}</div>`).join("");
   const note = $("modelNote");
   note.hidden = false;
-  note.textContent = model.from === "placeholder" ? "Placeholder geometry until blender/field.glb lands" : "Model: blender/field.glb";
+  note.textContent = model.from === "placeholder" ? "Placeholder geometry until blender/field.glb lands" : `Model: ${model.from}`;
   $("loading").remove();
   frame(model.root);
   buildFuses();
