@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#070809">
+  <title>gaia</title>
+  <meta name="description" content="gaia, a night-shift console for the salt water in an oil field.">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="icon" href="/favicon-32.png" sizes="32x32" type="image/png">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+</head>
+<body class="s-body" data-step="intro">
+  <!-- 1. the word "gaia" writes itself, slowly -->
+  <section id="sIntro" class="s-intro" aria-label="gaia">
+    <svg class="s-word" viewBox="0 0 640 280" role="img" aria-label="gaia">
+      <text x="320" y="196" text-anchor="middle"><tspan class="l l0">g</tspan><tspan class="l l1">a</tspan><tspan class="l l2">i</tspan><tspan class="l l3">a</tspan></text>
+    </svg>
+    <button id="sContinue" class="s-quiet" type="button" hidden>continue</button>
+  </section>
+
+  <!-- 2 to 5: the landing, the three choices, the phone number and the briefing -->
+  <div id="sStage" class="s-stage" hidden>
+    <div class="s-bg">
+      <img src="/field-blue-hour.jpg" alt="a render of an oil field at blue hour: pumpjacks, tank pads and a lease road running to the horizon" width="1600" height="900" decoding="async">
+    </div>
+    <header class="s-head"><span class="s-mark" aria-hidden="true">gaia</span></header>
+
+    <main class="s-main">
+      <section id="sLanding" class="s-step" data-step="landing" aria-labelledby="sLandingP">
+        <p id="sLandingP" class="s-lede">gaia is a night-shift console for produced water, the salt water that comes up with every barrel of oil.
+          from the sensor readings alone it finds what is failing, like a pump that stops, a pipeline leak or a worn pump.
+          it says how long until a tank forces a shutdown and finds the cheapest fix: trucks, shutting in wells early, or letting it trip.
+          a person always holds to confirm before anything moves. give it a blueprint or photos of a field and it turns them into a 3D model.</p>
+        <div class="s-actions">
+          <button id="sTrack" class="s-primary" type="button">track my oil field</button>
+        </div>
+        <div id="sChoices" class="s-choices" hidden>
+          <a class="s-choice" href="/#upload" data-choice="blueprint">upload a blueprint</a>
+          <a class="s-choice" href="/#upload" data-choice="photos">upload photos of your oil field</a>
+          <button id="sJudges" class="s-choice" type="button" data-choice="judges">hackathon judges</button>
+        </div>
+      </section>
+
+      <section id="sPhone" class="s-step" data-step="phone" aria-labelledby="sPhoneH" hidden>
+        <h1 id="sPhoneH" class="s-h">where should gaia reach you?</h1>
+        <form id="sPhoneForm" class="s-form" novalidate>
+          <label for="sPhoneIn" class="s-label">phone number for alerts</label>
+          <input id="sPhoneIn" class="s-input" type="tel" inputmode="tel" autocomplete="tel" placeholder="(214) 555-0134"
+            aria-describedby="sPhoneNote sPhoneErr" maxlength="24">
+          <p id="sPhoneNote" class="s-note">we'll text and call this number with gaia's alerts during your demo; it is not stored after the session.</p>
+          <p id="sPhoneErr" class="s-err" role="alert" aria-live="polite"></p>
+          <div class="s-actions">
+            <button id="sPhoneGo" class="s-primary" type="submit">continue</button>
+            <button id="sPhoneSkip" class="s-quiet" type="button">skip</button>
+          </div>
+        </form>
+      </section>
+
+      <section id="sBrief" class="s-step" data-step="brief" aria-label="your shift" hidden>
+        <ol id="sBriefLines" class="s-lines" aria-live="polite">
+          <li>you are the night-shift operator.</li>
+          <li>avon never sleeps. neither do the oil fields that keep it running.</li>
+          <li>every barrel of oil brings up salt water. it is collected in tanks and piped to disposal.</li>
+          <li>tonight something breaks. a pump fails, a tank nears capacity, and the system forecasts a shutdown.</li>
+          <li>your job: find what is failing, how long until it gets worse, and the cheapest way to keep running.</li>
+        </ol>
+        <div class="s-actions">
+          <button id="sBriefGo" class="s-primary" type="button" hidden>i'm ready</button>
+        </div>
+      </section>
+    </main>
+
+    <footer class="s-foot"><div id="sTree" class="s-tree-host" title="gaia's tree"></div></footer>
+  </div>
+
+  <!-- 6: the field being built, then into the console -->
+  <section id="sBuild" class="s-build" aria-labelledby="sBuildH" hidden>
+    <div id="sFilm" class="s-film"></div>
+    <div class="s-build-text">
+      <p class="s-done-line" id="sUploaded">your blueprint has already been uploaded</p>
+      <h1 id="sBuildH" class="s-h">your 3D model is being generated</h1>
+      <p id="sCaption" class="s-caption" aria-live="polite"></p>
+    </div>
+    <div class="s-build-foot">
+      <a id="sConsole" class="s-primary" href="/?tour=1" hidden>go to the console</a>
+    </div>
+  </section>
+
+  <script type="module" src="/src/start/main.js"></script>
+</body>
+</html>
