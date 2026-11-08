@@ -207,6 +207,15 @@ def glb_json(path):
     return json.loads(raw[20:20 + n])
 
 
+def glb_nodes(path):
+    """The glb's nodes (blender/export_kit.py, #89, reads these)."""
+    return glb_json(path).get("nodes", [])
+
+
+def glb_images_mb(path):
+    return glb_summary(glb_json(path))["images_mb"]
+
+
 def glb_summary(g):
     """What the console has to draw: draw calls (one per primitive of a mesh node, so one per
     instanced node too), instanced nodes and their copies, meshes, and MB of embedded images

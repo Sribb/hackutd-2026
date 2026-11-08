@@ -6,11 +6,12 @@ exports with export_gpu_instances on. Blender writes EXT_mesh_gpu_instancing, an
 0.170's GLTFLoader turns each instanced node into one InstancedMesh: one draw call for 110
 grass clumps instead of 110.
 
-1. merge(): outside SCENERY, static Kit parts with the same parent and material join into one
-   mesh, like WELL_1_steel and WELL_1_detail_steel. Each one was its own draw call, and the
-   console's frame time follows draw calls (#97). Only parts named the way Kit.done() names
-   them, <owner>_<material>, with no contract name and no custom properties, ever join; the
-   one with the shortest name keeps its name.
+1. merge(), OFF unless MERGE_PARTS is True: outside SCENERY, static Kit parts with the same
+   parent and material join into one mesh, like WELL_1_steel and WELL_1_detail_steel. Measured
+   on the default field: 772 to 661 draw calls, about 1.3 ms a frame. It is off because the
+   console names parts by these meshes (web/src/parts.js reads <ID>_<part>, so "detail_tank"
+   is the settling tank) and Jarvis explodes assets by part (docs/JARVIS_CONSOLE.md). Only parts
+   named <owner>_<kit material>, with no contract name and no custom properties, would join.
 2. share(): objects whose meshes hold the same geometry, attributes, and material point at
    one mesh, so the glb stores it once. 24 pumpjacks carry one copy of each part, not 24.
    Each object keeps its own node, name, parent, and transform.
@@ -34,7 +35,10 @@ import bmesh
 import bpy
 import numpy as np
 
+import field_parts as fp
+
 MIN_COPIES = 2           # leaf siblings sharing a mesh before they become one instanced node
+MERGE_PARTS = False      # see merge(): the console reads the part names it would join
 GROUP_SUFFIX = "_instances"
 SCENERY_ROOT = "SCENERY"
 EDITOR_ONLY = (".select_", ".uv_select_", ".hide_")   # attributes the exporter never writes
@@ -44,7 +48,7 @@ ATTR = {
     "FLOAT": ("value", 1, np.float32), "INT": ("value", 1, np.int32), "BOOLEAN": ("value", 1, np.bool_),
     "INT8": ("value", 1, np.int8), "FLOAT_VECTOR": ("vector", 3, np.float32), "FLOAT2": ("vector", 2, np.float32),
     "FLOAT_COLOR": ("color", 4, np.float32), "BYTE_COLOR": ("color", 4, np.float32),
-    "INT32_2D": ("value", 2, np.int32), "QUATERNION": ("value", 4, np.float32),
+    "INT32_2D": ("value", 2, np.int32), "INT16_2D": ("value", 2, np.int16), "QUATERNION": ("value", 4, np.float32),
 }
 
 
@@ -93,23 +97,34 @@ def under(obj, root):
     return False
 
 
-def kit_part(obj, keep):
-    """A static part as Kit.done() makes it: <owner>_<material>, one material, nothing attached."""
+def kit_part(obj, keep, suffixes):
+    """A static part as Kit.done() makes it: <owner>_<kit material>, one material, nothing attached.
+    suffixes are the kit materials' names without M_, lowercased; the look pass (#99) may since
+    have swapped the material itself, so the name is checked against all of them."""
     if (obj.type != "MESH" or obj.name in keep or len(obj.material_slots) != 1 or obj.modifiers
-            or obj.data.shape_keys or obj.keys() or obj.data.keys() or obj.data.has_custom_normals):
+            or obj.data.shape_keys or obj.keys() or obj.data.keys() or obj.data.has_custom_normals
+            or obj.material_slots[0].material is None):
         return False
-    mat = obj.material_slots[0].material
-    return mat is not None and mat.name.startswith("M_") and obj.name.endswith("_" + mat.name[2:].lower())
+    return "_" in obj.name and obj.name.rsplit("_", 1)[1] in suffixes or any(
+        obj.name.endswith("_" + s) for s in suffixes if "_" in s)
+
+
+def layers(me):
+    """The attribute and UV names a mesh carries: parts only join when these match, so no part
+    gets a zero-filled color or UV layer from its neighbor."""
+    return tuple(sorted(a.name for a in me.attributes if not a.name.startswith(EDITOR_ONLY)))
 
 
 def merge(objs, root, keep):
     """Join same-material Kit parts under one parent into one mesh. Returns how many objects went."""
     parents = {o.parent for o in objs if o.parent is not None}
+    suffixes = {m[2:].lower() for m in fp.PALETTE if m.startswith("M_") and len(m) > 2}   # Kit materials only
     sets = {}
     for obj in objs:
-        if (obj.parent is not None and obj not in parents and kit_part(obj, keep)
+        if (obj.parent is not None and obj not in parents and kit_part(obj, keep, suffixes)
                 and not (root is not None and (obj.parent == root or under(obj, root)))):
-            sets.setdefault((obj.parent.name, obj.material_slots[0].material.name), []).append(obj)
+            key = (obj.parent.name, obj.material_slots[0].material.name, layers(obj.data))
+            sets.setdefault(key, []).append(obj)
     gone = []
     for members in sets.values():
         if len(members) < 2:
@@ -210,7 +225,7 @@ def run(scene, keep):
     """The whole pass on scene. keep is the set of node names that must stay real nodes."""
     t0 = time.time()
     root = bpy.data.objects.get(SCENERY_ROOT)
-    merged = merge(list(scene.objects), root, keep)
+    merged = merge(list(scene.objects), root, keep) if MERGE_PARTS else 0
     objs = list(scene.objects)
     before, after = share(objs)
     groups = group(scene.collection, objs, root, keep) if root is not None else {}
