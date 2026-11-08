@@ -18,7 +18,7 @@ import * as liveFeed from "./live.js";
 import { mountTwoNights } from "./twonights.js";
 import { mountScenery } from "./scenery.js";
 import { mountInspect } from "./inspect.js";
-import { mountAlarms } from "./alarms.js";
+import { mountAlarms, alarms } from "./alarms.js";
 
 const $ = (id) => document.getElementById(id);
 // Meshopt-compressed glb (#112/#117) loads with no extra files; a plain glb is unaffected.
@@ -816,39 +816,89 @@ function saveHandoff() {
   a.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
+// CF-4: fixed sections in a fixed order, so the next crew always finds the same thing in
+// the same place, and nothing in it is typed by hand:
+//   1 open alarms by priority   2 shelved alarms   3 blind sensors   4 the approved plan
+//   5 the next deadline         6 the what-ifs tried
+// then the tank levels and the full shift log.
 function handoffText() {
   const L = [];
+  const head = (n, title) => L.push("", `${n}. ${title}`);
   const inc = data.state.incident;
   const base = shutdownOf(data.baseline);
-  L.push("FREEBOARD SHIFT HANDOFF", `Written ${shiftlog.clockNow()} for the next crew.`, "");
-  L.push("INCIDENT");
-  if (inc) L.push(inc.summary);
+  const nowView = viewAt(0);
+  L.push("FREEBOARD SHIFT HANDOFF", `Written ${shiftlog.clockNow()} for the next crew.`);
+  if (inc) L.push(`Incident: ${inc.summary}`);
   if (base) L.push(`If nothing changes: ${nice(base.asset_id)} reaches shutdown at ${clockAt(base.t_min)}, and ${(field.wells || []).filter((w) => w.tank_id === base.asset_id).length} wells go down with it.`);
-  const lc = data.lc;
-  if (lc && lc.options && lc.options.length) {
-    L.push(`Last Call: the cheapest plan (${usd(lc.options[0].cost.total_usd)}) only works if started by ${lc.options[0].expires_clock}.`);
-    if (lc.point_of_no_return) L.push(`After ${lc.point_of_no_return.clock}, nothing keeps every well online.`);
+
+  const roots = alarms.roots();
+  const open = roots.filter((a) => !a.shelved), shelf = roots.filter((a) => a.shelved);
+  const src = alarms.derived() ? " (derived from the forecast: no alerts feed)" : "";
+  const cons = (a) => {
+    const m = alarms.minutesLeft(a);
+    return a.consequence_clock && a.consequence_asset_id
+      ? ` ${nice(a.consequence_asset_id)} shuts in at ${a.consequence_clock}${m != null ? (m > 0 ? ` (${m} min)` : " (now)") : ""}.`
+      : a.consequence ? ` ${a.consequence}` : "";
+  };
+
+  head(1, `OPEN ALARMS${src}`);
+  if (!open.length) L.push(blindTanks().length ? "  None, but some tanks have no reading (see 3). Not all clear." : "  None.");
+  for (const a of open) {
+    L.push(`  ${a.priority || a.severity}  ${nice(a.asset_id || "")}: ${a.message}${cons(a)}`);
+    const tags = [a.related_count ? `+${a.related_count} related` : "", a.acked ? `acked${a.acked_by ? ` by ${a.acked_by}` : ""}` : "NOT ACKED", a.usd_at_risk ? `${usd(a.usd_at_risk)} at risk` : ""].filter(Boolean);
+    L.push(`      ${tags.join(" · ")}`);
   }
-  L.push("", "PLAN");
-  if (!approved) L.push("No plan approved yet.");
+
+  head(2, "SHELVED ALARMS");
+  if (!shelf.length) L.push("  None.");
+  for (const a of shelf) {
+    const left = alarms.shelfLeft(a);
+    L.push(`  ${a.priority || a.severity}  ${nice(a.asset_id || "")}: ${a.message}${cons(a)}`);
+    L.push(`      Shelved${a.shelved_by ? ` by ${a.shelved_by}` : ""}: "${a.shelve_reason || "no reason recorded"}". Back${a.shelved_until ? ` at ${a.shelved_until}` : ""}${left != null ? ` (${left} min left)` : ""}.`);
+    if (typeof a.consequence_t === "number" && typeof a.shelved_until_t === "number" && a.consequence_t < a.shelved_until_t) L.push(`      WARNING: the shutdown at ${a.consequence_clock} comes before this shelf ends.`);
+  }
+
+  head(3, "BLIND SENSORS");
+  const blindIds = Object.keys(nowView).filter((id) => nowView[id] && (nowView[id].status === "UNKNOWN" || nowView[id].status === "NO_DATA"));
+  for (const id of blindTanks()) if (!blindIds.includes(id)) blindIds.push(id);
+  if (!blindIds.length) L.push("  None. Every monitored asset has a fresh reading.");
+  for (const id of blindIds) {
+    const age = liveFeed.staleMinutes(id);
+    L.push(`  ${nice(id)}: no fresh reading${age != null ? ` for ${age} min` : ""}. Check it in person; Freeboard can't vouch for it.`);
+  }
+
+  head(4, "APPROVED PLAN");
+  if (!approved) L.push("  No plan approved yet.");
   else {
-    L.push(`Approved ${approved.at}: ${approved.plan.summary} (${usd(approved.plan.cost.total_usd)}).`);
-    approved.steps.forEach((s, i) => L.push(`  [${i < approved.done ? "x" : " "}] ${s.text}`));
+    L.push(`  Approved ${approved.at}: ${approved.plan.summary} (${usd(approved.plan.cost.total_usd)}).`);
+    approved.steps.forEach((s, i) => L.push(`  [${i < approved.done ? "x" : " "}] ${i < approved.done ? "done   " : "pending"}  ${s.text}`));
   }
-  L.push("", "FORECAST ON SCREEN");
+
+  head(5, "NEXT DEADLINE");
+  const lc = data.lc;
+  if (approved) L.push(approved.done >= approved.steps.length ? "  Every step of the approved plan is done." : `  Finish the approved plan: ${approved.steps.length - approved.done} step${approved.steps.length - approved.done === 1 ? "" : "s"} still pending.`);
+  if (lc && lc.options && lc.options.length) {
+    L.push(`  Last Call: the cheapest plan (${usd(lc.options[0].cost.total_usd)}) only works if started by ${lc.options[0].expires_clock}.`);
+    if (lc.point_of_no_return) L.push(`  After ${lc.point_of_no_return.clock}, nothing keeps every well online.`);
+  } else if (lc && lc.status) L.push(`  Last Call: ${lc.headline || lc.status}.`);
+  else L.push("  No Last Call deadline on hand.");
   const now = shutdownOf(fc);
-  L.push(actions.length ? `With ${actions.map(describe).join(" + ")}:` : "No changes applied:");
-  L.push(now ? `${nice(now.asset_id)} reaches shutdown at ${clockAt(now.t_min)}.` : noShutdownText(blindTanks()));
+  L.push(`  On screen${actions.length ? ` (with ${actions.map(describe).join(" + ")})` : ""}: ${now ? `${nice(now.asset_id)} reaches shutdown at ${clockAt(now.t_min)}.` : noShutdownText(blindTanks())}`);
+
+  head(6, "WHAT-IFS TRIED");
+  const tried = shiftlog.entries().filter((e) => e.kind === "whatif");
+  if (!tried.length) L.push("  None.");
+  for (const e of tried) L.push(`  ${e.at.padStart(8)}  ${e.text}`);
+
   // Levels as they read right now (live readings win over the boot snapshot), stamped,
   // so the next crew never acts on a number that was stale when it was written (#104).
-  const nowView = viewAt(0);
-  L.push(`Tank levels as of ${shiftlog.clockNow()}${liveFeed.live.available ? (liveFeed.live.lostSince ? " (live feed LOST: last known values)" : " (live)") : ` (snapshot from ${dataAt})`}:`);
+  L.push("", `TANK LEVELS as of ${shiftlog.clockNow()}${liveFeed.live.available ? (liveFeed.live.lostSince ? " (live feed LOST: last known values)" : " (live)") : ` (snapshot from ${dataAt})`}`);
   for (const t of field.tanks || []) {
     const s = nowView[t.id] || {};
     if (s.status === "UNKNOWN") L.push(`  ${nice(t.id)}: NO FRESH READING${s.level_pct != null ? ` (last ${s.level_pct.toFixed(1)}%)` : ""}. Not safe until checked.`);
     else L.push(s.level_pct != null ? `  ${nice(t.id)}: ${s.level_pct.toFixed(1)}% (shutdown ${t.shutdown_pct}%)` : `  ${nice(t.id)}: NO READING. Not safe until checked.`);
   }
-  L.push("", "LOG");
+  L.push("", "FULL SHIFT LOG");
   for (const e of shiftlog.entries()) L.push(`${e.at.padStart(8)}  ${e.text}`);
   const fakes = Object.entries(api.sources).filter(([, v]) => v === "fake").map(([k]) => k);
   L.push("", fakes.length ? `Data: fake for ${fakes.join(", ")}.` : "Data: live API.");
@@ -1139,6 +1189,7 @@ async function boot() {
   const [baseline, lc, plans] = await Promise.all([api.forecast([]), api.lastCall(), api.plans()]);
   data = { field, state, baseline, lc, plans };
   shiftlog.start(state.clock || "00:00", (state.incident && state.incident.summary) || "");
+  shiftlog.followClock(() => (liveFeed.live.available && !liveFeed.live.lostSince ? liveFeed.live : null));
   let built = null;
   try { built = JSON.parse(sessionStorage.getItem("freeboard.built") || "null"); sessionStorage.removeItem("freeboard.built"); } catch { /* ignore */ }
   if (built) shiftlog.add("open", `Field "${built.name}" built from an uploaded blueprint in ${built.secs} s${built.status === "fallback" ? `, on the standard model (${built.note})` : ""}.`);
@@ -1179,7 +1230,7 @@ async function boot() {
     select: (id) => select(id, true),
     log: (text) => { shiftlog.add("alarm", text); renderLog(); },
   });
-  window.__freeboard = { assets, select, viewAt: (t) => viewAt(t), missing, setActions, get actions() { return actions; } };
+  window.__freeboard = { assets, select, viewAt: (t) => viewAt(t), missing, setActions, get actions() { return actions; }, handoff: () => handoffText() };
 }
 
 const clock = new THREE.Clock();

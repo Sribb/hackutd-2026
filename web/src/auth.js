@@ -29,6 +29,8 @@ function captureFragment() {
   history.replaceState(null, "", location.pathname + location.search + (keep.length ? `#${keep.join("&")}` : ""));
 }
 captureFragment();
+// Opening a #k= link in a tab that already has the console only changes the hash.
+addEventListener("hashchange", captureFragment);
 
 export const token = () => store.get(KEY);
 export const phoneToken = () => store.get(PHONE_KEY);

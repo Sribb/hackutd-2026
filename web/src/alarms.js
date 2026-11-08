@@ -109,6 +109,16 @@ function groups() {
     // A group sorts by its most urgent member: a high-high under a P2 root still pulls it up.
     g.lead = [g.root, ...g.related].sort(order)[0];
     g.shelved = isShelved(g.root);
+    // Shelving a root never hides what follows from it: related alarms that are not shelved
+    // themselves stay on the open list, headed by the most urgent of them.
+    if (g.shelved) {
+      const loose = g.related.filter((a) => !isShelved(a));
+      if (loose.length) {
+        g.related = g.related.filter((a) => isShelved(a));
+        const [head, ...rest] = loose.sort(order);
+        out.push({ root: head, related: rest, lead: head, shelved: false, under: g.root.id });
+      }
+    }
     out.push(g);
   }
   return out.sort((x, y) => (x.shelved - y.shelved) || order(x.lead, y.lead));
@@ -320,7 +330,8 @@ function draw() {
       ? `<button class="link al-rel" data-open="${esc(g.root.id)}" ${flood ? "disabled" : ""}>+${g.related.length} related${flood ? "" : open ? " ▾" : " ▸"}</button>`
         + (open ? `<ul class="al-sub">${g.related.map((a) => row(a)).join("")}</ul>` : "")
       : "";
-    return row(g.root, rel + buttons(g.root) + (shelving === g.root.id ? shelveForm(g.root) : ""));
+    const why = g.under ? `<div class="al-shelf">Its root cause, ${esc(hooks.nice((all.get(g.under) || {}).asset_id || ""))}, is shelved. This one is not.</div>` : "";
+    return row(g.root, why + rel + buttons(g.root) + (shelving === g.root.id ? shelveForm(g.root) : ""));
   }).join("");
 
   let empty = "";
