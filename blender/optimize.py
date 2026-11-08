@@ -6,12 +6,13 @@ exports with export_gpu_instances on. Blender writes EXT_mesh_gpu_instancing, an
 0.170's GLTFLoader turns each instanced node into one InstancedMesh: one draw call for 110
 grass clumps instead of 110.
 
-1. merge(), OFF unless MERGE_PARTS is True: outside SCENERY, static Kit parts with the same
-   parent and material join into one mesh, like WELL_1_steel and WELL_1_detail_steel. Measured
-   on the default field: 772 to 661 draw calls, about 1.3 ms a frame. It is off because the
-   console names parts by these meshes (web/src/parts.js reads <ID>_<part>, so "detail_tank"
-   is the settling tank) and Jarvis explodes assets by part (docs/JARVIS_CONSOLE.md). Only parts
-   named <owner>_<kit material>, with no contract name and no custom properties, would join.
+1. merge(): outside SCENERY, an asset's <ID>_detail_<m> Kit part joins its sibling <ID>_<m>
+   for the LABEL_SAFE kit materials (steel, steel_dark, concrete, gravel, rubber), like
+   WELL_1_detail_steel into WELL_1_steel: one draw call instead of two. The console's
+   web/src/parts.js already gives both the same label ("pumpjack frame"), so no label changes.
+   Never pipe or tank parts (their detail_ meshes have their own labels), contract names, or
+   anything with custom properties, so the functional parts the Jarvis console explodes
+   (docs/JARVIS_CONSOLE.md, userData.part) always stay separate.
 2. share(): objects whose meshes hold the same geometry, attributes, and material point at
    one mesh, so the glb stores it once. 24 pumpjacks carry one copy of each part, not 24.
    Each object keeps its own node, name, parent, and transform.
@@ -22,6 +23,10 @@ grass clumps instead of 110.
 4. unshare(): the exporter instances any set of leaf siblings that share a mesh. Outside the
    groups made here, no two leaf siblings may share one, so they get their own copy back.
 5. purge(): meshes, materials, and images nothing uses any more are removed.
+6. shadows(): small scenery gets extras cast_shadow false, for the console to skip in its
+   shadow pass (see shadows()).
+
+export_options() holds the Draco + WebP export, off by default (COMPRESS).
 
 Only single-material meshes are shared. three.js names the child meshes of a multi-material
 mesh after the glTF mesh, and the console resolves a click on a child by that name, so a
@@ -35,10 +40,14 @@ import bmesh
 import bpy
 import numpy as np
 
-import field_parts as fp
-
 MIN_COPIES = 2           # leaf siblings sharing a mesh before they become one instanced node
-MERGE_PARTS = False      # see merge(): the console reads the part names it would join
+MERGE_PARTS = True       # see merge()
+# Kit materials whose <ID>_<m> and <ID>_detail_<m> parts web/src/parts.js already names alike
+# ("steel" and "detail_steel" are both the pumpjack frame), so joining them changes no label.
+# Not pipe ("pipe" is a well's flowline, "detail_pipe" is piping) or tank (the settling tank).
+LABEL_SAFE = ("steel", "steel_dark", "concrete", "gravel", "rubber")
+SHADOW_MIN_M = 1.2       # scenery shorter than this gets cast_shadow false (see shadows())
+COMPRESS = False         # Draco + WebP export; off until the console has a DRACOLoader (see export_options())
 GROUP_SUFFIX = "_instances"
 SCENERY_ROOT = "SCENERY"
 EDITOR_ONLY = (".select_", ".uv_select_", ".hide_")   # attributes the exporter never writes
@@ -97,16 +106,11 @@ def under(obj, root):
     return False
 
 
-def kit_part(obj, keep, suffixes):
-    """A static part as Kit.done() makes it: <owner>_<kit material>, one material, nothing attached.
-    suffixes are the kit materials' names without M_, lowercased; the look pass (#99) may since
-    have swapped the material itself, so the name is checked against all of them."""
-    if (obj.type != "MESH" or obj.name in keep or len(obj.material_slots) != 1 or obj.modifiers
-            or obj.data.shape_keys or obj.keys() or obj.data.keys() or obj.data.has_custom_normals
-            or obj.material_slots[0].material is None):
-        return False
-    return "_" in obj.name and obj.name.rsplit("_", 1)[1] in suffixes or any(
-        obj.name.endswith("_" + s) for s in suffixes if "_" in s)
+def plain(obj, keep):
+    """A static mesh with one material and nothing attached that the console could read."""
+    return (obj.type == "MESH" and obj.name not in keep and len(obj.material_slots) == 1 and not obj.modifiers
+            and not obj.data.shape_keys and not obj.keys() and not obj.data.keys()
+            and not obj.data.has_custom_normals and obj.material_slots[0].material is not None)
 
 
 def layers(me):
@@ -116,20 +120,23 @@ def layers(me):
 
 
 def merge(objs, root, keep):
-    """Join same-material Kit parts under one parent into one mesh. Returns how many objects went."""
+    """Join <owner>_detail_<m> into its sibling <owner>_<m> for the LABEL_SAFE kit materials, when
+    both are plain leaves with the same material and layers. Returns how many objects went."""
     parents = {o.parent for o in objs if o.parent is not None}
-    suffixes = {m[2:].lower() for m in fp.PALETTE if m.startswith("M_") and len(m) > 2}   # Kit materials only
+    by_name = {o.name: o for o in objs}
     sets = {}
     for obj in objs:
-        if (obj.parent is not None and obj not in parents and kit_part(obj, keep, suffixes)
-                and not (root is not None and (obj.parent == root or under(obj, root)))):
-            key = (obj.parent.name, obj.material_slots[0].material.name, layers(obj.data))
-            sets.setdefault(key, []).append(obj)
+        m = re.match(r"^(.+)_detail_([a-z_]+)$", obj.name)
+        head = by_name.get(f"{m.group(1)}_{m.group(2)}") if m and m.group(2) in LABEL_SAFE else None
+        if (head is None or obj.parent is None or head.parent != obj.parent or obj in parents or head in parents
+                or not plain(obj, keep) or not plain(head, keep)
+                or root is not None and (obj.parent == root or under(obj, root))
+                or head.material_slots[0].material != obj.material_slots[0].material
+                or layers(head.data) != layers(obj.data)):
+            continue
+        sets.setdefault(head.name, [head]).append(obj)
     gone = []
     for members in sets.values():
-        if len(members) < 2:
-            continue
-        members.sort(key=lambda o: (len(o.name), o.name))
         head = members[0]
         to_head = (head.matrix_parent_inverse @ head.matrix_basis).inverted()
         bm = bmesh.new()
@@ -221,6 +228,42 @@ def purge():
     return len(gone)
 
 
+def shadows(root):
+    """Mark small scenery cast_shadow false (glTF extras, so userData.cast_shadow in three.js).
+    The console casts a shadow from every mesh, which draws it a second time; grass, rocks,
+    branches, cactus, yucca, wire and road stubs add draw calls and triangles there for shadows
+    nobody sees at night. A kit model taller than SHADOW_MIN_M (mesquite, creosote, the sign)
+    keeps its shadow. Returns the names marked."""
+    if root is None:
+        return []
+    under_root = root.children_recursive          # computed in Python over every object: once
+    kids, marked = {}, []
+    for o in under_root:
+        kids.setdefault(o.parent, []).append(o)
+    for o in under_root:
+        holder = o.name.endswith(GROUP_SUFFIX)
+        if o.parent is not None and o.parent.name.endswith(GROUP_SUFFIX) or not (holder or o.type == "MESH"):
+            continue                           # a copy (its holder carries the flag) or an Empty
+        tall = max((c.dimensions.z for c in kids.get(o, []) if c.type == "MESH"), default=0.0) if holder \
+            else o.dimensions.z
+        generated = not holder and not o.get("scenery")    # fence, cattle guards, road stubs, yucca, cactus
+        if generated or tall < SHADOW_MIN_M:
+            o["cast_shadow"] = False
+            marked.append(o.name)
+    return sorted(marked)
+
+
+def export_options(compress=COMPRESS):
+    """Extra glTF exporter options. compress turns on Draco (level 6) and WebP textures: the
+    default field goes from about 16 MB to about 5 MB (#117), but the console can only open it
+    with a DRACOLoader (docs/CONTRACT.md "What's in field.glb"), and WebP encoding adds seconds
+    to every export. So builds stay uncompressed unless build_field.py gets --compress."""
+    if not compress:
+        return {}
+    return {"export_draco_mesh_compression_enable": True, "export_draco_mesh_compression_level": 6,
+            "export_image_format": "WEBP", "export_image_quality": 80}
+
+
 def run(scene, keep):
     """The whole pass on scene. keep is the set of node names that must stay real nodes."""
     t0 = time.time()
@@ -232,6 +275,7 @@ def run(scene, keep):
     unshared = unshare(list(scene.objects), groups)
     purged = purge()
     bpy.context.view_layer.update()
+    no_shadow = shadows(root)
     return {"merged": merged, "meshes_before": before, "meshes_after": after + unshared, "unshared": unshared,
             "instanced": dict(sorted(groups.items())), "instances": sum(groups.values()),
-            "purged": purged, "seconds": round(time.time() - t0, 2)}
+            "no_shadow": len(no_shadow), "purged": purged, "seconds": round(time.time() - t0, 2)}

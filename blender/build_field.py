@@ -4,7 +4,10 @@ Run from the repo root:
   /Applications/Blender.app/Contents/MacOS/Blender --background --factory-startup \
       --python blender/build_field.py -- [--blueprint PATH.json] [--out DIR] \
       [--detail full|lite|bare] [--render-dir DIR] [--render-assets ID,ID] [--no-scenery] \
-      [--look fast|full|bake]
+      [--look fast|full|bake] [--compress]
+
+--compress writes Draco meshes and WebP textures (about a third of the size), which the console
+can only open with a DRACOLoader; see docs/CONTRACT.md. Builds are uncompressed without it.
 
 The blueprint follows docs/BLUEPRINT.md (format v1); ingest drafts with missing numbers
 build too, since the generator only needs IDs and links.
@@ -98,18 +101,19 @@ class UsageError(Exception):
 
 def parse_args(argv):
     opts = {"blueprint": None, "out": None, "detail": None, "render_dir": None, "render_assets": None,
-            "scenery": True, "look": "fast"}
+            "scenery": True, "look": "fast", "compress": optimize.COMPRESS}
     flags = {"--blueprint": "blueprint", "--out": "out", "--detail": "detail",
              "--render-dir": "render_dir", "--render-assets": "render_assets", "--look": "look"}
     i = 0
     while i < len(argv):
-        if argv[i] == "--no-scenery":
-            opts["scenery"] = False
+        if argv[i] in ("--no-scenery", "--compress"):
+            opts["scenery" if argv[i] == "--no-scenery" else "compress"] = argv[i] == "--compress"
             i += 1
             continue
         key = flags.get(argv[i])
         if key is None or i + 1 >= len(argv):
-            raise UsageError(f"unknown or incomplete option {argv[i]!r}; options: {', '.join(flags)}, --no-scenery")
+            raise UsageError(f"unknown or incomplete option {argv[i]!r}; options: {', '.join(flags)}, "
+                             "--no-scenery, --compress")
         opts[key] = argv[i + 1]
         i += 2
     if opts["detail"] not in (None, *LEVELS):
@@ -183,12 +187,13 @@ def build_scene(scene, bp, L, level):
     return triangles(scene)
 
 
-def export_glb(path):
+def export_glb(path, compress=False):
     """Write the glb. GPU instancing turns each SCENERY_*_instances Empty from optimize.py into
-    one EXT_mesh_gpu_instancing node; nothing else in the scene qualifies (see optimize.py)."""
+    one EXT_mesh_gpu_instancing node; nothing else in the scene qualifies (see optimize.py).
+    compress adds Draco and WebP (optimize.export_options), which the console must decode."""
     kwargs = dict(filepath=path, export_format="GLB", use_active_scene=True, export_apply=True,
                   export_extras=True, export_cameras=True, export_lights=False, export_yup=True,
-                  export_animations=False, export_gpu_instances=True)
+                  export_animations=False, export_gpu_instances=True, **optimize.export_options(compress))
     try:
         bpy.ops.export_scene.gltf(**kwargs)
     except TypeError as exc:
@@ -369,14 +374,15 @@ def run(opts, src, out_dir, report):
     if report["errors"]:
         return 2
 
+    clock.lap("checks")
     report["look"] = look.apply(scene, opts["look"], textures=opts["scenery"])
+    clock.lap("look")
     glb, blend = os.path.join(out_dir, "field.glb"), os.path.join(out_dir, "field.blend")
     kinds, n_objects = Counter(o["kind"] for o in objs if "asset_id" in o.keys()), len(objs)
     del objs                             # optimize.run() removes merged objects
-    clock.lap("checks")
-    opt = optimize.run(scene, want)      # last step before export: merges, shares, groups scenery copies
+    opt = optimize.run(scene, want)      # after look.apply, last step before export
     clock.lap("optimize")
-    export_glb(glb)
+    export_glb(glb, opts["compress"])
     clock.lap("export")
     bpy.ops.wm.save_as_mainfile(filepath=blend, compress=True)
     clock.lap("blend")
@@ -403,7 +409,7 @@ def run(opts, src, out_dir, report):
         "iot": {"sensors": len(names.sensors(bp)), "rtus": len(bp["tanks"])},
         "scenery": dict(view, **({"images_mb": summary["images_mb"]} if view["on"] else {})),
         "triangles": tris, "glb_mb": round(mb, 2), "nodes": len(nodes), "objects": n_objects,
-        "draw_calls": summary["draw_calls"],
+        "draw_calls": summary["draw_calls"], "compressed": opts["compress"],
         "optimize": dict(opt, glb_meshes=summary["meshes"], instanced_nodes=summary["instanced_nodes"],
                          instances=summary["instances"]),
         "budget": {"triangles": BUDGET_TRIS, "mb": BUDGET_MB, "draw_calls": BUDGET_DRAWS},

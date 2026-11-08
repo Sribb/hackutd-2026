@@ -37,7 +37,7 @@ BLENDER = os.environ.get("BLENDER", "/Applications/Blender.app/Contents/MacOS/Bl
 # The budget for a field of up to 12 tanks, as build_field.py and docs/CONTRACT.md state it.
 BUDGET = {"triangles": 300_000, "mb": 30.0, "draw_calls": 1500}
 BUILD_SECONDS = 30            # wall clock for one build, even with other Blender jobs running
-STEPS = ("plan", "field", "scenery", "checks", "optimize", "export", "blend", "report")
+STEPS = ("plan", "field", "scenery", "checks", "look", "optimize", "export", "blend", "report")
 SAMPLE1 = os.path.join(ROOT, "scenario", "samples", "sample1_pecos_8tank.json")
 SAMPLE2_CSV = os.path.join(ROOT, "scenario", "samples", "sample2_delaware_4tank.csv")
 SAMPLE2_DRAFT = os.path.join(HERE, "samples", "sample2_draft.json")
@@ -279,6 +279,7 @@ def check_build(label, bp_path, out_dir, expect_level=None):
     ok(rep["counts"] == blueprint.counts(bp), f"{label}: report counts match the blueprint")
     ok(glb.tris == rep["triangles"], f"{label}: report triangles match the glb (instances counted)")
     check_speed_and_budget(label, rep, glb, bp)
+    check_shadows(label, rep, glb)
 
     parents_ok = True
     for t in bp["tanks"]:
@@ -436,6 +437,31 @@ def test_builds(tmp):
     return reports
 
 
+def test_compress(tmp, small_rep):
+    """--compress (#97): Draco meshes and WebP textures, same names and triangles, much smaller."""
+    out = os.path.join(tmp, "small_compressed")
+    p = blender(["--blueprint", os.path.join(HERE, "samples", "small.json"), "--out", out, "--compress"])
+    if not ok(p.returncode == 0, "--compress: Blender exited 0"):
+        return
+    rep = load(os.path.join(out, "build_report.json"))
+    g = Glb(os.path.join(out, "field.glb"))
+    used = set(g.g.get("extensionsUsed", []))
+    ok(rep["compressed"] and {"KHR_draco_mesh_compression", "EXT_texture_webp"} <= used
+       and not small_rep["compressed"],
+       f"--compress: Draco and WebP only when asked ({sorted(used)})")
+    ok(rep["triangles"] == small_rep["triangles"] and g.tris == rep["triangles"]
+       and {n.get("name") for n in g.nodes} == set(Glb(os.path.join(tmp, "small", "field.glb")).by_name),
+       f"--compress: the same {rep['triangles']} triangles and node names")
+    ok(rep["glb_mb"] < small_rep["glb_mb"] * 0.6, f"--compress: {small_rep['glb_mb']} MB became {rep['glb_mb']} MB")
+
+
+def check_shadows(label, rep, glb):
+    """#97: only small SCENERY nodes carry cast_shadow false, and the report counts them."""
+    flagged = [nd["name"] for nd in glb.nodes if nd.get("extras", {}).get("cast_shadow") is False]
+    ok(all(n.startswith("SCENERY_") for n in flagged) and len(flagged) == rep["optimize"].get("no_shadow", 0),
+       f"{label}: {len(flagged)} small scenery nodes skip the shadow pass, nothing else does")
+
+
 # ---------- 3. a broken blueprint ----------
 
 def test_failure(tmp):
@@ -481,6 +507,7 @@ def main():
             if "small" in reports:
                 test_scenery.test_plain_and_repeat(ok, blender, tmp, os.path.join(HERE, "samples", "small.json"),
                                                    reports["small"])
+                test_compress(tmp, reports["small"])
             test_failure(tmp)
         test_tools_check()
     print(f"\n{'FAIL' if FAILS else 'PASS'}: {len(FAILS)} failed")
