@@ -297,11 +297,32 @@ export function mountField3d(host, { onPick, glbUrl } = {}) {
     }
     scene.add(root);
     const d = span * 1.25 + 22;
-    camera.position.set(-d * 0.35, d * 0.75, d * 0.95);
-    controls.target.set(0, 0, 0);
-    controls.maxDistance = d * 3;
+    // Frame what was built, not the lat/lon centroid: a far facility on one side would
+    // otherwise fall off the edge. Fit the bounding sphere to the narrower field of view.
+    const sphere = new THREE.Box3().setFromObject(root).getBoundingSphere(new THREE.Sphere());
+    const vfov = THREE.MathUtils.degToRad(camera.fov);
+    const hfov = 2 * Math.atan(Math.tan(vfov / 2) * Math.max(0.3, camera.aspect));
+    const fit = (sphere.radius * 1.08) / Math.sin(Math.min(vfov, hfov) / 2);
+    const dir = new THREE.Vector3(-0.35, 0.75, 0.95).normalize();
+    controls.target.copy(sphere.center).setY(0);
+    camera.position.copy(controls.target).addScaledVector(dir, fit);
+    // The sphere is loose: pull in until the box's corners fill about 90% of the view.
+    const box = new THREE.Box3().setFromObject(root);
+    const corners = [];
+    for (const x of [box.min.x, box.max.x]) for (const y of [box.min.y, box.max.y]) for (const z of [box.min.z, box.max.z]) corners.push(new THREE.Vector3(x, y, z));
+    let dist = fit;
+    for (let k = 0; k < 4; k++) {
+      camera.updateMatrixWorld();
+      camera.updateProjectionMatrix();
+      let m = 0;
+      for (const c of corners) { const p = c.clone().project(camera); m = Math.max(m, Math.abs(p.x), Math.abs(p.y)); }
+      if (!(m > 0)) break;
+      dist *= Math.min(1.5, Math.max(0.5, m / 0.9));
+      camera.position.copy(controls.target).addScaledVector(dir, dist);
+    }
+    controls.maxDistance = Math.max(d, fit) * 3;
     controls.minDistance = 8;
-    camera.far = d * 8;
+    camera.far = Math.max(d, fit) * 8;
     camera.updateProjectionMatrix();
     scene.fog.near = d * 1.4;
     scene.fog.far = d * 3.5;
