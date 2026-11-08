@@ -54,6 +54,12 @@ def test_terrain(ok, root):
     ok(len(ms) == 24 and 2000 < min(dist) and max(dist) < terrain.HORIZON + 250 and tris < 2500,
        f"mesas: {len(ms)} on the horizon, {min(dist):.0f} to {max(dist):.0f} m out, {tris} triangles")
     ok(terrain.mesas(b, bp["name"]) == ms, "mesas: the same seed gives the same mesas")
+    brush = siting.plan_outside(L, 14_000, bp["name"])
+    gx0, gx1, gy0, gy1 = L["ground"]
+    bad = [s for s in brush if abs(s[2]) < 8 or (gx0 - 1 < s[1] < gx1 + 1 and gy0 - 1 < s[2] < gy1 + 1)
+           or max(gx0 - s[1], s[1] - gx1, gy0 - s[2], s[2] - gy1) > siting.OUTSIDE + 2]
+    ok(len(brush) > 30 and not bad and brush == siting.plan_outside(L, 14_000, bp["name"]),
+       f"brush past the fence: {len(brush)} plants in a band off the lease and the road's line, same every time {bad[:2]}")
     frame = layout.Frame(0.0, 0.0)
     line = [(-5.5, 76.0), (-5.5, 59.5), (-1.0, 59.5)]
     runs = siting.berm_runs([line], [((10.0, 18.0, 40.0, 50.0), "a test blocker")], frame)

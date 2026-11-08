@@ -348,3 +348,39 @@ def plan_scenery(L, budget, seed, keep_off=()):
     if tokens:
         out["dropped"].append(f"{len(tokens)} plants and rocks with no free spot")
     return out
+
+
+OUTSIDE = 45.0              # meters of brush past the fence, on the terrain
+OUTSIDE_KINDS = (("grass", 0.4), ("yucca", 0.35), ("prickly_pear", 0.15), ("rock", 0.1))
+
+
+def plan_outside(L, budget, seed):
+    """Brush past the fence, so the lease doesn't end at a clean line: a band OUTSIDE meters
+    wide around the lease ground, thickest at the fence, off the lease road's line.
+    Deterministic for a seed. Returns [(species, x, y, rot, scale)] inside budget triangles;
+    the scenery pass sets each on the terrain."""
+    rng = random.Random(f"freeboard-outside:{seed}")
+    gx0, gx1, gy0, gy1 = L["ground"]
+    tokens = [k for k, share in OUTSIDE_KINDS for _ in range(int(max(0, budget) * share / SPECIES[k][0]))]
+    rng.shuffle(tokens)
+    cells = []
+    for i in range(int((gx1 - gx0 + 2 * OUTSIDE) / CELL)):
+        for j in range(int((gy1 - gy0 + 2 * OUTSIDE) / CELL)):
+            x, y = gx0 - OUTSIDE + CELL * (i + 0.5), gy0 - OUTSIDE + CELL * (j + 0.5)
+            if not (gx0 - 1 < x < gx1 + 1 and gy0 - 1 < y < gy1 + 1):
+                cells.append((x, y))
+    rng.shuffle(cells)
+    out = []
+    for cx, cy in cells:
+        if not tokens:
+            break
+        d = max(gx0 - cx, cx - gx1, gy0 - cy, cy - gy1, 0.0)
+        density = 0.12 + 0.6 * max(0.0, 1.0 - d / OUTSIDE) + 1.2 * max(0.0, terrain.noise(cx / 23.0, cy / 23.0, 41) - 0.6)
+        if rng.random() > density:
+            continue
+        x, y = cx + rng.uniform(-0.35, 0.35) * CELL, cy + rng.uniform(-0.35, 0.35) * CELL
+        if abs(y) < 8.0 or (gx0 - 1.5 < x < gx1 + 1.5 and gy0 - 1.5 < y < gy1 + 1.5):
+            continue
+        out.append((tokens.pop(), round(x, 3), round(y, 3), round(rng.uniform(0, 2 * math.pi), 4),
+                    round(rng.uniform(0.8, 1.2), 3)))
+    return out

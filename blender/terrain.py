@@ -20,7 +20,7 @@ HORIZON = 5400.0          # the terrain runs this far past the lease ground's ed
 # (distance from the lease edge in m, keep every nth vertex of the loop inside it)
 RINGS = ((3, 1), (8, 1), (15, 1), (25, 1), (40, 2), (60, 1), (90, 1), (130, 2), (190, 1), (270, 1),
          (380, 1), (540, 1), (760, 1), (1050, 1), (1450, 1), (2000, 1), (2800, 1), (3900, 1), (HORIZON, 1))
-RINGS_LITE = ((6, 2), (30, 2), (120, 2), (400, 1), (1200, 1), (2800, 1), (HORIZON, 1))   # a field near budget
+RINGS_LITE = ((8, 4), (60, 2), (300, 1), (1200, 1), (2800, 1), (HORIZON, 1))   # for a field near its budget
 CORNER_FAN = 6            # extra directions that round each corner of the lease
 ROAD_FLAT = (8.0, 60.0)   # the roll is flat within the first |y| and fully back by the second
 SOIL_TILE = 8.0           # meters per tile of the soil texture

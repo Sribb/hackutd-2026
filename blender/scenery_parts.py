@@ -257,6 +257,28 @@ def far_pumpjack(k, loc, yaw):
     stamp(k["M_STEEL"], template("tube", 4), m @ Matrix.Translation((4.4, 0, 2.0)) @ Matrix.Diagonal((0.04, 0.04, 3.6, 1.0)))
 
 
+PHASES = ((-1.0, 11.67), (1.0, 11.67), (0.0, 12.25))     # (y offset, height): detail_site.power's wires
+
+
+def power_line(k, xs, y, z_at, sag_per_m=0.016):
+    """A three-wire distribution line on wood poles at plan xs along y, each pole standing at
+    z_at(x). The wires hang in a parabola that sags about 1.6% of the span, as real ones do."""
+    for x in xs[1:]:
+        z = z_at(x)
+        stamp(k["M_WOOD"], template("cyl", 8), Matrix.Translation((x, y, z + 6.0)) @ Matrix.Diagonal((0.15, 0.15, 12.0, 1.0)))
+        stamp(k["M_WOOD"], template("cube"), Matrix.Translation((x, y, z + 11.4)) @ Matrix.Diagonal((0.12, 2.4, 0.14, 1.0)))
+        for dy, h in PHASES:
+            stamp(k["M_STEEL"], template("cyl", 6), Matrix.Translation((x, y + dy, z + h - 0.1))
+                  @ Matrix.Diagonal((0.05, 0.05, 0.2, 1.0)))
+    for a, b in zip(xs, xs[1:]):
+        za, zb, sag, n = z_at(a), z_at(b), sag_per_m * abs(b - a), 8
+        for dy, h in PHASES:
+            pts = [Vector((a + (b - a) * i / n, y + dy, za + h + (zb - za) * i / n - sag * 4 * (i / n) * (1 - i / n)))
+                   for i in range(n + 1)]
+            for p, q in zip(pts, pts[1:]):
+                strand(k["M_WIRE"], p, q, 0.012)
+
+
 def far_tank(k, loc, r=1.8, h=4.8):
     """A small stock tank seen from far away: a capped cylinder."""
     x, y, z = loc

@@ -6,10 +6,11 @@ each: broad paler and redder patches and caliche dust on the ground, so no tile 
 from the overview, and the wheel tracks and shoulders field_build.py painted on the road.
 
 Everything else goes under one Empty named SCENERY: the terrain from the lease's edge to the
-horizon with a ring of caprock mesas, the lease road running out of the lease both ways, a
-barbed wire ranch fence along the lease edge with cattle guards where the road leaves, an RRC
-style lease sign and H2S warnings, pipeline markers where the trunk runs under a driveway, and
-a seeded scatter of plants and rocks, thickest along the fence. Nothing under SCENERY carries
+horizon with a ring of caprock mesas, the lease road and power line running out of the lease,
+other operators' pads (beyond.py builds those), a barbed wire ranch fence along the lease edge
+with cattle guards where the road leaves, an RRC style lease sign and H2S warnings, pipeline
+markers where the trunk runs under a driveway, and a seeded scatter of plants and rocks,
+thickest along the fence and thinning out past it. Nothing under SCENERY carries
 an asset ID, so it is never clickable, and the console can hide the whole layer by that root.
 siting.plan_scenery() keeps the scatter off pads, roads, pipes, and truck routes.
 
@@ -32,6 +33,8 @@ import layout as lay
 import scenery_parts as sp
 import siting
 import terrain
+from beyond import POWER_SPANS, caliche_tint, caliche_uv, far_road, land, mesas, neighbor_leases, power_out, \
+    surface, tri_count, uvs
 
 ASSETS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
 KIT = {"grass": ["plants/dry_grass_2"], "rock": ["rocks/rock_1", "rocks/rock_2"],
@@ -44,7 +47,9 @@ SOIL, CALICHE = "ground_dry_soil", "ground_caliche"
 TINTED = {"M_GROUND": SOIL, "M_ROAD": CALICHE, "M_GRAVEL": CALICHE, "M_BERM": CALICHE, "M_MESA": None}
 OPERATOR = "HIGH DESERT OPERATING, LLC"      # made up: no real operator's name on the sign
 # About what each optional piece costs in triangles (measured on the default field).
-MESA_TRIS, ROAD_TRIS, SIGN_TRIS, PLATE_TRIS, LEASE_TRIS = 2000, 2200, 1600, 450, 5000
+MESA_TRIS, ROAD_TRIS, SIGN_TRIS, PLATE_TRIS, POWER_TRIS, LEASE_TRIS, OUTSIDE_TRIS = 2000, 2200, 1600, 450, 4600, 5000, 14000
+WHAT = {"road": "the road out of the lease", "signs": "signs", "power": "the power line out of the lease",
+        "leases": "other leases", "brush": "brush past the fence"}
 
 
 def kit_meshes(paths):
@@ -155,213 +160,6 @@ def paint(me, color_at):
     attr.data.foreach_set("color", flat)
 
 
-def uvs(me, uv_at):
-    """World-planar texture coordinates from uv_at(x, y), if the mesh has none."""
-    if me.uv_layers:
-        return
-    layer = me.uv_layers.new(name="UVMap")
-    co = [me.vertices[i].co for i in range(len(me.vertices))]
-    flat = []
-    for lp in me.loops:
-        c = co[lp.vertex_index]
-        flat += uv_at(c.x, c.y)
-    layer.data.foreach_set("uv", flat)
-
-
-def caliche_uv(x, y):
-    return (x / terrain.CALICHE_TILE, y / terrain.CALICHE_TILE)
-
-
-def caliche_tint(x, y):
-    v = 0.9 + 0.1 * terrain.noise(x / 6.0, y / 6.0, 97)
-    return (v * 0.95, v * 0.85, v * 0.70)
-
-
-def mesh_object(name, verts, faces, mat, root, colors=None, uv_at=None, smooth=True):
-    """A mesh object under root from plan verts and faces, with optional Col and UVs."""
-    me = bpy.data.meshes.new(name)
-    me.from_pydata(verts, [], faces)
-    if colors is not None:
-        attr = me.color_attributes.new("Col", "FLOAT_COLOR", "POINT")
-        attr.data.foreach_set("color", [c for rgb in colors for c in (*rgb, 1.0)])
-    if uv_at:
-        uvs(me, uv_at)
-    me.polygons.foreach_set("use_smooth", [smooth] * len(me.polygons))
-    me.materials.append(fp.material(mat))
-    obj = bpy.data.objects.new(name, me)
-    obj.parent = root
-    bpy.context.scene.collection.objects.link(obj)
-    return obj
-
-
-def tri_count(obj):
-    me = obj.data
-    return len(me.loops) - 2 * len(me.polygons)
-
-
-def land(root, L, near, rings):
-    """SCENERY_terrain out to the horizon. Returns the terrain's points, heights, and triangles,
-    so what stands on it can sit on its surface."""
-    b = L["ground"]
-    pts, tris, first = terrain.ring(b, rings)
-    zs = [terrain.lease_height(x, y) if i < first else terrain.height(x, y, b) for i, (x, y) in enumerate(pts)]
-    mesh_object("SCENERY_terrain", [(x, y, z) for (x, y), z in zip(pts, zs)], tris, "M_GROUND", root,
-                [terrain.tint(x, y, near) for x, y in pts], terrain.soil_uv)
-    return pts, zs, tris
-
-
-def mesas(root, L):
-    """SCENERY_mesas: the caprock mesas on the horizon, one mesh."""
-    verts, faces, cols = [], [], []
-    for v, f, c in terrain.mesas(L["ground"], L.get("seed", "field")):
-        base = len(verts)
-        verts += v
-        cols += c
-        faces += [tuple(base + i for i in face) for face in f]
-    return mesh_object("SCENERY_mesas", verts, faces, "M_MESA", root, cols, smooth=False)
-
-
-def surface(pts, zs, tris, cell=100.0):
-    """at(x, y): the terrain mesh's own height there (it is flat inside each triangle), or None
-    off the terrain. Triangles are bucketed on a cell grid, so each lookup tries a few."""
-    buckets = {}
-    for t in tris:
-        xs, ys = [pts[i][0] for i in t], [pts[i][1] for i in t]
-        box = (min(xs), max(xs), min(ys), max(ys), t)
-        for i in range(math.floor(box[0] / cell), math.floor(box[1] / cell) + 1):
-            for j in range(math.floor(box[2] / cell), math.floor(box[3] / cell) + 1):
-                buckets.setdefault((i, j), []).append(box)
-
-    def at(x, y):
-        for x0, x1, y0, y1, (a, b, c) in buckets.get((math.floor(x / cell), math.floor(y / cell)), ()):
-            if not (x0 - 1e-6 <= x <= x1 + 1e-6 and y0 - 1e-6 <= y <= y1 + 1e-6):
-                continue
-            (ax, ay), (bx, by), (cx, cy) = pts[a], pts[b], pts[c]
-            det = (by - cy) * (ax - cx) + (cx - bx) * (ay - cy)
-            if abs(det) < 1e-9:
-                continue
-            u = ((by - cy) * (x - cx) + (cx - bx) * (y - cy)) / det
-            v = ((cy - ay) * (x - cx) + (ax - cx) * (y - cy)) / det
-            if u >= -1e-6 and v >= -1e-6 and u + v <= 1 + 1e-6:
-                return u * zs[a] + v * zs[b] + (1 - u - v) * zs[c]
-        return None
-    return at
-
-
-def far_road(root, L, guards, at):
-    """SCENERY_road: the lease road from its ends past the cattle guards out to the horizon,
-    on the terrain. Full profile near the lease, a plain crowned strip beyond."""
-    b = L["ground"]
-    r0, r1 = L["road"]
-    gw = min((g[0] for g in guards), default=b[0]) if guards else b[0]
-    ge = max((g[0] for g in guards), default=b[1]) if guards else b[1]
-    reach = terrain.HORIZON - 300.0
-
-    def lift(x):
-        if b[0] <= x <= b[1]:
-            return 0.0
-        tops = [at(x, y) for y in (-5.4, -3.5, 0.0, 3.5, 5.4)]
-        tops = [t for t in tops if t is not None]
-        return max([0.0, terrain.road_height(x, b)] + [t + 0.05 for t in tops]) if tops else 0.0
-
-    simple = ((-5.4, -0.45, "toe"), (-3.6, 0.05, "edge"), (-1.0, 0.08, "road"), (0.0, 0.09, "crown"),
-              (1.0, 0.08, "road"), (3.6, 0.05, "edge"), (5.4, -0.45, "toe"))
-    bm = bmesh.new()
-    col = field_build.color_layer(bm)
-    gap = 1.4 if guards else 0.0
-    for x0, x1 in ((gw + gap, r0), (r1, ge - gap)):
-        if x1 - x0 > 0.5:
-            field_build.strip(bm, col, field_build.road_rows(x0, x1, 4.0))
-    for s, start in ((-1.0, gw - gap), (1.0, ge + gap)):
-        xs, step, x = [], 4.0, start
-        while abs(x - start) < reach:
-            xs.append(x)
-            x += s * step
-            step = min(step * 1.12, 260.0)
-        xs.append(start + s * reach)
-        near = [x for x in xs if abs(x - start) <= 120.0]
-        far = xs[len(near) - 1:]
-        rows = []
-        for x in near:
-            dz = lift(x)
-            rows.append([(x, y, z + dz, field_build.shade(k, 0.85)) for y, z, k in field_build.ROAD_PROFILE])
-        if s < 0:
-            rows.reverse()
-        field_build.strip(bm, col, rows)
-        rows = []
-        for x in far:
-            dz = lift(x)
-            rows.append([(x, y, z + dz, field_build.shade(k, 0.85)) for y, z, k in simple])
-        if s < 0:
-            rows.reverse()
-        field_build.strip(bm, col, rows)
-    me = bpy.data.meshes.new("SCENERY_road")
-    bm.to_mesh(me)
-    bm.free()
-    uvs(me, caliche_uv)
-    me.polygons.foreach_set("use_smooth", [True] * len(me.polygons))
-    me.materials.append(fp.material("M_ROAD"))
-    obj = bpy.data.objects.new("SCENERY_road", me)
-    obj.parent = root
-    bpy.context.scene.collection.objects.link(obj)
-
-
-def neighbor_leases(root, L, at, seed):
-    """SCENERY_neighbors_*: other operators' caliche pads past the ends of the lease with far
-    pumpjacks and small tanks on them, each with a spur road to the lease road's line."""
-    b = L["ground"]
-    simple = ((-3.4, -0.4, "toe"), (-2.2, 0.06, "edge"), (-0.7, 0.05, "track"), (0.0, 0.08, "crown"),
-              (0.7, 0.05, "track"), (2.2, 0.06, "edge"), (3.4, -0.4, "toe"))
-
-    def z_at(x, y):
-        z = at(x, y)
-        return terrain.height(x, y, b) if z is None else z
-
-    pads, roads = bmesh.new(), bmesh.new()
-    pcol, rcol = field_build.color_layer(pads), field_build.color_layer(roads)
-    k = fp.Kit(fp.Site(bpy.context.scene.collection), "SCENERY_neighbors", root)
-    for n in terrain.neighbors(b, seed):
-        x0, x1, y0, y1 = n["rect"]
-        top = max(z_at(x, y) for x in (x0, x1, (x0 + x1) / 2) for y in (y0, y1, (y0 + y1) / 2)) + 0.25
-        ring = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
-        inner = [pads.verts.new((x, y, top)) for x, y in ring]
-        outer = [pads.verts.new((x + (2.0 if x > (x0 + x1) / 2 else -2.0), y + (2.0 if y > (y0 + y1) / 2 else -2.0),
-                                 z_at(x, y) - 0.5)) for x, y in ring]
-        for v in inner:
-            v[pcol] = (0.92, 0.82, 0.67, 1.0)
-        for v in outer:
-            v[pcol] = (0.8, 0.66, 0.5, 1.0)
-        pads.faces.new(inner)
-        for i in range(4):
-            j = (i + 1) % 4
-            pads.faces.new((inner[i], outer[i], outer[j], inner[j]))
-        for jx, jy, yaw in n["jacks"]:
-            sp.far_pumpjack(k, (jx, jy, top), yaw)
-        for tx, ty in n["tanks"]:
-            sp.far_tank(k, (tx, ty, top))
-        sx, y_road, y_pad = n["spur"]
-        s = 1.0 if y_pad > 0 else -1.0
-        ys = [s * 5.0]
-        while abs(ys[-1]) < abs(y_pad):
-            ys.append(ys[-1] + s * 25.0)
-        ys[-1] = y_pad
-        rows = []
-        for y in ys:
-            dz = max(z_at(sx + dx, y) for dx in (-3.4, 0.0, 3.4)) + 0.08
-            rows.append([(sx + dx, y, z + dz, field_build.shade(key, 0.8)) for dx, z, key in simple])
-        field_build.strip(roads, rcol, rows)
-    k.done()
-    for bm, name, mat in ((pads, "SCENERY_neighbors_pads", "M_GRAVEL"), (roads, "SCENERY_neighbors_roads", "M_ROAD")):
-        me = bpy.data.meshes.new(name)
-        bm.to_mesh(me)
-        bm.free()
-        uvs(me, caliche_uv)
-        me.materials.append(fp.material(mat))
-        obj = bpy.data.objects.new(name, me)
-        obj.parent = root
-        bpy.context.scene.collection.objects.link(obj)
-
-
 def lease_lines(bp, seed):
     """The lease sign's text: made-up operator, the lease, its wells, a made-up RRC number."""
     site = bp.get("site") or {}
@@ -425,15 +223,15 @@ def dress(collection, bp, L, budget):
         left -= tri_count(mesas(root, L))
     else:
         dropped.append("mesas")
-    wants = [("road", ROAD_TRIS), ("signs", SIGN_TRIS + PLATE_TRIS * len(L["pads"])), ("leases", LEASE_TRIS)]
+    wants = [("road", ROAD_TRIS), ("signs", SIGN_TRIS + PLATE_TRIS * len(L["pads"])), ("power", POWER_TRIS),
+             ("leases", LEASE_TRIS), ("brush", OUTSIDE_TRIS)]
     keep = set()
     for name, cost in wants:
         if left - cost >= 20_000:
             keep.add(name)
             left -= cost
         else:
-            dropped.append({"road": "the road out of the lease", "signs": "signs",
-                            "leases": "other leases"}[name])
+            dropped.append(WHAT[name])
     plan = siting.plan_scenery(L, left, seed, [siting.around(x, y, 0.6, 0.6) for x, y in markers(L)])
     plan["dropped"] = dropped + plan["dropped"]
     at = surface(pts, zs, tris)
@@ -441,22 +239,32 @@ def dress(collection, bp, L, budget):
         far_road(root, L, plan["guards"], at)
     if "signs" in keep:
         signs(root, bp, L, plan, seed)
+    if "power" in keep:
+        power_out(root, L, at)
     if "leases" in keep:
         neighbor_leases(root, L, at, seed)
+    outside = siting.plan_outside(L, OUTSIDE_TRIS, seed) if "brush" in keep else []
     rng = random.Random(f"freeboard-scenery-parts:{seed}")
-    height = field_build.ground_height
     if plan["fence"]:
         k = fp.Kit(site, "SCENERY_fence", root)
         for line in plan["fence"]:
-            sp.barbed_wire_fence(k, line, rng, post_gap=5.0, ground=height)
+            sp.barbed_wire_fence(k, line, rng, post_gap=5.0, ground=field_build.ground_height)
         k.done()
         k = fp.Kit(site, "SCENERY_cattle_guard", root)
         for x, y in plan["guards"]:
             sp.cattle_guard(k, (x, y, 0.0), 0.0, width=2 * lay.ROAD_HALF + 1.0)
         k.done()
 
-    cache = kit_meshes([p for kind in {s[0] for s in plan["scatter"]} if kind in KIT for p in KIT[kind]])
+    cache = kit_meshes([p for kind in {s[0] for s in plan["scatter"] + outside} if kind in KIT for p in KIT[kind]])
     counts = {}
+    b = L["ground"]
+
+    def height(x, y):
+        """The lease ground inside it, the terrain mesh's own surface outside."""
+        if b[0] <= x <= b[1] and b[2] <= y <= b[3]:
+            return terrain.lease_height(x, y)
+        z = at(x, y)
+        return terrain.height(x, y, b) if z is None else z
 
     def place(kind, path, x, y, rot, scale, sink=0.03):
         n = counts[kind] = counts.get(kind, 0) + 1
@@ -471,7 +279,7 @@ def dress(collection, bp, L, budget):
     if plan["sign"] and "signs" in keep:
         counts["lease_sign"] = 1
     gen = {"yucca": fp.Kit(site, "SCENERY_yucca", root), "prickly_pear": fp.Kit(site, "SCENERY_prickly_pear", root)}
-    for i, (kind, x, y, rot, scale) in enumerate(plan["scatter"]):
+    for i, (kind, x, y, rot, scale) in enumerate(plan["scatter"] + outside):
         if kind in gen:
             prng = random.Random(f"{seed}:{i}")
             build = sp.yucca if kind == "yucca" else sp.prickly_pear
@@ -487,4 +295,5 @@ def dress(collection, bp, L, budget):
             "cattle_guards": len(plan["guards"]), "terrain_m": terrain.HORIZON,
             "mesas": 0 if "mesas" in dropped else 24,
             "other_leases": len(terrain.neighbors(L["ground"], seed)) if "leases" in keep else 0,
+            "power_spans": POWER_SPANS if "power" in keep else 0, "brush_past_fence": len(outside),
             "items": dict(sorted(counts.items())), "dropped": plan["dropped"]}

@@ -107,7 +107,7 @@
       {
         "detail": "full",
         "estimated": 151698,
-        "triangles": 152943
+        "triangles": 154587
       }
     ]
   },
@@ -127,28 +127,30 @@
     "terrain_m": 5400.0,
     "mesas": 24,
     "other_leases": 10,
+    "power_spans": 18,
+    "brush_past_fence": 50,
     "items": {
-      "boulder": 5,
-      "branch": 5,
+      "boulder": 4,
+      "branch": 4,
       "creosote": 1,
-      "grass": 97,
+      "grass": 102,
       "lease_sign": 1,
-      "prickly_pear": 24,
-      "rock": 13,
-      "yucca": 57
+      "prickly_pear": 23,
+      "rock": 11,
+      "yucca": 65
     },
     "dropped": [],
-    "triangles": 99755,
-    "field_triangles": 152943,
+    "triangles": 103782,
+    "field_triangles": 154587,
     "images_mb": 4.36
   },
-  "triangles": 252698,
-  "glb_mb": 13.97,
-  "nodes": 1011,
-  "objects": 1012,
+  "triangles": 258369,
+  "glb_mb": 14.45,
+  "nodes": 1017,
+  "objects": 1018,
   "budget": {
     "triangles": 300000,
     "mb": 30.0
   },
-  "seconds": 34.01
+  "seconds": 13.75
 }
