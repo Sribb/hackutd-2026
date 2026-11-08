@@ -1,0 +1,65 @@
+{
+ "blend": "field.blend",
+ "engine": "BLENDER_EEVEE",
+ "quality": "final",
+ "width": 1600,
+ "shots": [
+  {
+   "name": "golden_hour",
+   "rig": "golden",
+   "file": "golden_hour.jpg",
+   "seconds": 32.3,
+   "jpeg_quality": 92,
+   "bytes": 199211
+  },
+  {
+   "name": "night_shift",
+   "rig": "night",
+   "file": "night_shift.jpg",
+   "seconds": 11.4,
+   "jpeg_quality": 92,
+   "bytes": 168153
+  },
+  {
+   "name": "blue_hour",
+   "rig": "blue",
+   "file": "blue_hour.jpg",
+   "seconds": 10.8,
+   "jpeg_quality": 92,
+   "bytes": 162836
+  },
+  {
+   "name": "pumpjack",
+   "rig": "golden",
+   "file": "pumpjack.jpg",
+   "seconds": 10.7,
+   "jpeg_quality": 92,
+   "bytes": 149419
+  },
+  {
+   "name": "tank_battery",
+   "rig": "afternoon",
+   "file": "tank_battery.jpg",
+   "seconds": 11.6,
+   "jpeg_quality": 92,
+   "bytes": 205748
+  },
+  {
+   "name": "disposal",
+   "rig": "golden",
+   "file": "disposal.jpg",
+   "seconds": 10.1,
+   "jpeg_quality": 92,
+   "bytes": 173292
+  },
+  {
+   "name": "night_alarm",
+   "rig": "night",
+   "file": "night_alarm.jpg",
+   "seconds": 13.4,
+   "jpeg_quality": 92,
+   "bytes": 114424
+  }
+ ],
+ "seconds": 100.3
+}
