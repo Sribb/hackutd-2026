@@ -87,6 +87,8 @@ router = APIRouter(prefix="/api/eog", tags=["dataset mode"])
 def _json(fn: Callable[..., Any], *args: Any) -> JSONResponse:
     try:
         payload = fn(*args)
+    except service.Stale as e:   # 409: the sentence, plus the fresh plan to show instead
+        return JSONResponse(service.jsonable({"detail": e.sentence, **e.payload}), status_code=e.status)
     except service.ServiceError as e:
         raise HTTPException(e.status, e.sentence) from None
     return JSONResponse(service.jsonable(payload))
@@ -207,11 +209,12 @@ def get_handoff(at: Optional[str] = None, shift_hours: Optional[str] = None) -> 
 
 @router.post("/plans/{event_id}/approve", dependencies=ON)
 async def post_approve(event_id: str, request: Request, caller: Any = Depends(_operator)) -> JSONResponse:
-    body = await _body(request, ("by", "at"))
+    body = await _body(request, ("by", "at", "plan_at"))
     by = body.get("by")
     if by is not None and not isinstance(by, str):
         raise HTTPException(422, "by must be text: the name of who approved the plan.")
-    return await run_in_threadpool(_json, _svc().approve, event_id, _who(caller, by), body.get("at"))
+    return await run_in_threadpool(_json, _svc().approve, event_id, _who(caller, by), body.get("at"),
+                                   body.get("plan_at"))
 
 
 # ---------- WebSocket ----------

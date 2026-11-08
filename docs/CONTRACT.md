@@ -581,7 +581,20 @@ A reading history for charts: `?asset_id=S2_TANK_B&metric=level_pct&from=...&to=
 
 ### `POST /api/eog/plans/{event_id}/approve`
 
-Request, both fields optional: `{ "by": "Dana", "at": 1791460800 }`. Send the `at` of the alerts or plans payload the id came from. With a token configured, the approver is the device the token belongs to, not the body's `by`.
+Request, every field optional: `{ "by": "Dana", "at": 1791460800, "plan_at": 1791460500 }`. Send the `at` of the alerts or plans payload the id came from. With a token configured, the approver is the device the token belongs to, not the body's `by`.
+
+`plan_at` (#175) is the `at` the operator read the plan at, when it differs from the approval moment (`at`, or the clock cursor without one), for example while autoplay moves the cursor. Before approving, that plan is scored again from the approval moment with `plan.simulate`: shut-ins keep the clock time they were shown at (a time already past becomes now), and trucks are called now. If it no longer keeps the tank below shutdown (reaching it in the repair's own minute doesn't count), or its cost moved by more than $1, the answer is **409** and nothing is approved:
+
+```json
+{ "detail": "The plan shown at 08:55 (shut in S4_WELL_D2 at +114 min, ~99 min before the trip (~$1,208)) is out of date: started at 09:00 it costs $1,212, not $1,208. Nothing was approved; the plan from 09:00 is shut in S4_WELL_D2 at +108 min, ~100 min before the trip (~$1,215).",
+  "plan": { "type": "plan", "summary": "shut in S4_WELL_D2 at +108 min, ...", "cost": 1215.0, "...": "the alert's action shape" },
+  "plan_at": 1791622800, "plan_at_ts": "2026-10-10T09:00:00Z",
+  "seen": { "summary": "...", "cost": 1207.5, "plan_at": 1791622500, "...": "the plan as shown" },
+  "rescored": { "start": 1791622800, "actions": [{ "type": "shut_in_wells", "wells": ["S4_WELL_D2"], "start_after_min": 109.0 }],
+                "summary": "shut in S4_WELL_D2 at +109 min (~$1,212)", "cost": 1212.02, "trips": false, "trip_at": 1791639000 } }
+```
+
+`plan` is the plan to show instead (approving it with `plan_at` equal to its moment goes ahead); `seen` is null when no plan for that failure was showing at `plan_at`. When the shown plan still holds, it is the one approved: its actions re-timed from now and its re-scored cost. Without `plan_at` nothing changes: the plan at the approval moment is approved.
 
 ```json
 {
@@ -890,6 +903,17 @@ Turns a plan into the steps the 3D scene walks through.
   "radio_script": "Field, this is control. Pump 3 is down..."
 }
 ```
+
+Before approving, the cached plan is scored again from now (#175): the current state and clock, with whatever is already under way (`planner.rescore`, same actions and lead times, over the horizon it was planned for). If a tank it kept below shutdown now reaches shutdown, or its `cost.total_usd` moved by more than $1, the answer is **409** and nothing is approved or recorded:
+
+```json
+{ "detail": "Plan plan_0c2dee49 is out of date: scored again at 01:47, its cost moved from $3,282 to $3,979. Nothing was approved; check the new numbers and approve again, or pick a fresh plan.",
+  "plan": { "id": "plan_0c2dee49", "cost": { "total_usd": 3979 }, "keeps_running": true, "...": "the plan scored again" },
+  "plans": ["...fresh plans from now, as POST /api/plans gives them"],
+  "was": { "cost": { "total_usd": 3282 }, "cannot_save": [] }, "clock": "01:47", "clock_source": "static" }
+```
+
+The re-scored plan replaces the cached one, so approving the same id again goes ahead on the new numbers. A plan that already couldn't save a tank is not stale for that alone. A plan id the server doesn't hold (after a restart) is planned fresh and approved as before.
 
 ## Live layer (#38)
 

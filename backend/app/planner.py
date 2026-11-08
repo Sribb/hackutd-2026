@@ -183,6 +183,40 @@ def _plan(plant, field, timed: list[dict], run, robust: bool, horizon: int) -> d
 
 # ---------- approve ----------
 
+STALE_USD = 1.0   # a re-scored plan whose cost moved by more than this is out of date
+
+
+def rescore(scenario: dict, plan: dict, horizon: int = 360, base_actions: list | None = None,
+            plant=None) -> dict:
+    """The same plan (same id, same actions and lead times) scored again from `scenario`'s
+    moment, with `base_actions` already under way. POST /api/plans/{id}/approve calls it so a
+    plan is never approved on numbers that have moved since it was shown."""
+    field = scenario["field"]
+    plant = plant or build_plant(scenario)
+    applied = clean_actions(plant, list(base_actions or []))[0]
+    timed = [dict(a) for a in plan.get("actions") or []]
+    done = {(a["type"], a["asset_id"]) for a in applied}   # as make_plans: never repeat what is under way
+    clean = clean_actions(plant, applied + [a for a in timed if (a["type"], a["asset_id"]) not in done])[0]
+    run = simulate(plant, clean, horizon)
+    robust = not simulate(plant, clean, horizon, 1 + RANGE).shutdowns
+    return _plan(plant, field, timed, run, robust, horizon)
+
+
+def stale_reason(old: dict, new: dict, clock: str) -> str | None:
+    """One sentence when the re-scored plan `new` no longer matches `old`: a tank it kept below
+    shutdown now reaches it, or its cost moved by more than STALE_USD. None when it still holds."""
+    lost = sorted(set(new.get("cannot_save") or []) - set(old.get("cannot_save") or []))
+    if lost:
+        return (f"Plan {old['id']} no longer keeps every tank below shutdown: scored again at {clock}, it can't "
+                f"save {', '.join(nice(t) for t in lost)}. Nothing was approved; pick one of the fresh plans.")
+    a = float((old.get("cost") or {}).get("total_usd") or 0.0)
+    b = float((new.get("cost") or {}).get("total_usd") or 0.0)
+    if abs(b - a) > STALE_USD:
+        return (f"Plan {old['id']} is out of date: scored again at {clock}, its cost moved from ${a:,.0f} to "
+                f"${b:,.0f}. Nothing was approved; check the new numbers and approve again, or pick a fresh plan.")
+    return None
+
+
 def radio_outcome(plan: dict) -> str:
     """The last line of the radio script. It only says every tank is safe when that's
     true at +15% inflow and every tank has a reading. Never falsely safe."""

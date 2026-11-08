@@ -36,13 +36,14 @@ except ImportError:  # a checkout without it keeps the asset-only mirror below
     spacetime_mirror = None
 from .auth import Caller, OPERATOR, require_role
 from .forecast import forecast
-from .planner import approve, make_plans
+from .planner import approve, make_plans, rescore, stale_reason
 from .scenario import field_payload, load_scenario, state_payload
 
 log = logging.getLogger("freeboard")
 log_redact.install()   # uvicorn logs /ws?token=...; the filter masks the token (#126 round 2)
 SCENARIO = load_scenario()
 _plans: dict[str, dict] = {}   # plan id -> plan, from the latest /api/plans calls
+_horizons: dict[str, int] = {}   # plan id -> the horizon it was planned over, to re-score it the same way
 now.set_static(SCENARIO)
 MIRROR_S = float(os.environ.get("SPACETIME_MIRROR_S", "1.0"))   # SpacetimeDB follows the live field this often
 
@@ -179,6 +180,7 @@ async def post_plans(req: PlansRequest = PlansRequest()) -> dict:
     out = await run_in_threadpool(make_plans, n.scenario, req.horizon_minutes, req.top_n, list(n.actions), n.plant)
     for p in out["plans"]:
         _plans[p["id"]] = p
+        _horizons[p["id"]] = req.horizon_minutes
     out["clock"], out["clock_source"] = n.plant.start_clock, n.source
     out.setdefault("warnings", [w[:1].upper() + w[1:] for w in dict.fromkeys(n.plant.warnings)])
     return out
@@ -199,6 +201,10 @@ async def post_approve(plan_id: str, caller: Caller = Depends(require_role(OPERA
         for p in found["plans"]:
             _plans[p["id"]] = p
         plan = _plans.get(plan_id)
+    elif (stale := await _rescored(plan, n)) is not None:
+        return stale
+    else:
+        plan = _plans[plan_id]
     if plan is None:
         raise HTTPException(404, f"No plan {plan_id}. Call POST /api/plans first.")
     out = await run_in_threadpool(approve, n.scenario, plan, list(n.actions), n.plant)
@@ -216,6 +222,27 @@ async def post_approve(plan_id: str, caller: Caller = Depends(require_role(OPERA
                      proposals=out.get("proposals", []))
     threading.Thread(target=_push_plan, args=(out,), daemon=True).start()
     return out
+
+
+async def _rescored(plan: dict, n) -> Optional[JSONResponse]:
+    """Score a cached plan again from now (the current state and clock, with what is under way)
+    before it is approved. The re-scored plan replaces the cached one. If a tank it kept below
+    shutdown now reaches it, or its cost moved by more than $1, the answer is a 409 with one
+    sentence, the plan scored again (`plan`) and fresh plans from now (`plans`), and nothing is
+    approved; approving the same id again then goes ahead on the new numbers."""
+    horizon = _horizons.get(plan["id"], 360)
+    fresh = await run_in_threadpool(rescore, n.scenario, plan, horizon, list(n.actions), n.plant)
+    why = stale_reason(plan, fresh, n.plant.start_clock)
+    if why is None:
+        _plans[plan["id"]] = fresh
+        return None
+    found = await run_in_threadpool(make_plans, n.scenario, horizon, 3, list(n.actions), n.plant)
+    for p in found["plans"]:
+        _plans[p["id"]], _horizons[p["id"]] = p, horizon
+    _plans[plan["id"]], _horizons[plan["id"]] = fresh, horizon
+    return JSONResponse(status_code=409, content={
+        "detail": why, "plan": fresh, "plans": found["plans"], "was": {"cost": plan.get("cost"),
+        "cannot_save": plan.get("cannot_save", [])}, "clock": n.plant.start_clock, "clock_source": n.source})
 
 
 def _same_action(a: dict, b: dict) -> bool:
@@ -385,6 +412,7 @@ try:
         global SCENARIO
         SCENARIO = scenario
         _plans.clear()
+        _horizons.clear()
         now.set_static(scenario)
         reload = getattr(app.state, "live_reload", None)
         if reload is not None:

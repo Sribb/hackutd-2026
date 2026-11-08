@@ -56,6 +56,7 @@ HANDOFF_FULL = 3             # pump failures the handoff writes out in full; the
 READ_WPM = 240               # an average adult reading speed, for the handoff's read_s
 HANDOFF_WORDS = READ_WPM // 2   # 30 seconds of reading: lists past it end in "and N more"
 APPROVAL_MATCH_S = 2 * 3600  # an approval follows its event if a later view moves the onset a little
+STALE_USD = 1.0              # a plan re-scored at approval whose cost moved more than this is out of date
 STATUSES = ("OK", "INSPECT", "WARNING", "ALARM")   # least to most severe
 SEVERITY = {s: i for i, s in enumerate(STATUSES)}
 URGENT = ("pump_failure", "pipeline_leak")
@@ -89,6 +90,15 @@ class NotFound(ServiceError):
 
 class BadInput(ServiceError):
     status = 422
+
+
+class Stale(ServiceError):
+    """The plan being approved no longer holds from now (409). `payload` goes out next to `detail`."""
+    status = 409
+
+    def __init__(self, sentence: str, payload: dict):
+        super().__init__(sentence)
+        self.payload = payload
 
 
 def _sentence(e: BaseException) -> str:
@@ -1265,7 +1275,65 @@ class Service:
             s["n"] = n
         return [{"n": s["n"], **{k: v for k, v in s.items() if k != "n"}} for s in steps]
 
-    def approve(self, event_id: str, by: Optional[str] = None, at_raw: Any = None) -> dict:
+    def rescore_seen(self, ds: Dataset, view: Dataset, ev: Event, fresh: Any, plan_at_raw: Any) -> Optional[dict]:
+        """Before approving: the plan the operator was shown (the plan from `plan_at`, the `at` of
+        the view they read) scored again from the approval view's now with plan.simulate. Shut-ins
+        keep the clock time they were shown at (a time already past becomes now); trucks are
+        called now. Raises Stale (409, with the fresh plan) when that no longer keeps the tank
+        below shutdown or its cost moved by more than STALE_USD. Otherwise returns that plan,
+        re-timed from now, to approve. None when plan_at is absent or is the approval moment."""
+        if plan_at_raw is None:
+            return None
+        t0 = parse_ts(plan_at_raw, "plan_at")
+        seen_view = ds.at(clamp_ts(t0, ds.start, ds.last))
+        if seen_view.now == view.now:
+            return None
+        t = lambda ts: clock_text(ts, view.now)   # noqa: E731
+        fresh_out = {"plan": self.plan_action(fresh), "plan_at": view.now, "plan_at_ts": iso(view.now)}
+        seen_events = self.events(seen_view)
+        seen_ev = next((e for e in self.ongoing_failures(seen_events)
+                        if e.facility == ev.facility and abs(int(e.onset) - int(ev.onset)) <= APPROVAL_MATCH_S), None)
+        seen = self.plans_now(seen_view, seen_events).get(seen_ev.id) if seen_ev else None
+        if seen is None:
+            raise Stale(f"No plan for {ev.id} was showing at {t(seen_view.now)}, so nothing was approved; "
+                        f"the plan from {t(view.now)} is {_get(fresh, 'summary')}.", {**fresh_out, "seen": None, "rescored": None})
+        level, repair_end = self.start_level(ds, view, ev), self.repair_end_of(ds, ev)
+        if level is None:
+            return None
+        late_min = (view.now - int(_get(seen, "start") or seen_view.now)) / 60.0
+        actions = []
+        for a in _get(seen, "actions", []) or []:
+            a = dict(a)
+            if a.get("type") == "shut_in_wells":
+                a["start_after_min"] = max(0.0, float(a.get("start_after_min") or 0) - late_min)
+            actions.append(a)
+        effective = [a for a in actions if a.get("type") in ("dispatch_truck", "shut_in_wells")]
+        res = plan.simulate(view, ev.facility, view.now, level, repair_end, effective)
+        tank = ds.facilities[ev.facility].tank_id
+        was, cost = float(_get(seen, "cost") or 0.0), float(res["cost"])
+        timed = any(a.get("type") == "shut_in_wells" for a in actions)   # "+N min" in the shown summary is stale
+        summary = f"{describe_actions(actions)} (~{money(cost)})" if timed else _get(seen, "summary")
+        # Reaching shutdown in the repair's own minute shuts nothing in: not a trip that matters here.
+        trips = res["trip_at"] is not None and res["trip_at"] < repair_end
+        rescored = {"start": view.now, "start_ts": iso(view.now), "actions": actions, "summary": summary,
+                    "cost": cost, "trips": trips, "trip_at": res["trip_at"],
+                    "trip_at_ts": iso(res["trip_at"]), "expires_at": _get(seen, "expires_at")}
+        payload = {**fresh_out, "seen": {**self.plan_action(seen), "plan_at": seen_view.now,
+                                         "plan_at_ts": iso(seen_view.now)}, "rescored": rescored}
+        shown = f"The plan shown at {t(seen_view.now)} ({_get(seen, 'summary')})"
+        instead = f"Nothing was approved; the plan from {t(view.now)} is {_get(fresh, 'summary')}."
+        if not _get(seen, "trips") and trips:
+            raise Stale(f"{shown} no longer keeps {tank} below shutdown: started at {t(view.now)} it reaches "
+                        f"shutdown at {t(res['trip_at'])}. {instead}", payload)
+        if abs(cost - was) > STALE_USD:
+            raise Stale(f"{shown} is out of date: started at {t(view.now)} it costs {money(cost)}, not "
+                        f"{money(was)}. {instead}", payload)
+        return rescored
+
+    def approve(self, event_id: str, by: Optional[str] = None, at_raw: Any = None, plan_at_raw: Any = None) -> dict:
+        """Approve the plan for one event at the view `at` (default: the cursor). With `plan_at`
+        (the `at` the operator read the plan at), that plan is scored again from now first
+        (rescore_seen): a 409 instead of approving one that no longer holds."""
         ds, view, at = self.view(at_raw)
         events = self.events(view)
         ev = next((e for e in events if e.id == event_id), None)
@@ -1280,6 +1348,7 @@ class Service:
             p = self.plans_now(view, events).get(ev.id)
             if p is None:
                 raise BadInput(f"No plan is available for {ev.id} yet, so there is nothing to approve.")
+            p = self.rescore_seen(ds, view, ev, p, plan_at_raw) or p   # the plan shown, if it still holds
             actions = list(_get(p, "actions", []) or [])
             summary = _get(p, "summary") or describe_actions(actions)
             cost, expires = _get(p, "cost"), _get(p, "expires_at")
