@@ -239,3 +239,16 @@ def test_open_the_crossover_onto_an_emptier_tank_is_proposed_and_waits():
     (p,) = out["proposals"]
     assert p["action"] == {"type": "SET_VALVE", "asset_id": "VALVE_XO_34", "value": "OPEN"}
     assert p["status"] == "PENDING"
+
+
+def test_close_the_tank_3_crossover_with_none_open_proposes_nothing():
+    live = LiveField(field())
+    step(live, 4)
+    out = ask(live, "close the tank 3 crossover")
+    assert out["reply"] == "No crossover on Tank 3 is open." and out["proposals"] == []
+    live.registry.sim.inject({"asset_id": "VALVE_XO_34", "type": "SENSOR_STALE"})
+    step(live, 30)
+    out = ask(live, "close the tank 3 crossover")
+    assert out["proposals"] == [], out
+    assert out["reply"].startswith("No crossover on Tank 3 reads open. I have no current reading for "
+                                   "the Tank 3 to 4 crossover"), out["reply"]

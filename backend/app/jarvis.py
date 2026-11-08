@@ -603,6 +603,16 @@ class Jarvis:
         """Reads OPEN, or last read OPEN (a stale OPEN still counts as open)."""
         return str(self.live.value(vid, "position") or "").upper() == "OPEN"
 
+    def _none_open(self, vids: list[str], where: str = "") -> str:
+        """'No crossover is open.', unless one of `vids` has no current position: then it
+        says so, since a valve nobody can see might be open."""
+        blind = [v for v in vids if self.live.detector.is_stale(v, "position")
+                 or self.live.value(v, "position") is None]
+        if not blind:
+            return f"No crossover{where} is open."
+        return (f"No crossover{where} reads open. " +
+                no_current_reading(and_list([name(v) for v in blind]), "valve", many=len(blind) > 1))
+
     def _crossover_next_to(self, tid: str, closing: bool = False,
                            helps: bool = True) -> tuple[Optional[str], Optional[str]]:
         """(crossover ID, None) or (None, why not), for a crossover on `tid`.
@@ -618,7 +628,7 @@ class Jarvis:
         if closing:
             open_ = [xo for xo in xos if self._xo_open(xo["id"])]
             if not open_:
-                return None, f"No crossover on {name(tid)} is open."
+                return None, self._none_open([xo["id"] for xo in xos], f" on {name(tid)}")
             return open_[0]["id"], None
         if not helps:
             return max(xos, key=lambda xo: self._headroom_bbl(other(xo)))["id"], None
@@ -673,12 +683,7 @@ class Jarvis:
             open_ = [x["id"] for x in f.crossovers if self._xo_open(x["id"])]
             if open_:
                 return open_[0], None
-            blind = [x["id"] for x in f.crossovers if self.live.detector.is_stale(x["id"], "position")
-                     or self.live.value(x["id"], "position") is None]
-            if blind:  # never "none is open" on a valve nobody can see
-                return None, ("No crossover reads open. " +
-                              no_current_reading(and_list([name(v) for v in blind]), "valve", many=len(blind) > 1))
-            return None, "No crossover is open."
+            return None, self._none_open([x["id"] for x in f.crossovers])
         why = None
         for tid in await self._tanks_in_trouble():
             aid, why_not = self._crossover_next_to(tid, helps=helps)
