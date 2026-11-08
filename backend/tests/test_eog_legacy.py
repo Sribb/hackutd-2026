@@ -210,6 +210,8 @@ def one_failure(tmp_path, monkeypatch):
 
 
 def _calm(c, ev):
+    assert ok(c.get("/api/alerts"))["alerts"] == []
+    assert ok(c.get("/api/live/state"))["assets"]["Q7_PUMP_B"]["status"] == "OK"
     st = ok(c.get("/api/state"))
     assert st["incident"] is None
     assert st["assets"]["Q7_PUMP_B"]["status"] == "OK" and st["assets"]["Q7_TANK_B"]["status"] == "OK"
@@ -225,6 +227,10 @@ def _incident(c, ev):
     assert [p["asset_id"] for p in ok(c.post("/api/plans", json={}))["plans"]] == ["Q7_PUMP_B"]
     assert [e["asset_id"] for e in ok(c.post("/api/forecast", json={}))["events"]] == ["Q7_TANK_B"]
     assert ok(c.post("/api/lastcall", json={}))["status"] == "INCIDENT"
+    al = ok(c.get("/api/alerts"))["alerts"]
+    assert [(a["id"], a["asset_id"], a["severity"]) for a in al] == [(ev["event_id"], "Q7_PUMP_B", "ALARM")]
+    live = ok(c.get("/api/live/state"))
+    assert live["clock"] == st["clock"] and live["assets"]["Q7_TANK_B"]["status"] == "ALARM"
     return st
 
 
@@ -255,6 +261,88 @@ def test_legacy_routes_follow_the_clock_while_playing(one_failure, monkeypatch):
     st = _incident(c, ev)
     assert ev["onset_unix"] <= st["now"] <= ev["onset_unix"] + 600
     assert ok(c.get("/api/eog/state"))["now"] == st["now"]     # the same view as /api/eog
+
+
+def test_alerts_are_the_eog_alerts(client):
+    eog = ok(client.get("/api/eog/alerts"))["alerts"]
+    al = ok(client.get("/api/alerts"))["alerts"]
+    assert [a["id"] for a in al] == [a["event_id"] for a in eog]
+    ds = service.SERVICE.dataset()
+    for a, e in zip(al, eog):
+        assert a["active"] is True and a["asset_id"] == e["asset"] and a["message"] == e["title"] + "."
+        if e["category"] == "pump_failure":
+            cd = e["countdown"]
+            assert a["severity"] == "ALARM" and a["consequence_asset_id"] == cd["tank_id"]
+            if cd["trips_at"] is not None:
+                assert a["consequence_clock"] == legacy.hhmm(ds, cd["trips_at"])
+                assert a["minutes_to_consequence"] == round((cd["trips_at"] - ok(client.get("/api/state"))["now"]) / 60)
+                assert a["priority"] in ("P1", "P2", "P3") and a["usd_at_risk"] > 0
+        else:
+            assert a["severity"] == "WARNING" and "inspector" in a["consequence"]
+    leak = next(a for a in al if a["category"] == "pipeline_leak")
+    out = ok(client.post(f"/api/alerts/{leak['id']}/ack", json={"by": "Dana"}))
+    assert out["acked"] is True
+    assert next(a for a in ok(client.get("/api/alerts"))["alerts"] if a["id"] == leak["id"])["acked"] is True
+    assert client.post("/api/alerts/EV-9999/ack", json={}).status_code == 404
+
+
+def _drop_last_reading(folder: Path, asset: str, metric: str) -> None:
+    path = folder / "telemetry.csv"
+    lines = path.read_text().splitlines()
+    last = lines[-1].split(",")[1]
+    keep = [ln for ln in lines if not (ln.split(",")[1:2] == [last] and f",{asset},{metric}," in ln + ",")]
+    assert len(keep) == len(lines) - 1
+    path.write_text("\n".join(keep) + "\n")
+
+
+def test_live_state_reads_the_dataset_with_ages(tmp_path, monkeypatch):
+    base = tmp_path / "eog"
+    write_dataset(base / "gap", seed=2, hours=24)
+    _drop_last_reading(base / "gap", "Q8_TANK_B", "level_pct")
+    monkeypatch.setenv("FREEBOARD_EOG_DIR", str(base))
+    c = TestClient(app)
+    live = ok(c.get("/api/live/state"))
+    st = ok(c.get("/api/state"))
+    assert live["mode"] == "dataset" and live["clock"] == st["clock"] and live["connectors"][0]["kind"] == "dataset"
+    gap = live["assets"]["Q8_TANK_B"]
+    assert gap["status"] == "UNKNOWN" and gap["stale"] is True and gap["age_min"] == 5.0 and gap["level_pct"] is None
+    assert st["assets"]["Q8_TANK_B"]["status"] == "UNKNOWN"
+    fine = live["assets"]["Q7_TANK_A"]
+    assert fine["status"] == "OK" and fine["stale"] is False and fine["age_min"] == 0.0
+    assert live["assets"]["Q7_DISPOSAL"]["status"] == "UNKNOWN"      # no readings at all: never OK
+    assert all(a["status"] != "OK" or a["kind"] == "truck" or a["age_min"] == 0.0 for a in live["assets"].values())
+    assert live["paused"] is True and live["speed"] == service.SERVICE.clock.speed
+
+
+def test_demo_field_holds_still_in_dataset_mode(client, monkeypatch):
+    import asyncio
+    import types
+
+    from backend.app import live as live_mod, spacetime_mirror
+    assert live_mod.HOLD is legacy_api.on and spacetime_mirror.HOLD is legacy_api.on
+    assert legacy_api.on() is True
+    monkeypatch.setattr(live_mod, "TICK_S", 0.01)
+    ticks = []
+
+    async def tick(dt):
+        ticks.append(dt)
+    fake = types.SimpleNamespace(paused=False, speed=1.0, tick=tick)
+
+    async def run_for(coro, s=0.1):
+        try:
+            await asyncio.wait_for(coro, s)
+        except asyncio.TimeoutError:
+            pass
+    asyncio.run(run_for(live_mod.LiveField._loop(fake)))
+    assert ticks == []                            # dataset mode: the demo field stands still
+    sent = []
+    monkeypatch.setattr(spacetime_mirror.Mirror, "tick", lambda self, app: sent.append(1) or asyncio.sleep(0))
+    asyncio.run(run_for(spacetime_mirror.run(app, 0.01)))
+    assert sent == []                             # and its mirror sends nothing
+    monkeypatch.delenv("FREEBOARD_EOG_DIR")
+    asyncio.run(run_for(live_mod.LiveField._loop(fake)))
+    asyncio.run(run_for(spacetime_mirror.run(app, 0.01)))
+    assert ticks and sent                         # dataset mode off: both run again
 
 
 def test_spacetime_push_on_activation_and_cursor(client, monkeypatch):

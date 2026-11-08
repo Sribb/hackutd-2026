@@ -26,6 +26,7 @@ const st = { clock: "01:50", t: 6, speed: 0.25, assets: { TANK_3: { status: "OK"
 globalThis.fetch = async () => ({ ok: true, status: 200, json: async () => st });
 const L = await import(`${SRC}/live.js`);
 L.start("http://b");
+await new Promise((r) => setImmediate(r)); timers.length = 0; // /ws opens after the first state poll (never in dataset mode, #153); its next-poll timer is not under test
 const runTimers = () => { const t = timers.splice(0); t.forEach((x) => { if (x.ms > 100) return; try { x.fn(); } catch { /* */ } }); };
 let s = socks.at(-1); s.onopen();
 const tick = (sk) => sk.onmessage({ data: JSON.stringify({ type: "state", state: st }) });

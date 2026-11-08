@@ -13,6 +13,7 @@ every PUSH_S seconds. It starts after startup and never blocks it; a push that f
 """
 from __future__ import annotations
 
+import importlib
 import json
 import logging
 import os
@@ -26,11 +27,12 @@ from pydantic import BaseModel, Field
 from starlette.routing import Match
 
 from .. import spacetime_sync
-from ..auth import OPERATOR, Caller, require_role
+from ..auth import OPERATOR, PHONE, Caller, require_role
 from . import dataset as dsmod
 from . import service
 from .legacy import (assign_trucks, field_payload, forecast, header, hhmm, legacy_plan, minutes,
                      plans_payload, approve_payload, state_payload, steps_for)
+from .legacy_live import alerts_payload, live_state_payload
 from .model import iso, money
 from .service import ServiceError, jsonable
 
@@ -238,6 +240,43 @@ def post_lastcall(req: LastCallRequest = LastCallRequest()) -> dict:
     return _run(lastcall_payload, ds, view, at, req.top_n, svc)
 
 
+# The live layer's routes in dataset mode: the console's alarm list and live readings.
+_acks: dict[tuple, dict] = {}       # (dataset, event id, onset) -> {"by", "at"}: acks on dataset alerts
+_acks_lock = threading.Lock()
+
+
+class AckIn(BaseModel):
+    by: str = ""
+
+
+@router.get("/api/alerts")
+def get_alerts() -> dict:
+    svc, ds, view, at = _view()
+    with _acks_lock:
+        acks = dict(_acks)
+    return _run(alerts_payload, ds, view, acks, svc)
+
+
+@router.post("/api/alerts/{alert_id}/ack")
+def ack_alert(alert_id: str, body: Optional[AckIn] = None, caller: Caller = Depends(require_role(PHONE))) -> dict:
+    svc, ds, view, at = _view()
+    alerts = _run(alerts_payload, ds, view, None, svc)["alerts"]
+    a = next((x for x in alerts if x["id"] == alert_id), None)
+    if a is None:
+        raise HTTPException(404, f"No alert {alert_id[:40]} in {ds.id} at {hhmm(ds, view.now)}.")
+    by = caller.decided_by(body.by if body else "") or "console"
+    ev = next(e for e in svc.events(view) if e.id == alert_id)
+    with _acks_lock:
+        _acks.setdefault((ds.id, ev.id, ev.onset), {"by": by[:60], "at": view.now})
+    return {**a, "acked": True, "acked_by": by[:60]}
+
+
+@router.get("/api/live/state")
+def get_live_state() -> dict:
+    svc, ds, view, at = _view()
+    return _run(live_state_payload, ds, view, at, svc)
+
+
 def _eog_lastcall(at: Optional[str], top_n: int) -> dict:
     svc = service.SERVICE
     try:
@@ -316,4 +355,18 @@ def install(app: FastAPI) -> None:
     del app.router.routes[n:]
     app.router.routes[0:0] = mine
     app.include_router(eog_router)
+    _hold_demo_field()
     PUSHER.start()
+
+
+def _hold_demo_field() -> None:
+    """While dataset mode is on, the demo live field stands still and its SpacetimeDB mirror
+    sends nothing, so neither can overwrite the dataset (live.HOLD, spacetime_mirror.HOLD).
+    Both read on() each tick, so they resume by themselves when dataset mode is off."""
+    for name in ("live", "spacetime_mirror"):
+        try:
+            mod = importlib.import_module(f"..{name}", __package__)
+        except ImportError:
+            continue
+        if hasattr(mod, "HOLD"):
+            mod.HOLD = on
