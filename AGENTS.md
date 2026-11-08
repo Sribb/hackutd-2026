@@ -61,9 +61,22 @@ Claim an unclaimed row by putting your login in it and matching the table in `RE
 |---|---|---|
 | Backend: forecast, planner, API | `@mounishmavuduru` | `backend/` |
 | 3D model quality in Blender | `@teameuphoriainv-dot` | `blender/` |
-| Web console: 3D viewer, panels, time slider | Unclaimed | `web/` |
+| Web console: 3D viewer, panels, time slider | `@ronakkasaram` | `web/` |
 | Scenario, costs, Devpost, pitch | `@vinnycodes67` | `scenario/` |
+| Last Call: option expiry and the price of waiting | `@ronakkasaram` | `lastcall/` |
 | Ingest: blueprint file to blueprint.json with Claude | `@teameuphoriainv-dot` | `ingest/` |
 | Library on Maincloud: presets and the asset library | `@teameuphoriainv-dot` | `library/` |
 
 `docs/CONTRACT.md` is shared. If you change it, update it in the same commit and post on the board.
+
+## 6. Lanes: stay in your folder
+
+Each row in the table above is a lane. The lane's name is its first folder: `web/` is lane `web`. `tools/lane` reads this table, so a new row is a new lane.
+
+- **Fence your checkout once:** `tools/lane set <lane>`. After that, Claude Code can't edit files outside the lane. It's blocked and told to ask for a handoff on the board. A commit that touches another lane is blocked too, which catches files written through the shell.
+- **More than one agent on one machine:** give each agent its own worktree, never a shared folder. `tools/lane start <lane> <issue#>-<slug>` makes `../hackutd-2026-<lane>` on a new branch from fresh `main`, already fenced. Start the agent in that folder.
+- **Shared files** are everything outside every lane, such as `AGENTS.md`, `README.md`, `.claude/`, and `tools/`. Only the team lead changes them. `docs/CONTRACT.md` is the one exception. Any lane may change it, following the rule above.
+- **After a handoff on the board**, run one command with `LANE_FENCE=off` to cross the fence. Say so in the PR.
+- `tools/lane` lists lanes and owners. `tools/lane owner <path>` says who owns a file. `tools/lane check` lists your changes that fall outside the lane.
+
+A checkout with no lane set isn't fenced, so the team lead's checkout works as before.
