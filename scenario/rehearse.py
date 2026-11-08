@@ -51,6 +51,7 @@ LIVE_BEFORE_AFTER = "shutdown before and after"
 LIVE_ROBUST = "/api/plans robust plan summary and cost"
 LIVE_NOTHING = "do-nothing cost"
 LIVE_EXPIRY = "/api/lastcall expiry"
+LIVE_TWO_NIGHTS = "Two nights end card"  # Ronak's #70 replay: do nothing vs the cheapest plan
 
 Q_FAILING = "What's failing?"
 Q_WHY = "Why is Tank 3 rising, and what's my cheapest fix?"
@@ -174,6 +175,7 @@ class Rehearsal:
             return self.add(name, "FAIL", f"HTTP {r.status_code}: {quote(r.text)}")
         fc = r.json()
         self.base_cost = (fc.get("cost") or {}).get("total_usd")
+        self.base_wells = sorted({w for e in fc.get("events") or [] for w in (e.get("wells_lost") or [])})
         if self.base_cost is not None:
             self.live[LIVE_NOTHING] = usd(self.base_cost)
         ev = self._shutdown(fc, self.tank) or self._shutdown(fc)
@@ -253,6 +255,10 @@ class Rehearsal:
         p = self.robust_plan = robust[0]
         value = f"{first_sentence(p.get('summary', '')).rstrip('.')}, for {usd((p.get('cost') or {}).get('total_usd'))}"
         self.live[LIVE_ROBUST] = value
+        cheap_cost = (cheapest.get("cost") or {}).get("total_usd")
+        if self.base_cost is not None and cheap_cost is not None:
+            n = len(getattr(self, "base_wells", []) or [])
+            self.live[LIVE_TWO_NIGHTS] = (f"{usd(self.base_cost - cheap_cost)} and {n} well{'' if n == 1 else 's'} apart")
         self.add(name, "PASS", f"robust: {value}; do nothing: {self.live.get(LIVE_NOTHING, '?')}; "
                                f"{len(plans)} plans, cheapest {self.extra['cheapest plan']}")
 

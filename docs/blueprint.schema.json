@@ -727,7 +727,12 @@
             "mqtt",
             "modbus",
             "opcua",
-            "webhook"
+            "webhook",
+            "sparkplug",
+            "enip",
+            "dnp3",
+            "piwebapi",
+            "lorawan"
           ]
         },
         "config": {
