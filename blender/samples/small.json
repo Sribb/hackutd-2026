@@ -1,0 +1,36 @@
+{
+  "_note": "Sample blueprint for the generator: 2 tanks, 3 wells, 1 disposal well, 1 truck. Same shape as scenario/field.json. Numbers are placeholders.",
+  "name": "Sample: small lease",
+  "clock_start": "01:44",
+  "tanks": [
+    { "id": "TANK_1", "capacity_bbl": 400, "shutdown_pct": 90, "warning_pct": 80, "pump_low_pct": 40 },
+    { "id": "TANK_2", "capacity_bbl": 400, "shutdown_pct": 90, "warning_pct": 80, "pump_low_pct": 40 }
+  ],
+  "pumps": [
+    { "id": "PUMP_1", "tank_id": "TANK_1", "rate_bbl_hr": 120, "valve_id": "VALVE_D_1", "swd_id": "SWD_1" },
+    { "id": "PUMP_2", "tank_id": "TANK_2", "rate_bbl_hr": 120, "valve_id": "VALVE_D_2", "swd_id": "SWD_1" }
+  ],
+  "valves": [
+    { "id": "VALVE_D_1", "kind": "DISCHARGE", "pump_id": "PUMP_1", "connects": ["PUMP_1", "SWD_1"], "default": "OPEN" },
+    { "id": "VALVE_D_2", "kind": "DISCHARGE", "pump_id": "PUMP_2", "connects": ["PUMP_2", "SWD_1"], "default": "OPEN" }
+  ],
+  "wells": [
+    { "id": "WELL_1", "tank_id": "TANK_1", "water_bbl_hr": 22, "lost_usd_hr": 260 },
+    { "id": "WELL_2", "tank_id": "TANK_1", "water_bbl_hr": 20, "lost_usd_hr": 240 },
+    { "id": "WELL_3", "tank_id": "TANK_2", "water_bbl_hr": 26, "lost_usd_hr": 310 }
+  ],
+  "disposal_wells": [
+    { "id": "SWD_1", "max_bbl_hr": 300 }
+  ],
+  "trucks": [
+    {
+      "id": "TRUCK_1", "capacity_bbl": 130, "home_id": "YARD_1",
+      "minutes_to": { "TANK_1": 20, "TANK_2": 25 },
+      "load_minutes": 20, "minutes_to_disposal": 25, "unload_minutes": 15, "usd_hr": 110
+    }
+  ],
+  "yards": [{ "id": "YARD_1" }],
+  "costs": { "disposal_usd_bbl": 1.25, "truck_usd_hr": 110, "well_restart_usd": 500 },
+  "initial": { "tank_pct": { "TANK_1": 55.0, "TANK_2": 48.0 } },
+  "faults": [{ "asset_id": "PUMP_1", "type": "TRIP", "at_min": 3, "reason": "Pump tripped on motor overload." }]
+}

@@ -64,6 +64,8 @@ Claim an unclaimed row by putting your login in it and matching the table in `RE
 | Web console: 3D viewer, panels, time slider | `@ronakkasaram` | `web/` |
 | Scenario, costs, Devpost, pitch | `@vinnycodes67` | `scenario/` |
 | Last Call: option expiry and the price of waiting | `@ronakkasaram` | `lastcall/` |
+| Ingest: blueprint file to blueprint.json with Claude | `@teameuphoriainv-dot` | `ingest/` |
+| Library on Maincloud: presets and the asset library | `@teameuphoriainv-dot` | `library/` |
 
 `docs/CONTRACT.md` is shared. If you change it, update it in the same commit and post on the board.
 

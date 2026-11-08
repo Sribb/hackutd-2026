@@ -14,6 +14,9 @@ from mathutils import Matrix, Vector
 PI = math.pi
 SHARP = math.radians(35)
 
+# Small detail the builder can drop to stay inside the triangle budget (see build_field.py).
+LOD = {"bolts": True, "small_labels": True, "posts": True, "trim": True}
+
 # name: (base color, metallic, roughness). Neutral on purpose: the web console adds status color.
 PALETTE = {
     "M_TANK": ((0.70, 0.70, 0.68), 0.10, 0.55),
@@ -103,9 +106,12 @@ class Site:
         return obj
 
     def pipe(self, name, points, radius, segs=10):
+        pts = []
+        for p in points:
+            if not pts or (Vector(p) - pts[-1]).length > 1e-3:
+                pts.append(Vector(p))
         bm = bmesh.new()
-        line(bm, points, radius, segs)
-        pts = [Vector(p) for p in points]
+        line(bm, pts, radius, segs)
         for end, nxt in ((pts[0], pts[1]), (pts[-1], pts[-2])):
             d = (nxt - end).normalized() * 0.03
             tube(bm, end - d, end + d, radius * 1.7, segs)
@@ -125,7 +131,10 @@ class Kit:
 
     def done(self):
         for mat, bm in self.parts.items():
-            self.site.mesh(f"{self.owner}_{mat[2:].lower()}", bm, mat, self.parent)
+            if bm.faces:
+                self.site.mesh(f"{self.owner}_{mat[2:].lower()}", bm, mat, self.parent)
+            else:
+                bm.free()
 
 
 # ---------- primitives (all write into a bmesh) ----------
@@ -161,7 +170,7 @@ def line(bm, points, r, segs=10):
     for p, q in zip(points, points[1:]):
         tube(bm, p, q, r, segs)
     for p in points[1:-1]:
-        ball(bm, r * 1.12, p, segs=8)
+        ball(bm, r * 1.12, p, segs=6 if r < 0.07 else 8)
 
 
 def ring(bm, big_r, small_r, center, axis="Z", segs=24, rsegs=6):
@@ -230,9 +239,9 @@ INLET = (100.0, 4.3)             # angle, height: produced water in from the hea
 LADDER = 70.0
 
 
-def build_tank(site, n, loc, xo_angle=None):
-    tid = f"TANK_{n}"
-    root = site.empty(tid, loc, kind="tank", size=4)
+def build_tank(site, tid, loc, rot_z=0.0, outlets=(OUTLET[0],), xo_angles=()):
+    """Cutaway tank. outlets are nozzle angles for its pumps, xo_angles for its crossovers."""
+    root = site.empty(tid, loc, rot_z, kind="tank", size=4)
     k = Kit(site, tid, root)
     a0, a1 = math.radians(CUT[1]), math.radians(CUT[0] + 360)
     arc_wall(k["M_TANK"], TANK_R, TANK_R - WALL, 0, TANK_H, a0, a1, 44)
@@ -242,7 +251,7 @@ def build_tank(site, n, loc, xo_angle=None):
     arc_roof(k["M_TANK"], TANK_R + 0.05, TANK_H, TANK_H + 0.08, TANK_H + 0.55, a0, a1, 44)
     cyl(k["M_TANK"], TANK_R, FLOOR, (0, 0, FLOOR / 2), segs=44)
     cyl(k["M_CONCRETE"], TANK_R + 0.4, 0.16, (0, 0, -0.06), segs=44)
-    nozzles = [OUTLET, INLET] + ([(xo_angle, 0.85)] if xo_angle is not None else [])
+    nozzles = [(a, OUTLET[1]) for a in outlets] + [INLET] + [(a, 0.85) for a in xo_angles]
     for deg, z in nozzles:
         tube(k["M_PIPE"], polar(TANK_R - 0.05, deg, z), polar(NOZZLE_R, deg, z), 0.11, 12)
     # ladder up the side and a small roof platform with a guard rail
@@ -274,18 +283,15 @@ def build_tank(site, n, loc, xo_angle=None):
     cyl(lvl, TANK_R - WALL - 0.03, depth, (0, 0, depth / 2), segs=44)
     level = site.mesh(f"{tid}_LEVEL", lvl, "M_BRINE", root, loc=(0, 0, FLOOR))
     level.scale.z = 0.55   # preview only: the web console sets this from the forecast
-    world = Vector(loc)
-    pts = {"outlet": world + polar(NOZZLE_R, OUTLET[0], OUTLET[1]),
-           "inlet": world + polar(NOZZLE_R, INLET[0], INLET[1])}
-    if xo_angle is not None:
-        pts["xo"] = world + polar(NOZZLE_R, xo_angle, 0.85)
+    m = root.matrix_basis.copy()
+    pts = {"outlets": [m @ polar(NOZZLE_R, a, OUTLET[1]) for a in outlets],
+           "inlet": m @ polar(NOZZLE_R, INLET[0], INLET[1])}
     return root, pts
 
 
-def build_pump(site, n, loc):
+def build_pump(site, pid, loc, rot_z=0.0):
     """Centrifugal transfer pump on a skid. Suction faces -X, motor at +X."""
-    pid = f"PUMP_{n}"
-    root = site.empty(pid, loc, kind="pump", size=1.5)
+    root = site.empty(pid, loc, rot_z, kind="pump", size=1.5)
     k = Kit(site, pid, root)
     box(k["M_CONCRETE"], (3.8, 1.8, 0.2), (0, 0, 0.1))
     box(k["M_STEEL_DARK"], (3.3, 1.2, 0.18), (0.1, 0, 0.29))
@@ -307,8 +313,8 @@ def build_pump(site, n, loc):
     for i in range(4):
         box(fan, (0.03, 0.62, 0.07), (0.06, 0, 0), Matrix.Rotation(i * PI / 4, 4, "X"))
     site.mesh(f"{pid}_rotor", fan, "M_STEEL_DARK", root, loc=(1.66, 0, 0.82))
-    world = Vector(loc)
-    return root, {"suction": world + Vector((-1.75, 0, 0.85)), "discharge": world + Vector((-0.8, 0, 1.9))}
+    m = root.matrix_basis.copy()
+    return root, {"suction": m @ Vector((-1.75, 0, 0.85)), "discharge": m @ Vector((-0.8, 0, 1.9))}
 
 
 def build_valve(site, vid, loc, rot_z=0.0):
@@ -323,7 +329,7 @@ def build_valve(site, vid, loc, rot_z=0.0):
     tube(k["M_STEEL"], (0, 0, 0.5), (0, 0, 0.86), 0.025, 8)
     k.done()
     wheel = bmesh.new()
-    ring(wheel, 0.26, 0.025, (0, 0, 0))
+    ring(wheel, 0.26, 0.025, (0, 0, 0), segs=20, rsegs=4)
     for i in range(3):
         box(wheel, (0.5, 0.02, 0.025), (0, 0, 0), Matrix.Rotation(i * PI / 3, 4, "Z"))
     cyl(wheel, 0.05, 0.06, (0, 0, 0), segs=10)
@@ -374,12 +380,12 @@ def build_pumpjack(site, wid, loc, rot_deg):
     return root, {"outlet": root.matrix_basis @ Vector((0.6, -3.45, 0.85))}
 
 
-def build_swd(site, sid, loc, fx=1):
+def build_swd(site, sid, loc, fx=1, rot_z=0.0):
     """Disposal facility: pump building, filters, injection wellhead, fence.
 
-    fx=1 puts the trunk inlet on local +X, fx=-1 mirrors it to -X. The gate always faces -Y.
+    fx=1 puts the trunk inlet on local +X, fx=-1 mirrors it to -X. The gate faces local -Y.
     """
-    root = site.empty(sid, loc, kind="disposal_well", size=4)
+    root = site.empty(sid, loc, rot_z, kind="disposal_well", size=4)
     k = Kit(site, sid, root)
     box(k["M_GRAVEL"], (26, 22, 0.15), (0, 0, 0.075))
     box(k["M_STEEL"], (10, 6, 4), (3 * fx, -3, 2.15))
@@ -399,10 +405,11 @@ def build_swd(site, sid, loc, fx=1):
     x0, x1, y0, y1 = -12.5, 12.5, -10.5, 10.5
     runs = [((x0, y1), (x1, y1)), ((x0, y0), (x0, y1)), ((x1, y0), (x1, y1)),
             ((x0, y0), (-4, y0)), ((4, y0), (x1, y0))]
+    gap = 3 if LOD["posts"] else 6
     for (ax, ay), (bx, by) in runs:
         length = math.hypot(bx - ax, by - ay)
-        for i in range(int(length // 3) + 1):
-            t = min(1.0, i * 3 / length)
+        for i in range(int(length // gap) + 1):
+            t = min(1.0, i * gap / length)
             px, py = ax + (bx - ax) * t, ay + (by - ay) * t
             tube(k["M_STEEL"], (px, py, 0.1), (px, py, 1.8), 0.04, 6)
         for z in (0.9, 1.7):
@@ -411,9 +418,9 @@ def build_swd(site, sid, loc, fx=1):
     return root, {"inlet": root.matrix_basis @ Vector((9.5 * fx, -2, 0.6))}
 
 
-def build_yard(site, loc):
-    root = site.empty("YARD_1", loc, kind="yard", size=3)
-    k = Kit(site, "YARD_1", root)
+def build_yard(site, yid, loc, rot_z=0.0):
+    root = site.empty(yid, loc, rot_z, kind="yard", size=3)
+    k = Kit(site, yid, root)
     box(k["M_GRAVEL"], (44, 24, 0.12), (0, 0, 0.06))
     for x in (-17, -12, -7):
         for y in (-7.2, -4.8):

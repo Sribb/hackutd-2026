@@ -1,0 +1,122 @@
+{
+  "ok": true,
+  "errors": [],
+  "warnings": [],
+  "blueprint": "scenario/field.json",
+  "name": "Avon field - night shift",
+  "counts": {
+    "tanks": 6,
+    "pumps": 6,
+    "discharge_valves": 6,
+    "crossover_valves": 1,
+    "wells": 24,
+    "disposal_wells": 2,
+    "trucks": 2,
+    "yards": 1
+  },
+  "outputs": {
+    "glb": "blender/field.glb",
+    "blend": "blender/field.blend",
+    "report": "blender/build_report.json"
+  },
+  "kinds": {
+    "disposal_well": 2,
+    "pump": 6,
+    "tank": 6,
+    "truck": 2,
+    "valve": 7,
+    "well": 24,
+    "yard": 1
+  },
+  "placed": {
+    "given": [],
+    "auto": [
+      "PUMP_1",
+      "PUMP_2",
+      "PUMP_3",
+      "PUMP_4",
+      "PUMP_5",
+      "PUMP_6",
+      "SWD_1",
+      "SWD_2",
+      "TANK_1",
+      "TANK_2",
+      "TANK_3",
+      "TANK_4",
+      "TANK_5",
+      "TANK_6",
+      "TRUCK_1",
+      "TRUCK_2",
+      "VALVE_D_1",
+      "VALVE_D_2",
+      "VALVE_D_3",
+      "VALVE_D_4",
+      "VALVE_D_5",
+      "VALVE_D_6",
+      "VALVE_XO_34",
+      "WELL_1",
+      "WELL_10",
+      "WELL_11",
+      "WELL_12",
+      "WELL_13",
+      "WELL_14",
+      "WELL_15",
+      "WELL_16",
+      "WELL_17",
+      "WELL_18",
+      "WELL_19",
+      "WELL_2",
+      "WELL_20",
+      "WELL_21",
+      "WELL_22",
+      "WELL_23",
+      "WELL_24",
+      "WELL_3",
+      "WELL_4",
+      "WELL_5",
+      "WELL_6",
+      "WELL_7",
+      "WELL_8",
+      "WELL_9",
+      "YARD_1"
+    ]
+  },
+  "layout": {
+    "rows": 1,
+    "pad_pitch_m": 55.0,
+    "road_m": 450.0,
+    "road_x": [
+      -225.0,
+      225.0
+    ],
+    "ground": [
+      -235.0,
+      235.0,
+      -55.0,
+      100.0
+    ],
+    "crossovers": {
+      "VALVE_XO_34": "straight"
+    }
+  },
+  "detail": {
+    "level": "full",
+    "dropped": [],
+    "passes": [
+      {
+        "detail": "full",
+        "estimated": 147378,
+        "triangles": 144230
+      }
+    ]
+  },
+  "triangles": 144230,
+  "glb_mb": 5.97,
+  "nodes": 776,
+  "objects": 777,
+  "budget": {
+    "triangles": 300000,
+    "mb": 30.0
+  },
+  "seconds": 1.9
+}
