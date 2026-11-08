@@ -6,8 +6,11 @@
 //                            stays ALARM while the feed is up, as the backend sends it.
 //   RTU_PAD_<n>_light        the pad's connectors: connected, or unavailable (blinks red).
 //   live feed lost           every sensor and RTU light goes UNKNOWN until the feed is back.
-//   active alert             its asset pulses through the highlight API (source "iot-alert").
-//   plan run step (#63)      the asset of the step that waits on a person (source "iot-run").
+//   active alert             its asset pulses through highlight.js (source "alert"; amber if
+//                            every active alert is a WARNING).
+//   plan run step (#63)      the asset of the step that waits on a person (source "run").
+//   quiet hardware           a SENSOR_ node reading UNKNOWN, and an RTU whose link is down
+//                            (source "sensor"), while the feed itself is up.
 //
 // Names follow #46 (blender/iot_parts.py): SENSOR_<asset> carries `for_asset` and
 // `connectors` (comma-separated IDs) in its extras; RTU_PAD_<n> sits on PAD_<n>, the pad of
@@ -15,9 +18,9 @@
 // discharge valves and wells; with none (sim only) it follows the simulator. If a node has no
 // `connectors`, an asset whose live reason says "Lost the link to CONN_X" counts as down.
 //
-// Without SENSOR_/RTU_ nodes in the glb this paints nothing. Without highlight.js (the scenic
-// work) it highlights nothing. main.js keeps its own per-frame paint; these lights are set in
-// onBeforeRender, so they win without main.js changing.
+// Without SENSOR_/RTU_ nodes in the glb this paints nothing. Without highlight.js (#101) it
+// highlights nothing. main.js keeps its own per-frame paint; these lights are set in
+// onBeforeRender, so they win without main.js changing. highlight.js never lifts status lights.
 
 import * as THREE from "three";
 
@@ -27,15 +30,13 @@ const COLOR = {
   ALARM: new THREE.Color(0xff4b1f),
   UNKNOWN: new THREE.Color(0x9a968e),
 };
-const STYLE = {
-  ALARM: { mode: "pulse", color: "#ff4b1f", severity: "ALARM" },
-  WARNING: { mode: "pulse", color: "#c9a14a", severity: "WARNING" },
-  RUN: { mode: "outline", color: "#8fb8c8" },
-};
+// Styles for highlight.js (#86, PR #101). Its own `alert`, `run` and `sensor` styles are the
+// defaults; a WARNING-only alert set uses the amber color instead of red.
+const WARN = { color: 0xc9a14a, note: "New warning." };
 const DOWN = /unavail|down|error|fail|lost/i;
 
-// The scenic agent's highlight.js, if this build has it: highlight.set(source, ids, style) and
-// highlight.clear(source). import.meta.glob is empty when the file doesn't exist.
+// The scenic agent's highlight.js (#101), if this build has it: highlight.set(source, ids, style)
+// and highlight.clear(source). import.meta.glob is empty when the file doesn't exist.
 const found = Object.values(import.meta.glob("./highlight.js", { eager: true }))[0];
 const hlFrom = (m) => (m && (m.highlight || (m.default && m.default.set ? m.default : null) || (m.set ? m : null))) || null;
 
@@ -51,6 +52,7 @@ function lamp(e, status, t) {
 export function mountIot3d({ root, field, live, base = "", highlight = hlFrom(found) }) {
   const sensors = new Map(); // asset id -> [light mesh]
   const rtus = new Map();    // tank id -> [light mesh]
+  const nodeOf = new Map();  // asset id or tank id -> its SENSOR_/RTU_ node name, for the sensor highlight
   const connOf = new Map();  // asset id -> [connector id], from the SENSOR_ node's extras
   const tankOf = new Map();  // asset id -> its pad's tank id
   const status = { sensors: {}, rtus: {}, alerts: [], run: null };
@@ -86,11 +88,13 @@ export function mountIot3d({ root, field, live, base = "", highlight = hlFrom(fo
         if (conns.length) connOf.set(id, conns);
         own(o);
         sensors.set(id, [...(sensors.get(id) || []), o]);
+        if (node !== o) nodeOf.set(id, node.name);
       } else if (r) {
         const node = o.parent && /^RTU_/.test(o.parent.name) ? o.parent : o;
         const n = String(node.userData.pad || `PAD_${r[1]}`).replace(/^PAD_/, "");
         own(o);
         rtus.set(`TANK_${n}`, [...(rtus.get(`TANK_${n}`) || []), o]);
+        if (node !== o) nodeOf.set(`RTU:TANK_${n}`, node.name);
       }
     });
     update();
@@ -122,12 +126,20 @@ export function mountIot3d({ root, field, live, base = "", highlight = hlFrom(fo
       status.rtus[tid] = st === "OK" ? "connected" : st === "UNAVAILABLE" ? "unavailable" : "UNKNOWN";
       for (const m of meshes) m.userData.iot3d.status = st;
     }
+    // Point at the hardware that went quiet: a sensor node whose reading is UNKNOWN, and an RTU
+    // whose link is down. Not while the whole feed is lost, when every node would light up.
+    const quiet = lost || !L.available ? [] : [
+      ...[...sensors.keys()].filter((id) => status.sensors[id] === "UNKNOWN" && nodeOf.has(id)).map((id) => nodeOf.get(id)),
+      ...[...rtus.keys()].filter((tid) => status.rtus[tid] === "unavailable" && nodeOf.has(`RTU:${tid}`)).map((tid) => nodeOf.get(`RTU:${tid}`)),
+    ];
+    status.quiet = quiet;
+    hl("sensor", quiet);
   }
 
   // ------------------------------------------------------------- highlights ----
-  const shown = { "iot-alert": "", "iot-run": "" };
+  const shown = { alert: "", run: "", sensor: "" };
   function hl(source, ids, style) {
-    const key = ids.length ? `${ids.join(",")}|${style.mode}|${style.color}` : "";
+    const key = ids.length ? `${ids.join(",")}|${JSON.stringify(style || null)}` : "";
     if (key === shown[source]) return;
     shown[source] = key;
     if (!highlight) return;
@@ -141,7 +153,7 @@ export function mountIot3d({ root, field, live, base = "", highlight = hlFrom(fo
   function renderAlerts() {
     const list = [...alerts.values()].filter((a) => a.asset_id);
     status.alerts = [...new Set(list.map((a) => a.asset_id))];
-    hl("iot-alert", status.alerts, list.some((a) => a.severity === "ALARM") ? STYLE.ALARM : STYLE.WARNING);
+    hl("alert", status.alerts, list.some((a) => a.severity === "ALARM") ? undefined : WARN);
   }
   // The step a person has to act on, else the one being verified, else the next one waiting.
   function currentStep(r) {
@@ -154,7 +166,7 @@ export function mountIot3d({ root, field, live, base = "", highlight = hlFrom(fo
     const s = currentStep(run);
     const ids = s && s.action && s.action.asset_id ? [s.action.asset_id] : [];
     status.run = run ? { id: run.id, status: run.status, step: s ? s.n : null, asset_id: ids[0] || null } : null;
-    hl("iot-run", ids, STYLE.RUN);
+    hl("run", ids);
   }
   function onAlert(a) {
     if (!a || !a.id) return;
@@ -195,6 +207,8 @@ export function mountIot3d({ root, field, live, base = "", highlight = hlFrom(fo
     lights: () => ({ sensors: [...sensors.keys()], rtus: [...rtus.keys()] }),
     rescan: scan,
     highlight: !!highlight,
+    // What highlight.js holds for this module's sources right now.
+    shown: () => (highlight ? Object.fromEntries(["alert", "run", "sensor"].map((s) => [s, highlight.get(s)])) : {}),
   };
   window.__iot3d = api;
   return api;
