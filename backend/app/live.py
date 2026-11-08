@@ -8,8 +8,11 @@ Every tick (TICK_S real seconds, FREEBOARD_SPEED live minutes per real second):
 
 Actions: Jarvis or the console *proposes* a command. It is stored PENDING and changes
 nothing. Only POST /api/actions/{id}/confirm sends it through the asset's connector.
-JARVIS_CONFIRM=0 lets Jarvis skip the confirm, but only for commands that go to the
-simulator: a command for real equipment always waits for a person.
+JARVIS_CONFIRM=0 lets Jarvis (and a plan run, runs.py) skip the confirm, but only for
+commands that go to the simulator: a command for real equipment always waits for a person.
+
+Listeners (runs.py) get `await fn("tick", changed_alerts)` after every tick and
+`await fn("decision", proposal)` after every confirm or reject.
 
 This layer is additive. GET /api/state and the forecast keep reading the scenario file.
 """
@@ -88,6 +91,7 @@ class LiveField:
         self.speed = float(os.environ.get("FREEBOARD_SPEED", "0.25"))
         self.paused = False
         self.auto_confirm_sim = os.environ.get("JARVIS_CONFIRM", "1") == "0"
+        self.listeners: list = []                  # async fn(event, payload), see the module doc
         self._task: Optional[asyncio.Task] = None
         self.ingest(self.registry.read())
 
@@ -122,7 +126,29 @@ class LiveField:
     async def tick(self, dt_min: float) -> list[dict]:
         changed = self.step(dt_min)
         await self.publish(changed)
+        await self._emit("tick", changed)
         return changed
+
+    async def _emit(self, event: str, payload) -> None:
+        for fn in list(self.listeners):
+            try:
+                await fn(event, payload)
+            except Exception:  # noqa: BLE001 - a listener must never stop the field
+                log.exception("live listener failed on %s", event)
+
+    async def raise_alert(self, asset_id: str, kind: str, severity: str, message: str) -> dict:
+        """An alert from outside the detector (a plan run). Same shape, same /ws and push path."""
+        alert = self.detector.raise_external(asset_id, kind, severity, message, self.fmap.clock(self.t))
+        await self.hub.broadcast("alert", {"alert": alert})
+        self.notifier.push(alert)
+        if severity == "ALARM":
+            await self.focus(asset_id, message, source="run")
+        return alert
+
+    async def resolve_alert(self, asset_id: str, kind: str) -> None:
+        alert = self.detector.resolve_external(asset_id, kind)
+        if alert:
+            await self.hub.broadcast("alert", {"alert": alert})
 
     async def publish(self, changed: list[dict]) -> None:
         await self.hub.broadcast("state", {"state": self.state()})
@@ -256,17 +282,20 @@ class LiveField:
             raise ActionError(422, f"SEND_TRUCK needs a truck ID and a target_id tank it can reach, got {aid} {target!r}.")
         return {"type": typ, "asset_id": aid, "value": None, "target_id": target}
 
-    async def propose(self, action: dict, reason: str = "", source: str = "console") -> dict:
-        """Store a PENDING proposal. Changes nothing in the field."""
+    async def propose(self, action: dict, reason: str = "", source: str = "console",
+                      extra: Optional[dict] = None) -> dict:
+        """Store a PENDING proposal. Changes nothing in the field. `extra` adds fields
+        (a plan run's `run_id` and `step`)."""
         a = self.clean_action(action)
         conn = self.registry.route(a)
         p = {"id": f"act_{next(self._ids)}", "action": a, "reason": (reason or describe(a)).strip(),
              "status": "PENDING", "created_t": now_iso(), "text": describe(a), "source": source,
-             "connector_id": conn.id}
+             "connector_id": conn.id, **(extra or {})}
         self.proposals[p["id"]] = p
         await self.hub.broadcast("proposal", {"proposal": p})
         await self.focus(a["asset_id"], f"Waiting for confirmation: {p['text']}", source=source)
-        if self.auto_confirm_sim and source == "jarvis" and conn is self.registry.sim:
+        # Rehearsal only (JARVIS_CONFIRM=0): never for a command that leaves the simulator.
+        if self.auto_confirm_sim and source in ("jarvis", "run") and conn is self.registry.sim:
             return await self.confirm(p["id"], by="JARVIS_CONFIRM=0")
         return p
 
@@ -286,12 +315,14 @@ class LiveField:
         await self.hub.broadcast("proposal", {"proposal": p})
         await self.focus(a["asset_id"], p["result"], source="action")
         await self.hub.broadcast("state", {"state": self.state()})
+        await self._emit("decision", p)
         return p
 
     async def reject(self, action_id: str, by: str = "") -> dict:
         p = self._pending(action_id)
         p.update(status="REJECTED", decided_t=now_iso(), decided_by=by or None)
         await self.hub.broadcast("proposal", {"proposal": p})
+        await self._emit("decision", p)
         return p
 
     def _pending(self, action_id: str) -> dict:

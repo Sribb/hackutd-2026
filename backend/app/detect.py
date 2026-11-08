@@ -149,6 +149,25 @@ class Detector:
                               f"{expected:+.0f}. {name(pid)} is likely not moving water.")
         return False, ""
 
+    # ---------- alerts from outside the detector (plan runs) ----------
+    def raise_external(self, aid: str, kind: str, severity: str, msg: str, clock: str = "") -> dict:
+        """Raise one alert that evaluate() doesn't own, or refresh its message if it's active."""
+        key = (aid, kind)
+        if key in self.active:
+            self.active[key].update(message=msg, severity=severity)
+            return self.active[key]
+        alert = {"id": f"alert_{next(self._ids)}", "asset_id": aid, "kind": kind, "severity": severity,
+                 "message": msg, "t": now_iso(), "clock": clock, "active": True}
+        self.active[key] = alert
+        self.alerts.append(alert)
+        return alert
+
+    def resolve_external(self, aid: str, kind: str) -> Optional[dict]:
+        alert = self.active.pop((aid, kind), None)
+        if alert:
+            alert.update(active=False, resolved_t=now_iso())
+        return alert
+
     def _set(self, aid: str, kind: str, severity: str, msg: str, bad: Optional[bool], t: float,
              clock: str, confirm: int = CONFIRM_READINGS) -> list[dict]:
         key = (aid, kind)
