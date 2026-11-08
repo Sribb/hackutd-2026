@@ -78,12 +78,12 @@ DROPPED = {
 # road, power, trunk, yard) costs one triangle per 12.5 m2 of ground plus 28 per road meter.
 # A tank also pays for its pad's RTU, and every monitored asset for its sensor node.
 COSTS = {   # full is the hero detail (#100); lite costs about what full did before it
-    "full": {"tank": 8590, "pump": 4940, "well": 4050, "swd": 3800, "truck": 3100, "xo": 1950, "equipment": 2400,
-             "sensor": 150},
-    "lite": {"tank": 7010, "pump": 3650, "well": 1830, "swd": 3120, "truck": 3100, "xo": 1400, "equipment": 2200,
-             "sensor": 150},
-    "bare": {"tank": 7010, "pump": 3650, "well": 1480, "swd": 3120, "truck": 3100, "xo": 1400, "equipment": 2200,
-             "sensor": 150},
+    "full": {"tank": 8820, "pump": 5220, "well": 4050, "swd": 7040, "truck": 5250, "xo": 1950, "equipment": 2400,
+             "sensor": 380},
+    "lite": {"tank": 7160, "pump": 3540, "well": 1830, "swd": 4590, "truck": 4190, "xo": 1400, "equipment": 2200,
+             "sensor": 300},
+    "bare": {"tank": 7160, "pump": 3540, "well": 1480, "swd": 4590, "truck": 4190, "xo": 1400, "equipment": 2200,
+             "sensor": 300},
 }
 
 

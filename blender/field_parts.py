@@ -445,41 +445,9 @@ def build_pumpjack(site, wid, loc, rot_deg):
 
 
 def build_swd(site, sid, loc, fx=1, rot_z=0.0):
-    """Disposal facility: pump building, filters, injection wellhead, fence.
-
-    fx=1 puts the trunk inlet on local +X, fx=-1 mirrors it to -X. The gate faces local -Y.
-    """
-    root = site.empty(sid, loc, rot_z, kind="disposal_well", size=4)
-    k = Kit(site, sid, root)
-    box(k["M_GRAVEL"], (26, 22, 0.15), (0, 0, 0.075))
-    box(k["M_STEEL"], (10, 6, 4), (3 * fx, -3, 2.15))
-    box(k["M_STEEL_DARK"], (10.6, 6.6, 0.2), (3 * fx, -3, 4.25))
-    box(k["M_STEEL_DARK"], (3.0, 0.05, 3.0), (5 * fx, -6.03, 1.65))
-    box(k["M_STEEL_DARK"], (1.0, 0.05, 2.1), (0, -6.03, 1.2))
-    for y in (-4.2, -2.6):
-        cyl(k["M_STEEL"], 0.45, 2.0, (-4.5 * fx, y, 1.15), segs=16)
-        ball(k["M_STEEL"], 0.45, (-4.5 * fx, y, 2.15), segs=14)
-    cyl(k["M_CONCRETE"], 0.6, 0.3, (0, 6, 0.3), segs=14)
-    cyl(k["M_STEEL_DARK"], 0.24, 1.9, (0, 6, 1.4), segs=14)
-    box(k["M_STEEL_DARK"], (0.55, 0.55, 0.45), (0, 6, 1.1))
-    tube(k["M_STEEL_DARK"], (0, 6, 1.9), (0.7 * fx, 6, 1.9), 0.09, 10)
-    ring(k["M_STEEL"], 0.25, 0.025, (0.42 * fx, 6, 1.1), axis="X")
-    line(k["M_PIPE"], [(3 * fx, 0.0, 0.6), (3 * fx, 4.5, 0.6), (0.3 * fx, 4.5, 0.6), (0.3 * fx, 6, 0.6)], 0.09)
-    tube(k["M_PIPE"], (8.0 * fx, -2, 0.6), (9.5 * fx, -2, 0.6), 0.16, 12)
-    x0, x1, y0, y1 = -12.5, 12.5, -10.5, 10.5
-    runs = [((x0, y1), (x1, y1)), ((x0, y0), (x0, y1)), ((x1, y0), (x1, y1)),
-            ((x0, y0), (-4, y0)), ((4, y0), (x1, y0))]
-    gap = 3 if LOD["posts"] else 6
-    for (ax, ay), (bx, by) in runs:
-        length = math.hypot(bx - ax, by - ay)
-        for i in range(int(length // gap) + 1):
-            t = min(1.0, i * gap / length)
-            px, py = ax + (bx - ax) * t, ay + (by - ay) * t
-            tube(k["M_STEEL"], (px, py, 0.1), (px, py, 1.8), 0.04, 6)
-        for z in (0.9, 1.7):
-            tube(k["M_STEEL"], (ax, ay, z), (bx, by, z), 0.025, 6)
-    k.done()
-    return root, {"inlet": root.matrix_basis @ Vector((9.5 * fx, -2, 0.6))}
+    """Disposal facility with its H-pumps. fx=1 puts the trunk inlet on local +X. See swd_parts.py."""
+    import swd_parts
+    return swd_parts.build(site, sid, loc, fx, rot_z)
 
 
 def build_yard(site, yid, loc, rot_z=0.0):
@@ -502,25 +470,6 @@ def build_yard(site, yid, loc, rot_z=0.0):
 
 
 def build_truck(site, tid, loc, rot_deg=0.0):
-    """Vacuum truck. Faces local +X, origin on the ground at its center."""
-    root = site.empty(tid, loc, math.radians(rot_deg), kind="truck", size=2)
-    k = Kit(site, tid, root)
-    box(k["M_STEEL_DARK"], (9.6, 0.9, 0.3), (0, 0, 1.0))
-    box(k["M_STEEL"], (2.3, 2.4, 2.0), (3.65, 0, 2.15))
-    box(k["M_STEEL"], (1.3, 2.2, 1.0), (5.4, 0, 1.65))
-    box(k["M_GLASS"], (0.06, 2.1, 0.8), (4.82, 0, 2.6))
-    for y in (-1.21, 1.21):
-        box(k["M_GLASS"], (1.1, 0.05, 0.7), (3.9, y, 2.6))
-    box(k["M_STEEL_DARK"], (0.25, 2.4, 0.35), (6.15, 0, 1.0))
-    box(k["M_STEEL_DARK"], (0.05, 1.6, 0.8), (6.06, 0, 1.6))
-    tube(k["M_STEEL_DARK"], (2.5, 1.05, 1.2), (2.5, 1.05, 3.6), 0.08, 8)
-    cyl(k["M_TANK"], 1.05, 6.2, (-1.35, 0, 2.45), axis="X", segs=24)
-    cyl(k["M_STEEL_DARK"], 0.35, 0.2, (-1.3, 0, 3.55), segs=14)
-    box(k["M_STEEL_DARK"], (0.9, 1.6, 1.0), (2.0, 0, 1.85))
-    for y in (-1.2, 1.2):
-        box(k["M_STEEL_DARK"], (5.0, 0.25, 0.25), (-1.35, y, 1.5))
-    for x in (-3.5, -1.3, 0.9):
-        box(k["M_STEEL_DARK"], (0.3, 1.8, 0.5), (x, 0, 1.4))
-    tube(k["M_PIPE"], (-4.45, 0, 1.7), (-4.95, 0, 1.7), 0.12, 10)
-    k.done()
-    return root   # wheels are axle objects added in detail_site.truck_extras
+    """Generic vacuum truck. Faces local +X, origin on the ground at its center. See truck_parts.py."""
+    import truck_parts
+    return truck_parts.build(site, tid, loc, rot_deg)

@@ -269,8 +269,9 @@ def pump_extras(site, pid, root):
     for x in (-1.6, -1.12):
         flange(steel, (x, 0, 0.85), (1, 0, 0), 0.19, thick=0.04)
     fp.strut(steel, (-1.36, 0, 0.51), (-1.36, -0.22, 0.48), 0.03)
-    fp.strut(steel, (-1.15, -0.1, 0.85), (-1.15, -0.1, 1.05), 0.03)
-    gauge(k, (-1.15, -0.1, 1.14), r=0.055)
+    if fp.fine():
+        fp.strut(steel, (-1.15, -0.1, 0.85), (-1.15, -0.1, 1.05), 0.03)
+        gauge(k, (-1.15, -0.1, 1.14), r=0.055)
     # swing check valve on the discharge riser, then the discharge flange and its gauge
     fp.rbox(dark, (0.26, 0.24, 0.26), (-0.8, 0, 1.52), bevel=0.03)
     fp.rbox(steel, (0.18, 0.06, 0.18), (-0.8, -0.14, 1.52), bevel=0.015)       # bonnet cover
@@ -294,8 +295,9 @@ def pump_extras(site, pid, root):
                 Matrix.Rotation(a, 4, "X"))
     ring(steel, 0.06, 0.012, (1.1, 0, 1.22), axis="Y", segs=8, rsegs=3)
     for x, y in ((-2.0, -1.05), (2.0, -1.05), (-2.0, 1.05), (2.0, 1.05)):
-        cyl(steel, 0.1, 1.0, (x, y, 0.5), segs=10)
-        ball(steel, 0.1, (x, y, 1.0), segs=8)
+        cyl(steel, 0.1, 1.0, (x, y, 0.5), segs=10 if fp.fine() else 6)
+        if fp.fine():
+            ball(steel, 0.1, (x, y, 1.0), segs=8)
     for x in (0.0, 0.8):
         fp.strut(steel, (x, 1.6, 0.0), (x, 1.6, 1.9), 0.07)
     fp.rbox(steel, (1.0, 0.3, 0.9), (0.4, 1.6, 1.35), bevel=0.02)

@@ -234,6 +234,12 @@ def check_rigs(label, glb, bp, data):
     ok(all(acts.get(v) == m for v, m in want.items()) and all(a in ("manual", "remote") for a in acts.values()),
        f"{label}: {len(acts)} valves carry actuation, matching manual/remote "
        f"({sum(1 for a in acts.values() if a == 'manual')} manual)")
+    kinds = names.asset_kinds(bp)
+    want_dev = {"tank": "radar_level", "valve": "position", "truck": "telematics", "yard": "gateway"}
+    devs = {nd["extras"]["for_asset"]: nd["extras"].get("device") for nd in glb.nodes
+            if nd.get("extras", {}).get("kind") == "sensor"}
+    ok(all(d == want_dev.get(kinds.get(a), "pressure") for a, d in devs.items()),
+       f"{label}: {len(devs)} sensors say which instrument they are, by asset kind")
 
 
 def check_build(label, bp_path, out_dir, expect_level=None, max_seconds=30):

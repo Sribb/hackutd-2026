@@ -20,7 +20,7 @@ import math
 import bmesh
 from mathutils import Matrix, Vector
 
-from field_parts import LOD, Kit, box, circle_pts, cyl, fine, hull, prism, rbox, strut, tube
+from field_parts import LOD, Kit, box, circle_pts, cyl, fine, hull, prism, rbox, strut
 
 PIVOT_Z = 4.1                  # saddle bearing
 CY, CZ = 2.7, 1.6              # crankshaft (y, z)

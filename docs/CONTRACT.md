@@ -60,7 +60,7 @@ Change the model in the scripts, not by hand in the `.blend`, or the next rebuil
 - `blender/blueprint.py` reads and checks the blueprint.
 - `blender/layout.py` decides where every asset goes.
 - `blender/field_build.py` and `blender/piping.py` build the field and its pipes.
-- `blender/field_parts.py` builds each core asset.
+- `blender/field_parts.py` builds each core asset; `blender/well_parts.py` (pumpjack and wellhead), `blender/truck_parts.py` (vacuum truck) and `blender/swd_parts.py` (disposal facility with its H-pumps) hold the bigger ones. At `--detail full` they build the hero detail; `lite` costs about what full did before #100.
 - `blender/detail_equipment.py` adds gauges, sensors, panels, wellhead trees, labels, and load-outs.
 - `blender/detail_site.py` adds power, light towers, containment, disposal well and yard equipment, and truck detail.
 - `blender/siting.py` finds free spots for anything added after the core layout, and `blender/equipment_parts.py` builds the blueprint's `equipment`.
@@ -155,7 +155,7 @@ Assets on the south side of the road are turned 180 degrees about Y. Their parts
 
 **Sensors:** `<tank>_lt` (radar level) and `<tank>_lshh` (high-level switch) are separate meshes, so the console can highlight the sensor behind an alarm. Clicking them selects the tank.
 
-**IoT sensor nodes (#46):** `SENSOR_<asset>` is a wireless sensor node (an enclosure, a stub antenna, and the `SENSOR_<asset>_light` LED) mounted on an asset and parented to it, so clicking it selects that asset. The assets named in the blueprint's `connectors[].signals` get one each, and with no connectors every tank and pump does. Its `userData` has `kind` `sensor`, `for_asset` (the asset ID), `signals`, and `connectors`, the last two as comma-separated text like `"running,flow_bbl_hr"` and `"CONN_SIM"` (empty with no connectors). Today's field has `SENSOR_TANK_1` to `SENSOR_TANK_6` and `SENSOR_PUMP_1` to `SENSOR_PUMP_6`.
+**IoT sensor nodes (#46):** `SENSOR_<asset>` is a field instrument with a wireless adapter and the `SENSOR_<asset>_light` LED, mounted on an asset and parented to it, so clicking it selects that asset. Its `userData.device` says which instrument it is (#100): `radar_level` on a tank roof, `pressure` (a transmitter on a manifold) on pumps, wellheads, disposal wells and equipment, `position` on a valve, `telematics` on a truck, `gateway` on the yard. The assets named in the blueprint's `connectors[].signals` get one each, and with no connectors every tank and pump does. Its `userData` has `kind` `sensor`, `for_asset` (the asset ID), `signals`, and `connectors`, the last two as comma-separated text like `"running,flow_bbl_hr"` and `"CONN_SIM"` (empty with no connectors). Today's field has `SENSOR_TANK_1` to `SENSOR_TANK_6` and `SENSOR_PUMP_1` to `SENSOR_PUMP_6`.
 
 **RTUs (#46):** `RTU_PAD_n` is the remote terminal unit on each tank pad: a cabinet on a stand with a solar panel and battery box, the `RTU_PAD_n_light` status light, and `RTU_PAD_n_antenna`, the radio mast with an omni whip and a Yagi toward the road. It is parented to `PAD_n`, and its `userData` has `kind` `rtu` and `pad`. It is not a clickable asset. Today's field has `RTU_PAD_1` to `RTU_PAD_6`.
 
