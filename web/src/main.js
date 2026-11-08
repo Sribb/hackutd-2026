@@ -449,6 +449,11 @@ function renderIncident() {
     countdown = `<div class="countdown" data-decode="countdown">${nice(ev.asset_id)} reaches shutdown at ${clockAt(ev.t_min)}${range}</div>
       <div class="sub">${Math.round(ev.t_min)} min from now if nobody acts. ${wellsAtRisk} wells go down with it.</div>`;
   }
+  const blind = blindTanks();
+  if (blind.length) {
+    const names = andList(blind.map(nice));
+    countdown += `<div class="verdict warn" data-decode="blind">${ev ? `No reading for ${names}, so the forecast can't vouch for ${blind.length === 1 ? "it" : "them"}. Check in person.` : noShutdownText(blind)}</div>`;
+  }
   const lc = data.lc;
   let last = "";
   if (lc && lc.status === "INCIDENT" && lc.options && lc.options.length) {
@@ -514,6 +519,25 @@ function renderSelected(view) {
   decode(box);
 }
 
+// Tanks with no level reading right now. The console never vouches for them.
+function blindTanks() {
+  return (field.tanks || []).map((t) => t.id).filter((id) => {
+    const s = (data.state.assets || {})[id], v = lastView[id];
+    return !s || s.level_pct == null || (v && (v.status === "NO_DATA" || v.status === "UNKNOWN"));
+  });
+}
+
+const andList = (xs) => (xs.length < 2 ? xs.join("") : `${xs.slice(0, -1).join(", ")} and ${xs[xs.length - 1]}`);
+
+// What the forecast can honestly say when no tank reaches shutdown.
+function noShutdownText(blind) {
+  const until = clockAt(360);
+  if (!blind.length) return `Every tank stays below shutdown through ${until}.`;
+  const names = andList(blind.map(nice));
+  if (blind.length === (field.tanks || []).length) return `No tank has a level reading, so the console can't vouch for any of them. Check ${names} in person.`;
+  return `Every tank with a reading stays below shutdown through ${until}. No reading for ${names}, so the console can't vouch for ${blind.length === 1 ? "that tank" : "those tanks"}. Check in person.`;
+}
+
 function renderWhatif() {
   const box = $("whatif");
   if (!actions.length && !whatifNote) { box.hidden = true; return; }
@@ -522,7 +546,10 @@ function renderWhatif() {
   const now = shutdownOf(fc);
   let verdict;
   if (!actions.length) verdict = "";
-  else if (!now) verdict = `<div class="verdict good" data-decode="verdict">Every tank stays below shutdown through ${clockAt(360)}.</div>`;
+  else if (!now) {
+    const blind = blindTanks();
+    verdict = `<div class="verdict ${blind.length ? "warn" : "good"}" data-decode="verdict">${noShutdownText(blind)}</div>`;
+  }
   else {
     const gained = base ? Math.round(now.t_min - base.t_min) : 0;
     verdict = `<div class="verdict bad" data-decode="verdict">${nice(now.asset_id)} still reaches shutdown at ${clockAt(now.t_min)}${gained > 0 ? `, ${gained} min later than doing nothing` : ""}.</div>`;
@@ -724,10 +751,10 @@ function handoffText() {
   L.push("", "FORECAST ON SCREEN");
   const now = shutdownOf(fc);
   L.push(actions.length ? `With ${actions.map(describe).join(" + ")}:` : "No changes applied:");
-  L.push(now ? `${nice(now.asset_id)} reaches shutdown at ${clockAt(now.t_min)}.` : `Every tank stays below shutdown through ${clockAt(360)}.`);
+  L.push(now ? `${nice(now.asset_id)} reaches shutdown at ${clockAt(now.t_min)}.` : noShutdownText(blindTanks()));
   for (const t of field.tanks || []) {
     const s = (data.state.assets || {})[t.id];
-    if (s && s.level_pct != null) L.push(`  ${nice(t.id)}: ${s.level_pct.toFixed(1)}% (shutdown ${t.shutdown_pct}%)`);
+    L.push(s && s.level_pct != null ? `  ${nice(t.id)}: ${s.level_pct.toFixed(1)}% (shutdown ${t.shutdown_pct}%)` : `  ${nice(t.id)}: NO READING. Not safe until checked.`);
   }
   L.push("", "LOG");
   for (const e of shiftlog.entries()) L.push(`${e.at.padStart(8)}  ${e.text}`);
