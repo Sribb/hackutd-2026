@@ -221,6 +221,23 @@ The backend sends the status. The web console picks the color.
 
 The default server address is `http://127.0.0.1:8000`. All numbers below are examples. Times are minutes from now.
 
+### Control token (#105, #103, CF-15)
+
+Reads (GET) are always open. One mechanism, `backend/app/auth.py`, checked per route:
+
+- None of `FREEBOARD_TOKEN`, `OPERATOR_PIN`, `FREEBOARD_PHONE_TOKEN` set: everything is open, as before.
+- Any of them set: protected writes need the header `X-Freeboard-Token`. Missing or wrong gets
+  401 `{"detail": "Enter the operator PIN to send commands."}`. `FREEBOARD_TOKEN` or `OPERATOR_PIN` is the
+  operator; `FREEBOARD_PHONE_TOKEN` is the phone, which may only confirm, reject, and ack (403 elsewhere).
+- Operator only on the backend core: `POST /api/plans/{id}/approve`, `POST /api/spacetime/sync`,
+  `POST /api/blueprints`, `POST /api/blueprints/{id}/activate`. `POST /api/forecast`, `/api/plans`, and
+  `/api/lastcall` stay open, since they change nothing. The live layer's routes are listed in its section.
+- Always, tokens or not (`backend/app/origin_guard.py`): a write whose `Origin` names a different host than the
+  server gets 403. Same host on another port (console :5173, API :8000) and localhost pass. No Origin (curl,
+  devices, webhooks) passes. Extra hosts: `FREEBOARD_ALLOWED_HOSTS=a,b`.
+- `/api/blueprints` takes only `application/json` or `multipart/form-data` (415 otherwise), and the 5 MB cap is
+  enforced while the body streams in.
+
 ### `GET /api/field`
 
 Everything that doesn't change during the night.
@@ -613,3 +630,52 @@ Upload a blueprint as multipart form field `file`. That can be a PNG, JPEG, WebP
 - `blueprint` has the same shape as `scenario/field.json`, plus `x` and `y` in meters where the plan shows a position. Each asset also carries `_ingest` with its original label, Claude's confidence, and the evidence.
 - `errors` block a build: duplicate IDs, bad IDs, or references to missing IDs. `review` items don't block a build, but the console should show them for a human to confirm or fill in.
 - Error statuses: 400 for a bad file, 413 for a file too large, 415 for an unsupported type, 422 when Claude declines or can't read it, 429 when rate limited, and 502 or 503 for server and API problems. The `detail` says what to do.
+
+### Blueprints (#41): `POST /api/blueprints` and friends
+
+Upload a customer's field ([BLUEPRINT.md](BLUEPRINT.md)), get its 3D model, and run the console on it. The upload screen (`web/src/upload.js`, #43) reads exactly this shape.
+
+**`POST /api/blueprints`** takes any of:
+
+- `{"blueprint": {...}, "activate": true}`, where `blueprint` is the one from `/api/ingest` after a person fills the review items. `activate` is optional and defaults to `true`.
+- a raw blueprint as the JSON body.
+- `multipart/form-data` with a `.json` file in the field `file` (and an optional `activate` field). Drawings and CSVs go to `/api/ingest` first, so they get a 415.
+
+The response, and **`GET /api/blueprints/{id}`**, is one record:
+
+```json
+{
+  "id": "bp_7efcfbee8eff",
+  "status": "fallback",
+  "ok": true,
+  "errors": [],
+  "warnings": [],
+  "counts": { "tanks": 8, "pumps": 8, "valves": 13, "wells": 24, "disposal_wells": 3, "trucks": 3, "yards": 1 },
+  "glb_url": "/api/blueprints/bp_7efcfbee8eff/field.glb",
+  "note": "Showing the standard field model: Blender isn't installed on this server. The forecast and plans use your blueprint. 12 asset(s) have no 3D shape in it: PUMP_7, ...",
+  "active": true,
+  "name": "Pecos Ridge lease - night shift",
+  "model": "fallback",
+  "placed": null,
+  "build_report": null,
+  "build_seconds": null,
+  "source": "body",
+  "created_at": "2026-11-07T18:20:55"
+}
+```
+
+- `status`: `building` (poll GET about once a second), `ready` (built by Blender), `fallback` (the console shows main's `blender/field.glb`), or `failed` (the blueprint has problems).
+- **The demo never waits on a build.** If Blender is missing, the generator can't take `--blueprint` yet, or the build fails or takes over `FREEBOARD_BUILD_TIMEOUT` seconds (default 180), the status is `fallback` and the reason is in `note`. Generator errors become `warnings` that start with `Generator error:`.
+- `failed` comes back as **HTTP 422** with the same record plus `detail` (the problems in one sentence). `errors` lists every problem from `scenario/validate_blueprint.py`, then the backend's own checks. Nothing is built or activated.
+- The `id` is a hash of the blueprint, so uploading the same file again returns the same record without rebuilding.
+- A valid upload is activated straight away unless `activate` is `false`. The console then reloads on `/api/field` and `glb_url`.
+- Blender is found from `BLENDER`, then `blender` on the PATH, then `/Applications/Blender.app/Contents/MacOS/Blender`. It runs `blender --background --factory-startup --python blender/build_field.py -- --blueprint <file> --out <dir>` and reads `<dir>/build_report.json` (`ok`, `errors`, `warnings`, `counts`, `placed`).
+- Files live in `backend/data/blueprints/<id>/` (gitignored), or `FREEBOARD_BLUEPRINTS_DIR`.
+
+**`GET /api/blueprints/{id}/field.glb`** serves the built model when the status is `ready`, and main's `blender/field.glb` otherwise. The header `X-Freeboard-Model` says `built` or `fallback`. A `failed` blueprint gets a 409.
+
+**`POST /api/blueprints/{id}/activate`** makes `/api/field`, `/api/state`, `/api/forecast`, `/api/plans`, and Last Call use this blueprint. It returns the record with `"active": true`. A `failed` blueprint gets a 409, and an unknown id gets a 404. **`POST /api/blueprints/default/activate`** goes back to the server's starting scenario. The active blueprint is kept in memory, so a restart goes back to the default.
+
+**`GET /api/blueprints`** returns `{"active": "<id or default>", "blueprints": [record, ...]}`, newest first.
+
+While a blueprint with new IDs is active (such as `TANK_7`), `/api/field` lists IDs the Asset IDs table above doesn't have, and `tools/check` against that server reports them. Activate `default` before running `tools/check`.
