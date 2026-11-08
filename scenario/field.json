@@ -88,7 +88,9 @@
     "tank_pct": { "TANK_1": 52.0, "TANK_2": 48.0, "TANK_3": 71.76, "TANK_4": 60.0, "TANK_5": 44.0, "TANK_6": 50.0 }
   },
   "faults": [
-    { "asset_id": "PUMP_3", "type": "TRIP", "at_min": 3, "reason": "Pump tripped on motor overload." }
+    { "asset_id": "PUMP_3", "type": "TRIP", "at_min": 3, "reason": "Pump tripped on motor overload." },
+    { "asset_id": "WELL_22", "type": "SENSOR_STALE", "at_min": 5, "reason": "Well 22's flow meter radio dropped off the network.",
+      "_cascade": "CF-8: the alarm flood. Only these two faults are scripted. The rest follows from the physics: Tank 3 passes warning_pct (high, about 2:15 AM), then shutdown_pct (high-high, 2:47 AM), and Wells 9 to 12 shut in with it. That is 8 alarms: trip, high, high-high, 4 shut-ins, and this stale meter. Well 22 is on Tank 6, so the blind meter never touches the Tank 3 fix. There is no well shut-in fault type: shut-ins happen at shutdown_pct in the forecast and the sim." }
   ],
   "sensors": {
     "level_noise_pct": 0.08,

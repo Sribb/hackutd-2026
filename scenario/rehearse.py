@@ -16,6 +16,10 @@ What it changes on the server, and puts back:
     way the demo starts). It opens the Tank 3 to 4 crossover through a confirmed
     proposal, then closes it the same way, and rejects any proposal it left PENDING.
     The live clock can't rewind: restart the backend before going on stage.
+  - live sim, flood beat (CF-8): only when /api/alerts carries priority and root_id
+    (CF-7), it advances the live clock in 5-minute steps until Tank 3 has shut in,
+    so the whole cascade rings, then reads /api/alerts. Without CF-7 it SKIPs and
+    changes nothing.
   - blueprints: activates sample 1, then always activates "default" again.
 
 Exit code: 0 no FAIL, 1 at least one FAIL, 2 the backend can't be reached.
@@ -51,6 +55,8 @@ LIVE_BEFORE_AFTER = "shutdown before and after"
 LIVE_ROBUST = "/api/plans robust plan summary and cost"
 LIVE_NOTHING = "do-nothing cost"
 LIVE_EXPIRY = "/api/lastcall expiry"
+LIVE_FLOOD = "alarm flood row count"
+LIVE_TWO_NIGHTS = "Two nights end card"
 
 Q_FAILING = "What's failing?"
 Q_WHY = "Why is Tank 3 rising, and what's my cheapest fix?"
@@ -60,6 +66,10 @@ CLOCK_RE = re.compile(r"\b\d{1,2}:\d{2}\s?(?:AM|PM)\b", re.I)
 DOLLAR_RE = re.compile(r"\$\s?\d[\d,]*")
 TRIP_ALERT_MAX_S = 5.0  # beat 2: the phone has to buzz while the presenter is still on the line
 SAMPLE2_REVIEW_EXPECTED = 14  # scenario/samples/README.md
+FLOOD_MIN_ROWS = 8      # CF-8: trip, tank high, high-high, 4 wells shut in, 1 stale sensor
+FLOOD_STEP_MIN = 5      # each POST /api/live/sim advance is one detector evaluation
+FLOOD_MAX_MIN = 150     # Tank 3 shuts in about 60 live minutes after the trip
+FLOOD_SETTLE_STEPS = 2  # evaluations after the shutdown, so the shut-in alarms can confirm
 
 
 def usd(n: Any) -> str:
@@ -103,6 +113,7 @@ class Rehearsal:
         self.tank = "TANK_3"
         self.crossover = "VALVE_XO_34"
         self.base_event: Optional[dict] = None
+        self.base_fc: Optional[dict] = None
         self.base_cost: Optional[float] = None
         self.robust_plan: Optional[dict] = None
         self.our_proposals: list[str] = []
@@ -117,7 +128,7 @@ class Rehearsal:
 
     def run(self) -> dict:
         steps = [self.beat_state, self.beat_forecast, self.beat_whatif, self.beat_plans, self.beat_lastcall,
-                 self.beats_live, self.beat_ingest, self.beat_blueprints]
+                 self.beat_two_nights, self.beats_live, self.beat_flood, self.beat_ingest, self.beat_blueprints]
         for step in steps:
             try:
                 step()
@@ -172,7 +183,7 @@ class Rehearsal:
         r = self.call("POST", "/api/forecast", json={"actions": []})
         if r.status_code != 200:
             return self.add(name, "FAIL", f"HTTP {r.status_code}: {quote(r.text)}")
-        fc = r.json()
+        fc = self.base_fc = r.json()
         self.base_cost = (fc.get("cost") or {}).get("total_usd")
         if self.base_cost is not None:
             self.live[LIVE_NOTHING] = usd(self.base_cost)
@@ -298,6 +309,141 @@ class Rehearsal:
         if lc_cost != plan_cost:
             return self.add(name, "FAIL", detail + f"; but Last Call prices it {usd(lc_cost)} and /api/plans {usd(plan_cost)}")
         self.add(name, "PASS", detail)
+
+    def beat_two_nights(self) -> None:
+        """The close's end card, counted the way web/src/twonights.js (PR #70) counts it:
+        the do-nothing forecast against the forecast with the plan beat 6 approves (the
+        robust one), as "$X and N wells apart"."""
+        name = "Close Two nights: end card from both forecasts"
+        if self.base_fc is None or self.robust_plan is None:
+            return self.add(name, "FAIL", "needs the do-nothing forecast (beat 3) and the robust plan (beat 6)")
+        r = self.call("POST", "/api/forecast", json={"actions": self.robust_plan.get("actions") or []})
+        if r.status_code != 200:
+            return self.add(name, "FAIL", f"HTTP {r.status_code}: {quote(r.text)}")
+        none_usd = (self.base_fc.get("cost") or {}).get("total_usd")
+        with_usd = (r.json().get("cost") or {}).get("total_usd")
+        if none_usd is None or with_usd is None:
+            return self.add(name, "FAIL", f"a forecast has no cost.total_usd (nobody acts: {none_usd}, "
+                                          f"with the plan: {with_usd})")
+        lost = wells_lost(self.base_fc, len(self.field.get("wells") or []))
+        card = usd(max(0.0, float(none_usd) - float(with_usd)))
+        if lost:
+            card += f" and {lost} well{'' if lost == 1 else 's'}"
+        self.live[LIVE_TWO_NIGHTS] = card + " apart"
+        self.add(name, "PASS", f"{self.live[LIVE_TWO_NIGHTS]}: nobody acts {usd(none_usd)}, "
+                               f"with the robust plan {usd(with_usd)}")
+
+    # ---------- the alarm flood (CF-8) ----------
+    def beat_flood(self) -> None:
+        """Beat 2b. A normal list shows every alarm the trip sets off. Freeboard has to show
+        exactly one P1 root cause, with every other alarm pointing at it by root_id (directly
+        or through another alarm). A stale sensor is its own fault, not a symptom, so it may
+        stand alone, but never as a P1."""
+        name = "Beat 2b The flood: GET /api/alerts, one P1 root cause"
+        if self.skip_live:
+            return self.add(name, "SKIP", "--skip-live")
+        r = self.call("GET", "/api/alerts")
+        if r.status_code == 404:
+            return self.add(name, "SKIP", "GET /api/alerts is 404: #38 isn't on this server")
+        if r.status_code != 200:
+            return self.add(name, "FAIL", f"GET /api/alerts HTTP {r.status_code}: {quote(r.text)}")
+        alerts = r.json().get("alerts") or []
+        if not any("priority" in a and "root_id" in a for a in alerts):
+            self.notes.append("DEMO.md beat 2b (the flood) needs priority and root_id on /api/alerts (CF-7). "
+                              "Until CF-7 is on this server, cut that beat and give its 15 s to beat 3.")
+            why = "no alerts to read" if not alerts else "the alerts have no priority or root_id"
+            return self.add(name, "SKIP", f"{why}, so CF-7 isn't on this server and there is no grouping "
+                                          "to check. The live clock was not advanced.")
+        before = next((a for a in alerts if a.get("active") and a.get("asset_id") == self.root
+                       and a.get("priority") == "P1" and not a.get("root_id")), None)
+        if before:
+            self.extra["P1 before the flood"] = (f"{quote(before.get('message', ''), 120)}, "
+                                                 f"{before.get('minutes_to_consequence')} min to consequence, "
+                                                 f"{usd(before.get('usd_at_risk'))} at risk")
+        advanced, clock, reached = self._advance_to_shutdown()
+        if advanced is None:
+            return self.add(name, "FAIL", clock)
+
+        alerts = self.call("GET", "/api/alerts").json().get("alerts") or []
+        rows = [a for a in alerts if a.get("active")]
+        self.live[LIVE_FLOOD] = str(len(rows))
+        kinds: dict[str, int] = {}
+        for a in rows:
+            kinds[str(a.get("kind"))] = kinds.get(str(a.get("kind")), 0) + 1
+        kinds_txt = ", ".join(f"{k} x{n}" for k, n in sorted(kinds.items())) or "none"
+        self.extra["flood alarms by kind"] = kinds_txt
+        by_id = {a.get("id"): a for a in rows}
+
+        def top(a: dict) -> Optional[str]:
+            """The id at the top of a's root_id chain, or None if the chain breaks."""
+            seen: set = set()
+            while a.get("root_id"):
+                if a.get("id") in seen or a["root_id"] not in by_id:
+                    return None
+                seen.add(a.get("id"))
+                a = by_id[a["root_id"]]
+            return a.get("id")
+
+        def label(a: dict) -> str:
+            return f"{a.get('id')} {a.get('asset_id')} {a.get('kind')} {a.get('priority')}"
+
+        problems = []
+        if len(rows) < FLOOD_MIN_ROWS:
+            problems.append(f"only {len(rows)} active alarms; the beat needs {FLOOD_MIN_ROWS} or more: the trip, "
+                            f"{nice(self.tank)} high and high-high, its wells shutting in, and one stale sensor")
+        p1_roots = [a for a in rows if a.get("priority") == "P1" and not a.get("root_id")]
+        if len(p1_roots) != 1:
+            problems.append(f"{len(p1_roots)} P1 root causes, expected exactly one"
+                            + (": " + ", ".join(label(a) for a in p1_roots) if p1_roots else ""))
+        root = p1_roots[0] if len(p1_roots) == 1 else None
+        alone, stray = [], []
+        if root:
+            if root.get("asset_id") != self.root:
+                problems.append(f"the P1 root is {label(root)}, not the {self.root} trip")
+            for a in rows:
+                if a is root or top(a) == root.get("id"):
+                    continue
+                if a.get("kind") == "SENSOR_STALE" and not a.get("root_id") and a.get("priority") != "P1":
+                    alone.append(a)
+                else:
+                    stray.append(a)
+            if stray:
+                problems.append(f"{len(stray)} alarms don't point at {root.get('id')} by root_id: "
+                                + ", ".join(f"{label(a)} root_id={a.get('root_id')!r}" for a in stray))
+        detail = f"{len(rows)} active alarms after {advanced} live min ({clock}): {kinds_txt}. "
+        if root:
+            under = len(rows) - 1 - len(alone) - len(stray)
+            detail += f"P1 root {label(root)}, {under} grouped under it"
+            if alone:
+                detail += f"; stale sensor on its own: {', '.join(str(a.get('asset_id')) for a in alone)}"
+        if not reached:
+            detail += f". {nice(self.tank)} never reached its shutdown level in {advanced} live min"
+        if problems:
+            return self.add(name, "FAIL", "; ".join(problems) + ". " + detail)
+        self.add(name, "PASS", detail)
+
+    def _advance_to_shutdown(self) -> tuple[Optional[int], str, bool]:
+        """Advance the live clock in FLOOD_STEP_MIN steps until the tank reads its shutdown
+        level, then FLOOD_SETTLE_STEPS more. Returns (minutes, clock, reached), or
+        (None, why, False) when the sim control fails."""
+        shut = next((t.get("shutdown_pct") for t in self.field.get("tanks", []) if t.get("id") == self.tank), None)
+        advanced, settle, clock = 0, None, "?"
+        while advanced < FLOOD_MAX_MIN and settle != 0:
+            s = self.call("POST", "/api/live/sim", json={"advance_min": FLOOD_STEP_MIN})
+            if s.status_code != 200:
+                return None, f"POST /api/live/sim advance_min HTTP {s.status_code}: {quote(s.text)}", False
+            advanced += FLOOD_STEP_MIN
+            clock = s.json().get("clock", clock)
+            if settle is not None:
+                settle -= 1
+                continue
+            level = ((self.call("GET", "/api/live/state").json().get("assets") or {}).get(self.tank) or {}) \
+                .get("level_pct")
+            if shut is not None and level is not None and float(level) >= float(shut) - 0.05:
+                settle = FLOOD_SETTLE_STEPS
+        self.changes.append(f"Advanced the live clock {advanced} min to {clock} (POST /api/live/sim advance_min) "
+                            f"so {nice(self.tank)} shut in and the whole flood rang. Restart the backend before the demo.")
+        return advanced, clock, settle is not None
 
     # ---------- live layer (#38) ----------
     def beats_live(self) -> None:
@@ -617,6 +763,15 @@ class Rehearsal:
 
 
 # ---------- helpers ----------
+
+def wells_lost(fc: dict, n_wells: int) -> int:
+    """Wells offline at the end of a forecast: the timeline's first wells_online minus its
+    last, as web/src/twonights.js counts it, else the wells_lost on its shutdown events."""
+    tl = [r for r in fc.get("timeline") or [] if r.get("wells_online") is not None]
+    if tl:
+        return max(0, int(tl[0]["wells_online"]) - int(tl[-1]["wells_online"]))
+    return len({w for e in fc.get("events") or [] for w in e.get("wells_lost") or []})
+
 
 def first_sentence(s: str) -> str:
     m = re.match(r"(.+?\.)(\s|$)", s.strip())

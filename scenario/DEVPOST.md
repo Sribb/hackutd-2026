@@ -51,6 +51,23 @@ Upload a site plan, review what was read, and get a 3D night-shift console for t
 | `POST /api/blueprints` (build an uploaded field) | issue #41 | Queued |
 | Shared asset library on Maincloud | `library/`, PR #35 | Merged |
 
+## How we compare
+
+Same text as [PITCH.md](PITCH.md). Every tag resolves in `docs/COMPETITIVE.md` (PR #110): letter tags in its Sources list, `[F]` and `[N]` tags in its feature matrix. Before submitting, re-check the Freeboard rows against what is merged, and paste the source links below with the paragraph.
+
+At 1:47 AM, Ignition [I1], AVEVA [A2], Experion [H1], and eLynx [L2] tell you a pump tripped. Freeboard tells you when Tank 3 shuts in, the cheapest fix, and when that fix expires. Its forecast runs six hours ahead with a plus or minus 15% band [F1]. The closest commercial feature we found, Honeywell's Experion Operations Assistant, warns 5 to 10 minutes before an alarm [H3]. The planner ranks fixes by dollars and flags the one that still holds if inflow runs 15% high [F2], and Last Call says when each fix stops being possible [F3]. We found no public equivalent of the planner at Ignition, AVEVA, Honeywell, eLynx, or WellAware [N1], and no fix expiry at any of the six we compared [N2]. Where they lead is alarm management: Ignition and Experion shelve alarms on a timer [I7] [H1], and Honeywell's DynAMo suite claims up to 80% fewer alarms, by the vendor's own count [H2]. EOG already sends real-time alerts to a control center [E1], so Freeboard is built to sit on top of SCADA and turn an alert into a decision.
+
+Sources ("not found" means we found nothing public, not that the product lacks it):
+- [I1] Ignition Alarm Notification module docs, 8.3: https://docs.inductiveautomation.com/docs/8.3/ignition-modules/alarm-notification
+- [I7] Ignition alarm shelving, 5 minutes to 4 hours: https://docs.inductiveautomation.com/docs/7.9/alarming/alarm-status/alarm-status-shelving
+- [A2] Coterra well loading with AVEVA PI (event frame notifications): https://www.aveva.com/en/perspectives/presentations/2026/well-loading-analysis---maximizing-production-with-aveva-pi/
+- [H1] Experion PKS alarm shelving configuration: https://process.honeywell.com/content/dam/process/en/documents/training-docs/control-monitoring-and-safety-systems/mt/EXP-7013-MT-Experion-PKS-Alarm-Shelving-Configuration.pdf
+- [H2] Honeywell introduces DynAMo Alarm Suite: https://www.automation.com/article/honeywell-introduces-dynamo-alarm-suite
+- [H3] Honeywell AI control room assistant, March 2026: https://www.honeywell.com/us/en/news/press-releases/2026/03/honeywell-unveils-commercial-launch-of-ai-powered-control-room-assistant-following-successful-pilot
+- [L2] eLynx cry-out alarms: https://elynxtech.com/platform/alarm-cry-outs
+- [E1] EOG Fact Sheet, March 2025: https://eogresources.com/documents/EOG_Fact_Sheet_2025.pdf
+- [F1] to [F3], [N1], [N2]: our feature matrix, `docs/COMPETITIVE.md` section 2 (rows: forecast of what happens next, cheapest fix, how long until a fix expires)
+
 ## How we built it
 
 **One contract first.** Before anyone wrote code, `docs/CONTRACT.md` fixed the asset IDs (`TANK_3`, `PUMP_3`, `VALVE_XO_34`, ...) and the API shapes. The 3D model, the console, and the backend all build against it, so four people could work in parallel with fake data and swap in the real pieces as they landed. `tools/check` confirms the model names, the scenario, and the API still match the contract.
