@@ -1,49 +1,66 @@
-"""Who may change things. Reads stay open; writes need a token once one is set.
+"""Control tokens for every write (#103, CF-15). One mechanism for the QR token and the PIN.
 
-Environment (never commit these values):
-    FREEBOARD_TOKEN         operator token (npm run demo makes one per run)
-    OPERATOR_PIN            a PIN the operator types (CF-15); also the operator role
-    FREEBOARD_PHONE_TOKEN   phone token: confirm, reject, and ack only
+    FREEBOARD_TOKEN        operator token (the console's #k=... link)
+    OPERATOR_PIN           also operator: a short PIN a person can type (CF-5's prompt)
+    FREEBOARD_PHONE_TOKEN  phone token (the QR's #k=...): confirm, reject, and ack only
 
-With none of them set, writes stay open (today's behavior, so the demo can't break).
-With any set, every non-GET request needs the header X-Freeboard-Token. A missing or
-wrong token gets 401 {"detail": "Enter the operator PIN to send commands."}. The phone
-token on any other write gets 403.
+With none of them set, nothing changes: every route is open, as before. With any of them
+set, a write needs the header `X-Freeboard-Token`:
+    missing or wrong          -> 401 {"detail": "Enter the operator PIN to send commands."}
+    phone token, operator route -> 403
+Reads (GET) stay open. Tokens are compared with hmac.compare_digest and never logged.
 
-Separately, and always on: a write whose Origin header names a different host than the
-server's (a page on another site posting to us) is refused with 403. A plain HTML form
-can send text/plain or multipart across sites without a CORS preflight, so CORS alone
-doesn't stop it.
+Use it on any route, in any lane:
 
-request.state.role is "operator", "phone", or "open" (no tokens set), so handlers can
-record who decided from the token, never from the body.
+    from backend.app.auth import Caller, require_role
+    @app.post("/api/blueprints/{id}/activate")
+    def activate(id: str, caller: Caller = Depends(require_role("operator"))): ...
+
+`caller.role` is "operator", "phone", or None (no token configured). `caller.device` is
+"console" or "phone" (None when open) and is what `decided_by` and the audit log record.
 """
 from __future__ import annotations
 
 import hmac
 import os
-import re
-from typing import Optional
-from urllib.parse import urlsplit
+from dataclasses import dataclass
+from typing import Callable, Optional
 
-from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi import Header, HTTPException
 
-HEADER = "x-freeboard-token"
-NEED_TOKEN = "Enter the operator PIN to send commands."
-SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
-LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
-# The only writes the phone may make.
-PHONE_PATHS = re.compile(r"^/api/(actions/[^/]+/(confirm|reject)|alerts/[^/]+/ack)/?$")
+DENIED = "Enter the operator PIN to send commands."
+OPERATOR, PHONE = "operator", "phone"
+ENV = ((OPERATOR, "FREEBOARD_TOKEN"), (OPERATOR, "OPERATOR_PIN"), (PHONE, "FREEBOARD_PHONE_TOKEN"))
+DEVICE = {OPERATOR: "console", PHONE: "phone"}
 
 
-def _secrets() -> list[tuple[str, str]]:
+@dataclass(frozen=True)
+class Caller:
+    role: Optional[str] = None   # None: no token is configured, so the route is open
+
+    @property
+    def device(self) -> Optional[str]:
+        return DEVICE.get(self.role or "")
+
+    def decided_by(self, by: str = "") -> Optional[str]:
+        """Who decided, as stored on a proposal. With tokens on it comes from the role and
+        never from the request body; with tokens off it is the body's `by`, as before."""
+        return self.device if self.role else (by or None)
+
+    def source(self, by: str = "") -> str:
+        """console or phone, for the audit log."""
+        if self.role:
+            return DEVICE[self.role]
+        return "phone" if (by or "").strip().lower() == "phone" else "console"
+
+
+def _secrets() -> list[tuple[str, bytes]]:
+    """Read at call time, so a test (or a restart with new env) sees the current values."""
     out = []
-    for env, role in (("FREEBOARD_TOKEN", "operator"), ("OPERATOR_PIN", "operator"),
-                      ("FREEBOARD_PHONE_TOKEN", "phone")):
-        v = os.environ.get(env, "").strip()
+    for role, var in ENV:
+        v = os.environ.get(var, "").strip()
         if v:
-            out.append((v, role))
+            out.append((role, v.encode()))
     return out
 
 
@@ -52,55 +69,51 @@ def enabled() -> bool:
 
 
 def role_for(token: Optional[str]) -> Optional[str]:
-    """'operator', 'phone', 'open' when no tokens are set, or None for a wrong token.
-    The live layer's /ws uses this with its ?token= value."""
-    secrets = _secrets()
-    if not secrets:
-        return "open"
-    if not token:
-        return None
-    got = token.strip().encode()
-    role = None
-    for value, r in secrets:  # compare against every secret so timing doesn't leak which matched
-        if hmac.compare_digest(got, value.encode()) and role != "operator":
-            role = r
-    return role
+    """The role a token grants, or None. Checks every secret so the time doesn't say which matched."""
+    got = (token or "").strip().encode()
+    found = None
+    for role, secret in _secrets():
+        if hmac.compare_digest(got, secret) and found is None:
+            found = role
+    return found if got else None
 
 
-def _host(value: str) -> str:
-    return (urlsplit(value if "//" in value else "//" + value).hostname or "").lower()
-
-
-def cross_site(request: Request) -> bool:
-    origin = request.headers.get("origin")
-    if not origin or origin == "null":
-        return origin == "null"  # sandboxed iframes and file:// pages send "null"
-    o = _host(origin)
-    allowed = {h.strip().lower() for h in os.environ.get("FREEBOARD_ALLOWED_HOSTS", "").split(",") if h.strip()}
-    return not (o in LOCAL_HOSTS or o == _host(request.headers.get("host", "")) or o in allowed)
-
-
-def check(request: Request) -> Optional[JSONResponse]:
-    """None if the request may go ahead, else the refusal. Sets request.state.role."""
-    if request.method in SAFE_METHODS:
-        request.state.role = role_for(request.headers.get(HEADER)) or "anonymous"
-        return None
-    if cross_site(request):
-        return JSONResponse(status_code=403, content={"detail": "Refused: this request came from another site."})
-    role = role_for(request.headers.get(HEADER))
+def check(token: Optional[str], *allowed: str) -> Caller:
+    """The caller for this token, or HTTPException 401/403. Operator may do everything."""
+    if not enabled():
+        return Caller(None)
+    role = role_for(token)
     if role is None:
-        return JSONResponse(status_code=401, content={"detail": NEED_TOKEN})
-    if role == "phone" and not PHONE_PATHS.match(request.url.path):
-        return JSONResponse(status_code=403,
-                            content={"detail": "The phone can only confirm, reject, and acknowledge. "
-                                               "This needs the operator token."})
-    request.state.role = role
-    return None
+        raise HTTPException(401, DENIED)
+    if role != OPERATOR and role not in allowed:
+        raise HTTPException(403, f"The {role} token can't do this. Enter the operator PIN.")
+    return Caller(role)
 
 
-def install(app: FastAPI) -> None:
-    """Add before CORSMiddleware, so CORS stays the outer layer and the browser can read a 401."""
-    @app.middleware("http")
-    async def _auth(request: Request, call_next):
-        refused = check(request)
-        return refused if refused is not None else await call_next(request)
+def require_role(*allowed: str) -> Callable[..., Caller]:
+    """FastAPI dependency. require_role("operator") for operator only; require_role("phone")
+    for phone or operator (operator can always do what a phone can)."""
+    for r in allowed:
+        if r not in DEVICE:
+            raise ValueError(f"Unknown role {r!r}. Use 'operator' or 'phone'.")
+
+    def dependency(x_freeboard_token: Optional[str] = Header(None)) -> Caller:
+        return check(x_freeboard_token, *allowed)
+
+    return dependency
+
+
+def ws_caller(token: Optional[str]) -> tuple[bool, Caller]:
+    """For /ws?token=. (ok, caller): with tokens on, a wrong token is not ok (close 1008),
+    and no token connects read-only (role None, so its `ui` messages are ignored)."""
+    if not enabled():
+        return True, Caller(None)
+    if not (token or "").strip():
+        return True, Caller(None)
+    role = role_for(token)
+    return role is not None, Caller(role)
+
+
+def may_steer(caller: Caller) -> bool:
+    """Whether a /ws client's `ui` messages move every screen."""
+    return not enabled() or caller.role in DEVICE

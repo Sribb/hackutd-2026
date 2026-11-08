@@ -11,12 +11,13 @@ import threading
 from contextlib import asynccontextmanager
 from typing import Optional, Union
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from . import auth, spacetime_sync
+from . import origin_guard, spacetime_sync
+from .auth import Caller, OPERATOR, require_role
 from .forecast import build_plant, forecast
 from .planner import approve, make_plans
 from .scenario import field_payload, load_scenario, state_payload
@@ -43,10 +44,10 @@ async def unhandled(_request: Request, exc: Exception) -> JSONResponse:
     log.exception("Unhandled error: %s", exc)
     return JSONResponse(status_code=500, content={"detail": f"Internal error: {type(exc).__name__}: {exc}"})
 
-# Writes need X-Freeboard-Token once FREEBOARD_TOKEN / OPERATOR_PIN / FREEBOARD_PHONE_TOKEN is set,
-# and cross-site writes are always refused (backend/app/auth.py). Installed before CORS so
-# CORS stays outermost and the browser can read a 401.
-auth.install(app)
+# Cross-site writes are always refused (origin_guard.py). Installed before CORS so CORS
+# stays outermost and the browser can read the refusal. Tokens are checked per route
+# with auth.require_role (#103, CF-15).
+origin_guard.install(app)
 
 # The web console runs on a local dev server (Vite defaults to 5173).
 app.add_middleware(
@@ -101,7 +102,7 @@ def post_plans(req: PlansRequest = PlansRequest()) -> dict:
 
 
 @app.post("/api/plans/{plan_id}/approve")
-def post_approve(plan_id: str) -> dict:
+def post_approve(plan_id: str, caller: Caller = Depends(require_role(OPERATOR))) -> dict:
     plan = _plans.get(plan_id)
     if plan is None:  # e.g. the server restarted; plan ids are deterministic
         for p in make_plans(SCENARIO)["plans"]:
@@ -131,7 +132,7 @@ def health() -> dict:
 
 
 @app.post("/api/spacetime/sync")
-def spacetime_sync_now() -> dict:
+def spacetime_sync_now(caller: Caller = Depends(require_role(OPERATOR))) -> dict:
     """Re-push the current state into SpacetimeDB, e.g. after republishing the module."""
     ok = spacetime_sync.push_state(state_payload(SCENARIO))
     return {"ok": ok, "spacetime": spacetime_sync.status}

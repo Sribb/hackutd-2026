@@ -4,7 +4,7 @@ import json
 import pytest
 from fastapi.testclient import TestClient
 
-from backend.app import auth, blueprints
+from backend.app import auth, blueprints, origin_guard
 from backend.app.main import app
 from backend.app.planner import radio_outcome
 from backend.app.scenario import TEAM_SCENARIO
@@ -32,10 +32,18 @@ def tokens(monkeypatch):
 
 def test_no_tokens_set_keeps_todays_behavior():
     assert client.post("/api/plans", json={}).status_code == 200
-    assert auth.role_for(None) == "open"
+    assert client.post("/api/spacetime/sync").status_code == 200
+    assert not auth.enabled()
 
 
-@pytest.mark.parametrize("path", ["/api/plans", "/api/forecast", "/api/spacetime/sync", "/api/blueprints",
+def test_what_ifs_stay_open_with_tokens(monkeypatch):
+    """Forecast and plans change nothing, so the phone and console can always ask."""
+    tokens(monkeypatch)
+    assert client.post("/api/forecast", json={}).status_code == 200
+    assert client.post("/api/plans", json={}).status_code == 200
+
+
+@pytest.mark.parametrize("path", ["/api/plans/plan_x/approve", "/api/spacetime/sync", "/api/blueprints",
                                   "/api/blueprints/default/activate"])
 def test_every_write_needs_the_token_once_set(monkeypatch, path):
     tokens(monkeypatch)
@@ -53,7 +61,7 @@ def test_reads_stay_open(monkeypatch):
 def test_operator_token_and_pin_work(monkeypatch):
     tokens(monkeypatch)
     monkeypatch.setenv("OPERATOR_PIN", "4821")
-    plans = client.post("/api/plans", json={}, headers={"X-Freeboard-Token": "op-secret"})
+    plans = client.post("/api/plans", json={})
     assert plans.status_code == 200
     pid = plans.json()["plans"][0]["id"]
     assert client.post(f"/api/plans/{pid}/approve").status_code == 401
@@ -63,18 +71,17 @@ def test_operator_token_and_pin_work(monkeypatch):
 def test_phone_token_only_confirms_rejects_and_acks(monkeypatch):
     tokens(monkeypatch)
     phone = {"X-Freeboard-Token": "phone-secret"}
-    r = client.post("/api/plans", json={}, headers=phone)
-    assert r.status_code == 403 and "operator token" in r.json()["detail"]
+    pid = client.post("/api/plans", json={}).json()["plans"][0]["id"]
+    r = client.post(f"/api/plans/{pid}/approve", headers=phone)
+    assert r.status_code == 403 and "operator PIN" in r.json()["detail"]
     assert client.post("/api/blueprints/default/activate", headers=phone).status_code == 403
-    assert auth.PHONE_PATHS.match("/api/actions/act_3/confirm")
-    assert auth.PHONE_PATHS.match("/api/alerts/al_9/ack")
-    assert not auth.PHONE_PATHS.match("/api/actions")
+    assert client.post("/api/spacetime/sync", headers=phone).status_code == 403
     assert auth.role_for("phone-secret") == "phone" and auth.role_for("op-secret") == "operator"
 
 
 def test_cors_still_lets_the_console_read_a_401(monkeypatch):
     tokens(monkeypatch)
-    r = client.post("/api/plans", json={}, headers={"Origin": "http://localhost:5173"})
+    r = client.post("/api/spacetime/sync", headers={"Origin": "http://localhost:5173"})
     assert r.status_code == 401
     assert r.headers.get("access-control-allow-origin") == "http://localhost:5173"
 

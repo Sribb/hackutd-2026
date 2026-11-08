@@ -36,9 +36,10 @@ import time
 from pathlib import Path
 from typing import Callable, Optional
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 
+from .auth import Caller, OPERATOR, require_role
 from .forecast import forecast
 from .scenario import BACKEND_DIR, REPO_DIR, TEAM_SCENARIO, load_scenario
 
@@ -342,7 +343,7 @@ async def _read_upload(request: Request) -> tuple[object, bool, str]:
 
 
 @router.post("/api/blueprints")
-async def post_blueprint(request: Request):
+async def post_blueprint(request: Request, caller: Caller = Depends(require_role(OPERATOR))):
     bp, activate, source = await _read_upload(request)
     text = json.dumps(bp, sort_keys=True, separators=(",", ":"))
     bid = "bp_" + hashlib.sha256(text.encode()).hexdigest()[:12]
@@ -424,7 +425,7 @@ def get_glb(bid: str):
 
 
 @router.post("/api/blueprints/{bid}/activate")
-def activate_blueprint(bid: str) -> dict:
+def activate_blueprint(bid: str, caller: Caller = Depends(require_role(OPERATOR))) -> dict:
     if bid == DEFAULT_ID:
         with _lock:
             if _use and "scenario" in _default:
