@@ -294,6 +294,9 @@ def test_stop_returns_and_frees_the_port():
     assert time.monotonic() - t0 < 2
     c.c.loop_stop()
     with socket.socket() as s:
+        # SO_REUSEADDR: the client's closed connection can sit in TIME_WAIT (macOS refuses a
+        # plain bind then); this still fails if anything is listening on the port.
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         s.bind(("127.0.0.1", port))          # the listener is gone
 
 
