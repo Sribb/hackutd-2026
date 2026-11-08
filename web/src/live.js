@@ -7,6 +7,7 @@
 // Rules: a stale reading is UNKNOWN (never OK, never a stale alarm passed off as current). If the feed drops, every value we hold is
 // marked stale and the UI says "live feed lost". Nothing freezes silently.
 
+import { wsUrl } from "./auth.js";
 let base = "";
 let role = "web";
 let ws = null, tries = 0, pollTimer = 0, lostTimer = 0;
@@ -86,7 +87,7 @@ async function healthConnectors() {
 
 function connect() {
   try {
-    ws = new WebSocket(base.replace(/^http/, "ws") + `/ws?role=${role}`);
+    ws = new WebSocket(wsUrl(base.replace(/^http/, "ws") + `/ws?role=${role}`));
   } catch {
     return retry();
   }

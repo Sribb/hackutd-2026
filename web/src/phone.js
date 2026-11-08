@@ -7,6 +7,7 @@ import "@fontsource/azeret-mono/400.css";
 import "@fontsource/azeret-mono/600.css";
 import "./phone.css";
 import * as liveFeed from "./live.js";
+import { authFetch } from "./auth.js";
 import { holdButton, afterHold, isHolding } from "./fx.js";
 
 const $ = (id) => document.getElementById(id);
@@ -35,7 +36,7 @@ const proposals = new Map();
 const fresh = new Set(); // alert ids that arrived while the page was open
 
 async function call(path, body) {
-  const r = await fetch(`${BASE}${path}`, body === undefined ? undefined
+  const r = await authFetch(`${BASE}${path}`, body === undefined ? undefined
     : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
   const out = await r.json().catch(() => ({}));
   if (!r.ok) throw Object.assign(new Error(typeof out.detail === "string" ? out.detail : `HTTP ${r.status}`), { status: r.status });

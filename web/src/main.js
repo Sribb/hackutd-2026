@@ -6,8 +6,9 @@ import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { mountSky } from "./sky.js";
 import * as api from "./api.js";
+import { phoneToken } from "./auth.js";
 import { buildPlaceholder } from "./placeholder.js";
-import { decode, holdButton } from "./fx.js";
+import { decode, holdButton, isHolding, afterHold } from "./fx.js";
 import * as shiftlog from "./shiftlog.js";
 import { mountUpload } from "./upload.js";
 import { mountHands } from "./hands.js";
@@ -649,7 +650,15 @@ function renderWalk() {
 
 async function startWalk(plan) {
   await setActions(plan.actions.map((a) => ({ ...a })));
-  const res = await api.approve(plan.id);
+  let res;
+  try {
+    res = await api.approve(plan.id);
+  } catch (e) {
+    // Locked (401/403) or backend down: say so where the operator is looking. Nothing was approved.
+    whatifNote = `Not approved: ${e.status === 401 || /401|PIN/.test(e.message) ? "control is locked. Enter the operator PIN, or open the console with its #k= link." : e.message}`;
+    renderAll();
+    return;
+  }
   walk = { plan, steps: res.steps || [], radio: res.radio_script || "", i: 0 };
   approved = { plan, steps: walk.steps, done: 0, at: shiftlog.clockNow() };
   shiftlog.add("approve", `APPROVED ${plan.summary} (${usd(plan.cost.total_usd)})${plan.expires_clock ? `, start by ${plan.expires_clock}` : ""}.`);
@@ -711,7 +720,9 @@ function renderMarks() {
 
 function renderSources() {
   const fakes = Object.entries(api.sources).filter(([, v]) => v === "fake").map(([k]) => k);
+  const down = Object.entries(api.sources).filter(([, v]) => v === "down").map(([k]) => k);
   const src = $("source");
+  if (down.length) { src.textContent = `BACKEND DOWN · ${down.join(", ")}`; src.className = "badge down"; src.title = "These calls failed. Their last values are not refreshed."; return; }
   if (!fakes.length) { src.textContent = "LIVE API"; src.className = "badge"; src.title = ""; return; }
   const all = fakes.length === Object.keys(api.sources).length;
   src.textContent = all ? "FAKE DATA" : `LIVE · ${fakes.length} FAKE`;
@@ -820,9 +831,14 @@ function handoffText() {
   const now = shutdownOf(fc);
   L.push(actions.length ? `With ${actions.map(describe).join(" + ")}:` : "No changes applied:");
   L.push(now ? `${nice(now.asset_id)} reaches shutdown at ${clockAt(now.t_min)}.` : noShutdownText(blindTanks()));
+  // Levels as they read right now (live readings win over the boot snapshot), stamped,
+  // so the next crew never acts on a number that was stale when it was written (#104).
+  const nowView = viewAt(0);
+  L.push(`Tank levels as of ${shiftlog.clockNow()}${liveFeed.live.available ? (liveFeed.live.lostSince ? " (live feed LOST: last known values)" : " (live)") : ` (snapshot from ${dataAt})`}:`);
   for (const t of field.tanks || []) {
-    const s = (data.state.assets || {})[t.id];
-    L.push(s && s.level_pct != null ? `  ${nice(t.id)}: ${s.level_pct.toFixed(1)}% (shutdown ${t.shutdown_pct}%)` : `  ${nice(t.id)}: NO READING. Not safe until checked.`);
+    const s = nowView[t.id] || {};
+    if (s.status === "UNKNOWN") L.push(`  ${nice(t.id)}: NO FRESH READING${s.level_pct != null ? ` (last ${s.level_pct.toFixed(1)}%)` : ""}. Not safe until checked.`);
+    else L.push(s.level_pct != null ? `  ${nice(t.id)}: ${s.level_pct.toFixed(1)}% (shutdown ${t.shutdown_pct}%)` : `  ${nice(t.id)}: NO READING. Not safe until checked.`);
   }
   L.push("", "LOG");
   for (const e of shiftlog.entries()) L.push(`${e.at.padStart(8)}  ${e.text}`);
@@ -987,7 +1003,9 @@ function mountPager() {
   btn.textContent = "Pager";
   document.querySelector(".brand-row").appendChild(btn);
   btn.onclick = async () => {
-    const url = import.meta.env.VITE_PHONE_URL || `${location.origin}/phone`;
+    // The phone token rides in the fragment, only if this console was opened with one (#104).
+    const pt = phoneToken();
+    const url = (import.meta.env.VITE_PHONE_URL || `${location.origin}/phone`) + (pt ? `#k=${encodeURIComponent(pt)}` : "");
     const QR = (await import("qrcode")).default;
     const svg = await QR.toString(url, { type: "svg", margin: 1, color: { dark: "#e8e2d6", light: "#050505" } });
     const local = /^(127\.0\.0\.1|localhost)$/.test(new URL(url).hostname);
@@ -996,9 +1014,10 @@ function mountPager() {
     box.innerHTML = `<div class="pager-card"><div class="kicker">The night pager</div>
       <div class="pager-qr">${svg}</div>
       <p>Scan with a phone on this Wi-Fi. It buzzes on every alert, and a fix can be confirmed from it with a press and hold.</p>
-      <code>${esc(url)}</code>
+      <code>${esc(url.split("#")[0])}</code>
       ${local ? `<p class="note">This address only works on this laptop. Start with <b>npm run demo</b> to get a Wi-Fi address.</p>` : ""}
-      <p class="muted">No login: anyone on the Wi-Fi can confirm. Demo only.</p>
+      ${pt ? `<p class="muted">This QR carries a phone token (never shown as text): that phone can confirm, reject and acknowledge, nothing else.</p>`
+        : `<p class="muted">No control token: anyone on this network can confirm. Start with npm run demo to get one.</p>`}
       <button>Close</button></div>`;
     box.onclick = (e) => { if (e.target === box || e.target.tagName === "BUTTON") box.remove(); };
     document.body.appendChild(box);
@@ -1008,6 +1027,32 @@ function mountPager() {
 // ----------------------------------------------------------------- boot ----
 if (api.usingBackend) liveFeed.start(api.BASE);
 liveFeed.on("state", () => { if (data) { renderFeed(); render(); } });
+
+// #104: the countdown, plans and Last Call were read once at boot and went stale as the
+// night moved. Re-read them every minute, and soon after any alert. A failed read leaves
+// the old values on screen under a BACKEND DOWN badge, never recorded ones.
+let dataAt = "boot";
+let refreshing = null;
+async function refreshData() {
+  if (!data || !api.usingBackend || refreshing) return;
+  refreshing = (async () => {
+    try {
+      const [state, baseline, lc, plans] = await Promise.all([api.getState(), api.forecast([]), api.lastCall(), api.plans()]);
+      Object.assign(data, { state, baseline, lc, plans });
+      if (!actions.length && !document.body.classList.contains("two-nights")) fc = baseline;
+      dataAt = shiftlog.clockNow();
+    } catch (e) {
+      console.warn("refresh", e.message);
+    } finally {
+      refreshing = null;
+      if (isHolding()) afterHold(renderAll); // never swap a hold button out from under a finger
+      else renderAll();
+    }
+  })();
+}
+setInterval(refreshData, 60000);
+let alertKick = 0;
+liveFeed.on("alert", () => { clearTimeout(alertKick); alertKick = setTimeout(refreshData, 2000); });
 liveFeed.on("feed", () => { if (data) { renderFeed(); render(); } });
 mountUpload();
 mountPager();
@@ -1142,6 +1187,18 @@ renderer.setAnimationLoop(() => {
 
 boot().catch((e) => {
   const l = $("loading");
-  if (l) l.textContent = `Failed to start: ${e.message}`;
   console.error(e);
+  if (!l) return;
+  if (e instanceof api.BackendDown) {
+    // #104: never fall back to recorded numbers when a backend was asked for and failed.
+    l.classList.add("down");
+    $("clock").textContent = "--:--"; // no field clock without a backend
+    l.innerHTML = `<b>FREEBOARD</b><span class="down-head">The backend isn't answering</span>
+      <span>${esc(e.message)} at ${esc(api.BASE)}</span>
+      <span>Nothing on this screen would be live, so the console shows nothing rather than guess.</span>
+      <span class="down-btns"><button type="button" data-retry>Retry</button><a href="?offline">Open the recorded demo instead (clearly marked)</a></span>`;
+    l.querySelector("[data-retry]").onclick = () => location.reload();
+    return;
+  }
+  l.textContent = `Failed to start: ${e.message}`;
 });

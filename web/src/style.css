@@ -367,3 +367,15 @@ body.two-nights .sky-ctl { display: none; }
 .scenery-btn[aria-pressed="false"] { color: var(--muted); }
 .scenery-why { color: var(--warning); display: block; }
 .scenery-why:empty { display: none; }
+/* Operator PIN prompt (auth.js, CF-5) */
+.pin-ask { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 50; width: min(340px, calc(100% - 32px));
+           background: var(--surface, #0a0a09); border: 1px solid var(--alarm, #ff4b1f); padding: 16px; font: 12px/1.5 var(--mono); color: var(--ink, #e8e2d6); }
+.pin-ask p { margin: 6px 0 10px; color: var(--ink-2, #a39d91); }
+.pin-ask input { width: 100%; box-sizing: border-box; font: 16px var(--mono); padding: 8px; background: var(--bg, #050505); color: inherit; border: 1px solid var(--line); }
+.pin-ask .pin-btns { display: flex; gap: 8px; justify-content: flex-end; margin-top: 10px; }
+/* Backend down (#104): explicit, never a silent switch to recorded data */
+.loading.down { pointer-events: auto; text-align: center; gap: 8px; color: var(--ink-2); padding: 0 16px; }
+.loading.down .down-head { color: var(--alarm); font-size: 15px; }
+.loading.down .down-btns { display: flex; gap: 14px; justify-content: center; align-items: center; margin-top: 8px; }
+.loading.down a { color: var(--ink-2); }
+.badge.down { color: var(--alarm); border-color: var(--alarm); }
