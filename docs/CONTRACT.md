@@ -386,7 +386,7 @@ The live clock starts at the blueprint's `clock_start` and runs at `FREEBOARD_SP
 
 ### Alerts
 
-`GET /api/alerts` → `{"alerts": [alert]}`, oldest first. `POST /api/alerts/{id}/ack` marks one acknowledged (the phone notification button calls it).
+`GET /api/alerts` → `{"alerts": [alert]}`, oldest first. `POST /api/alerts/{id}/ack` (optional body `{"by": "name"}`, phone or operator token, see [Control tokens](#control-tokens-103-cf-15)) marks one acknowledged and adds `acked_t` and `acked_by` (from the token's role when tokens are on). A second ack changes nothing. The phone notification's Acknowledge button calls it, but only while no token is set: a token never goes into a notification.
 
 ```json
 { "id": "alert_1", "asset_id": "PUMP_3", "kind": "PUMP_TRIP", "severity": "ALARM",
@@ -419,9 +419,10 @@ A proposal changes nothing. Only confirm sends it, through the connector that ow
 - `action.type`: `SET_VALVE` (value `OPEN`/`CLOSED`), `SET_PUMP` (`ON`/`OFF`), `CHOKE_WELL` (0 shut in to 1 untouched), `SEND_TRUCK` (value null, plus `target_id`, a tank).
 - `status`: `PENDING`, then `REJECTED`, or `SENDING` (a person confirmed it and the command is on its way to the connector), then `CONFIRMED` or `FAILED` (the connector refused or was unreachable). A proposal is sent at most once: the first confirm claims it as `SENDING`, so a second confirm (another screen) or a late reject gets 409. After a decision the proposal also has `decided_t` and `decided_by`, and once sent, `result` (what the connector said).
 - `source` is `console`, `jarvis`, or `run`. A plan run's step also has `run_id` and `step` (its `n`). It is confirmed and rejected like any other proposal.
+- `decided_by`: with control tokens on, the server sets it from the token's role, `"console"` (operator token or PIN) or `"phone"`, and **never** from the body's `by`. Automatic paths set `"jarvis"` (`JARVIS_CONFIRM=0`, simulator only) and `"blueprint"` (closed by a reload). With no token configured it is the body's `by` (or null), as before.
 - `GET /api/actions` → `{"proposals": [proposal]}`.
-- `POST /api/actions` with `{type, asset_id, value, target_id?, reason?}` → a PENDING proposal (422 if the action is invalid).
-- `POST /api/actions/{id}/confirm` and `POST /api/actions/{id}/reject` (optional body `{"by": "name"}`) → the updated proposal. 404 for an unknown id, 409 if it isn't PENDING (including while it is SENDING).
+- `POST /api/actions` with `{type, asset_id, value, target_id?, reason?}` → a PENDING proposal (422 if the action is invalid). Operator token.
+- `POST /api/actions/{id}/confirm` and `POST /api/actions/{id}/reject` (optional body `{"by": "name"}`) → the updated proposal. 404 for an unknown id, 409 if it isn't PENDING (including while it is SENDING). Phone or operator token.
 
 ### `POST /api/jarvis`
 
@@ -438,11 +439,60 @@ Response 200:
 ```
 
 - `source` is `rules` (instant answers that need no API key: what's failing, how long until shutdown, show or explain an asset, what am I looking at with a selection, the cheapest plan, "fix it", and fixes like "open the crossover", "send truck 1 to tank 3", "shut in well 9", "turn off pump 2") or `claude`.
-- Jarvis's fixes are proposals (PENDING) in `proposals`. It never changes equipment itself.
+- Jarvis's fixes are proposals (PENDING) in `proposals`. It never changes equipment itself. With control tokens on, asking Jarvis needs the operator token.
 - "Fix it" (also "run the plan", "make it so") starts a [plan run](#plan-runs-63) of the cheapest plan that keeps every tank below shutdown, preferring one that holds with inflow 15% high. The run is in `runs`; each of its steps still waits for a person. With a key, Claude does the same through its `execute_plan` tool. If a run is already RUNNING, the reply says so and nothing new starts. A negation in the same clause ("don't fix it", "do not run the plan yet") or a question ("should I fix it?", "how would you run the plan?") starts nothing: a question gets the plans answer. A polite request ("can you fix it?", "please run the plan") still starts the run.
+- Jarvis never vouches for a tank with no fresh level. "How long until shutdown?" with Tank 2 UNKNOWN says "I can't vouch for Tank 2: no fresh level reading, so treat it as at risk and check in person." first, then the earliest shutdown, or "No tank with a fresh reading reaches shutdown in the next 6 hours if nothing changes." Its `get_forecast` tool result carries `unknown_tanks`.
 - "Open the crossover" picks: the crossover joining the tanks the text names ("the Tank 3 to 4 crossover", "3 and 4", "between 5 and 6"); else the one on the tank in trouble (an active `PUMP_TRIP`'s tank, then the tank with the earliest forecast shutdown), toward the neighbor with the most room before shutdown; only then the first crossover. Named tanks with no crossover between them get a reply saying so and no proposal. "Close the crossover" prefers one that is open.
 - A question about an asset that also asks for a fix ("Why is Tank 3 rising, and what's my cheapest fix?") answers the question, then adds "Cheapest plan, $X: ..." and, when it is a different plan, "Cheapest robust plan, $Y: ...". The last `ui` focus is the cheapest plan's first step.
 - With no `ANTHROPIC_API_KEY` and no rules match: **503** `{"detail": "Jarvis needs ANTHROPIC_API_KEY on the server."}`. Other Claude failures are also 503 with a `detail` saying why.
+
+### Control tokens (#103, CF-15)
+
+One mechanism for the console link, the phone QR, and the typed PIN. Code: `backend/app/auth.py`.
+
+| Variable | Role |
+|---|---|
+| `FREEBOARD_TOKEN` | operator: everything |
+| `OPERATOR_PIN` | operator too: a short PIN a person can type (CF-5's prompt fills the same header) |
+| `FREEBOARD_PHONE_TOKEN` | phone: confirm, reject, and ack only |
+
+- **None set:** every route behaves exactly as before.
+- **Any set:** every `POST` in the live layer needs the header `X-Freeboard-Token`: `/api/actions` (create), `/api/actions/{id}/confirm` and `/reject`, `/api/alerts/{id}/ack`, `/api/live/faults`, `/api/live/sim`, `/api/jarvis`. Missing or wrong → **401** `{"detail": "Enter the operator PIN to send commands."}`. The phone token on an operator-only route → **403**. `POST /api/live/readings/{connector_id}` keeps its own connector token (`token_env`). Reads (`GET`) stay open. Tokens are compared with `hmac.compare_digest` and never logged.
+- `WS /ws?token=<token>`: a wrong token is closed with code **1008**. No token connects read-only: it gets every message, but its `ui` messages are ignored. Operator and phone tokens may send `ui`.
+- **Other lanes** put the same check on their routes (`/api/blueprints/*`, approve, spacetime sync #105; `/api/ingest` #106):
+
+```python
+from fastapi import Depends
+from backend.app.auth import Caller, require_role
+
+@app.post("/api/plans/{plan_id}/approve")
+def post_approve(plan_id: str, caller: Caller = Depends(require_role("operator"))) -> dict:
+    ...  # caller.role: "operator" | "phone" | None (no token configured); caller.device: "console" | "phone" | None
+```
+
+`require_role("operator")` is operator only; `require_role("phone")` is phone or operator. `caller.decided_by(body_by)` gives the value to store as `decided_by`.
+
+### Audit log (CF-10)
+
+`GET /api/audit` (optional `?since=<seq>`) → `{"entries": [entry]}`, oldest first. Append-only, kept in memory for the server's life. Set `FREEBOARD_AUDIT_FILE` to also append each entry as a JSON line (a relative path is under `backend/data/`, where `*.jsonl` is gitignored).
+
+```json
+{ "seq": 2, "t": "2026-11-07T07:12:10+00:00", "clock": "01:52", "live_t": 8.0,
+  "event": "confirmed", "source": "phone", "role": "phone", "by": "phone",
+  "asset_id": "VALVE_XO_34", "proposal_id": "act_1", "status": "SENDING",
+  "text": "Open the Tank 3 to 4 crossover.", "connector_id": "CONN_SIM" }
+```
+
+| `event` | When | Extra fields |
+|---|---|---|
+| `proposed` | A proposal is created (console or Jarvis) | `proposal_id`, `status` `PENDING`, `text`, `reason`, `connector_id`, `target_id?` |
+| `confirmed` | A person (or `JARVIS_CONFIRM=0`) confirmed it; it is now `SENDING` | same, plus `auto` `"JARVIS_CONFIRM=0"` on the automatic path |
+| `result` | The connector answered | `status` `CONFIRMED` or `FAILED` (or `UNCERTAIN` once that state exists), `result` |
+| `rejected` | A person rejected it, or a reload closed it (`source` `blueprint`) | `result?` |
+| `acked` | An alert was acknowledged (the first time only) | `alert_id`, `kind`, `severity`, `message` |
+
+- `t` is the wall time (ISO), `clock` and `live_t` the live clock. `role` is the token role (`operator`, `phone`, or null when no token is configured or nobody asked). `source` is `console`, `phone`, `jarvis`, or `blueprint`; for a Jarvis proposal, `role` is the operator who asked. `by` is the stored `decided_by`.
+- **Other lanes** log their own steps (approve, activate, shelve) with `app.state.audit.append("approved", source=caller.device, role=caller.role, plan_id=...)`. Any extra keyword is kept on the entry. It is safe to call from a sync endpoint's worker thread.
 
 ### Following the active blueprint
 
@@ -509,11 +559,11 @@ Only one run is RUNNING at a time. Starting a run cancels any other PAUSED run.
 - Step `status`: `WAITING` (not released yet), `PENDING` (waiting for a person), `VERIFYING` (confirmed, effect not seen yet), `DONE`, `MISMATCH` (effect not seen in time; `verify` says what the readings show), `REJECTED`, `FAILED` (the connector refused), `CANCELLED`.
 - `POST /api/plans/{id}/execute` (optional body `{"by": "name"}`) → the new run, RUNNING. Plan ids come from `POST /api/plans` or from Jarvis's plans (ids are deterministic, so an unknown id is looked up again from the live state). 404 for an unknown plan, 409 if another run is RUNNING or the plan is stale (see above, with the current plan in the body), 422 if a step can't apply to this field.
 - `GET /api/runs` → `{"runs": [run]}`, oldest first. `GET /api/runs/{id}` → one run (404 if unknown).
-- `POST /api/runs/{id}/pause` (RUNNING → PAUSED: nothing new is released; steps already PENDING stay confirmable). `POST /api/runs/{id}/resume` (PAUSED → RUNNING: starts an offered re-plan, or continues a paused run, releasing overdue steps now and treating a failed step as skipped). `POST /api/runs/{id}/cancel` (any active run → CANCELLED: waiting steps are cancelled and pending proposals rejected, so nothing more from it can reach equipment. A step whose proposal is already `SENDING` is never marked cancelled: it finishes and is verified like any step, and the run is `CANCELLING` until then). Optional body `{"by": "name"}`. 404 for an unknown run, 409 if the run isn't in the right status.
+- `POST /api/runs/{id}/pause` (RUNNING → PAUSED: nothing new is released; steps already PENDING stay confirmable). `POST /api/runs/{id}/resume` (PAUSED → RUNNING: starts an offered re-plan, or continues a paused run, releasing overdue steps now and treating a failed step as skipped). `POST /api/runs/{id}/cancel` (any active run → CANCELLED: waiting steps are cancelled and pending proposals rejected, so nothing more from it can reach equipment. A step whose proposal is already `SENDING` is never marked cancelled: it finishes and is verified like any step, and the run is `CANCELLING` until then). Optional body `{"by": "name"}`. 404 for an unknown run, 409 if the run isn't in the right status. `execute`, `pause`, `resume`, and `cancel` need the operator token when control tokens are on.
 
 ### `WS /ws`
 
-Connect to `ws://127.0.0.1:8000/ws?role=web` (`role` is `web`, `phone`, `device`, or `other`). Every message is one JSON object with a `type` and a `seq` counter:
+Connect to `ws://127.0.0.1:8000/ws?role=web` (`role` is `web`, `phone`, `device`, or `other`; add `&token=<token>` when control tokens are on, see above). Every message is one JSON object with a `type` and a `seq` counter:
 
 | `type` | Payload | When |
 |---|---|---|
@@ -523,7 +573,7 @@ Connect to `ws://127.0.0.1:8000/ws?role=web` (`role` is `web`, `phone`, `device`
 | `ui` | `{"type": "ui", "seq": 4, "action": "focus", "asset_id": "PUMP_3", "reason": "...", "source": "jarvis"}` | Jarvis, a new ALARM, a proposal, or a phone wants every screen on an asset |
 | `run` | `{"type": "run", "seq": 5, "run": <run>}` (`run.steps[]` has `proposal_id`, `action`, `status`) | A [plan run](#plan-runs-63) is created, or its status, a step's status, or its re-plan changes |
 
-Clients may send `{"type": "ping"}` (answered with `pong`) and `{"type": "ui", "action": "focus", "asset_id": "TANK_3"}` to point every console at an asset.
+Clients may send `{"type": "ping"}` (answered with `pong`) and `{"type": "ui", "action": "focus", "asset_id": "TANK_3"}` to point every console at an asset (with control tokens on, only a client that connected with a valid token).
 
 ### Environment
 
@@ -538,6 +588,10 @@ Clients may send `{"type": "ping"}` (answered with `pong`) and `{"type": "ui", "
 | `NTFY_SERVER` | `https://ntfy.sh` | ntfy server. |
 | `PUBLIC_URL` | unset | Where a phone can reach this server, for the notification's buttons. |
 | `CORS_ORIGINS` | unset | Extra allowed origins, comma separated. Localhost is always allowed. |
+| `FREEBOARD_TOKEN` | unset | Operator control token (#103). Any of these three turns the write lock on. |
+| `OPERATOR_PIN` | unset | Operator PIN, same role as `FREEBOARD_TOKEN` (CF-15). Never commit it. |
+| `FREEBOARD_PHONE_TOKEN` | unset | Phone control token: confirm, reject, and ack only. |
+| `FREEBOARD_AUDIT_FILE` | unset | Also append the audit log here as JSON lines (relative = under `backend/data/`). |
 | `*_env` in connector config | | Names the variable holding a connector secret, e.g. `"token_env": "HOOK_TOKEN"`. |
 
 ### `POST /api/ingest`

@@ -9,6 +9,8 @@ __pycache__/
 *.pyc
 *.db
 *.sqlite3
+# Audit log file (FREEBOARD_AUDIT_FILE, CF-10)
+backend/data/*.jsonl
 
 # Web
 node_modules/

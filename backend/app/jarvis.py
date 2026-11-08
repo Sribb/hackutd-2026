@@ -188,12 +188,14 @@ class Jarvis:
         self.system = self._system_prompt()
 
     async def handle(self, message: str, selected: Optional[list] = None,
-                     image_png_base64: Optional[str] = None) -> dict:
+                     image_png_base64: Optional[str] = None, role: Optional[str] = None) -> dict:
+        """`role` is the asker's control-token role (auth.py), recorded on Jarvis's proposals
+        in the audit log. It never confirms anything."""
         text = (message or "").strip()
         selected = [s.upper() for s in selected or [] if isinstance(s, str)]
         mode = os.environ.get("JARVIS_MODE", "auto").lower()
         key = self.has_key()
-        ctx: dict = {"ui": [], "proposals": [], "runs": []}
+        ctx: dict = {"ui": [], "proposals": [], "runs": [], "role": role}
         rules_first = mode == "rules" or (mode != "llm" and not (key and (COMPLEX.search(text.lower()) or
                                                                            (image_png_base64 and not selected))))
         reply, source = None, "rules"
@@ -229,11 +231,16 @@ class Jarvis:
                     "alerts": [{k: a[k] for k in ("kind", "severity", "message")} for a in live.detector.active_for(aid)]}
         if tool == "get_forecast":
             actions = [self._forecast_action(a) for a in args.get("actions") or []]
-            fc = await asyncio.to_thread(self.forecast_fn, live.live_scenario(), actions)
+            sc = live.live_scenario()
+            fc = await asyncio.to_thread(self.forecast_fn, sc, actions)
+            # Tanks with no fresh level: the forecast can't say they're safe, so neither can Jarvis.
+            unknown = fc.get("unknown_tanks")
+            if unknown is None:
+                unknown = sorted(t for t, lv in (sc.get("initial_levels_pct") or {}).items() if lv is None)
             return {"now": live.fmap.clock(live.t),
                     "events": [{"type": e["type"], "asset_id": e.get("asset_id"), "t_min": e.get("t_min"), "text": e.get("text")}
                                for e in fc.get("events", [])][:12],
-                    "cost": fc.get("cost"), "warnings": fc.get("warnings", [])}
+                    "cost": fc.get("cost"), "warnings": fc.get("warnings", []), "unknown_tanks": list(unknown)}
         if tool == "get_plans":
             res = await asyncio.to_thread(self.plans_fn, live.live_scenario())
             if self.runs is not None:  # so POST /api/plans/{id}/execute finds them
@@ -244,7 +251,8 @@ class Jarvis:
                                "cannot_save": p.get("cannot_save", [])} for p in res.get("plans", [])]}
         if tool == "propose_action":
             try:
-                p = await live.propose(args, reason=str(args.get("reason") or ""), source="jarvis")
+                p = await live.propose(args, reason=str(args.get("reason") or ""), source="jarvis",
+                                       role=ctx.get("role"))
             except ActionError as e:
                 return {"error": e.detail}
             ctx["proposals"].append(p)
@@ -618,10 +626,23 @@ class Jarvis:
         if re.search(r"how long|time left|countdown|until|when (does|will)|shutdown", t):
             fc = await self.run_tool("get_forecast", {"actions": []}, ctx)
             sd = next((e for e in fc["events"] if e["type"] == "SHUTDOWN_LEVEL"), None)
-            warn = (fc["warnings"][0] + " ") if fc["warnings"] else ""
+            unknown = fc.get("unknown_tanks") or []
+            # The blind-tank warnings are said below in plain words, so skip their raw form here.
+            others = [w for w in fc["warnings"] if not any(w.upper().startswith(t + " ") for t in unknown)]
+            warn = (others[0] + " ") if others else ""
+            blind = ""
+            if unknown:
+                names = [name(t) for t in unknown]
+                who = names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
+                blind = (f"I can't vouch for {who}: no fresh level reading, so treat "
+                         f"{'it' if len(names) == 1 else 'them'} as at risk and check in person. ")
             if sd:
                 await self._focus(sd["asset_id"], ctx)
-                return warn + sd["text"]
+                return (blind + warn + sd["text"]).strip()
+            if unknown:
+                await self._focus(unknown[0], ctx)
+                return (blind + warn + "No tank with a fresh reading reaches shutdown in the next 6 hours "
+                        "if nothing changes.").strip()
             return warn + "No tank reaches shutdown in the next 6 hours if nothing changes."
 
         # Status.
