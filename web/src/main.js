@@ -27,6 +27,11 @@ import { mountAlarms, alarms } from "./alarms.js";
 import { startTrend, trendHtml, wireTrend, frozen } from "./trend.js";
 import { mountRuns, runsSupported, runsOn, execute as executeRun, peopleOut } from "./runs.js";
 import { mountSecurity, securityLines } from "./security.js";
+import "./console/auth.js"; // takes ?token= into auth.js (#104) before anything talks to the backend
+import { mountConsole } from "./console/index.js";
+
+// Jarvis console (docs/JARVIS_CONSOLE.md) is the default screen; the old panels stay at ?layout=classic.
+const layout = new URLSearchParams(location.search).get("layout") === "classic" ? "classic" : "console";
 
 const $ = (id) => document.getElementById(id);
 // Meshopt-compressed glb (#112/#117) loads with no extra files; a plain glb is unaffected.
@@ -1355,7 +1360,8 @@ $("time").addEventListener("input", (e) => { tMin = Number(e.target.value); rend
 addEventListener("keydown", (e) => {
   if (e.target.tagName === "INPUT" && e.target.type !== "range") return;
   if (e.target.tagName === "INPUT") return;
-  if (e.key === "Escape") { if (walk) endWalk(); select(null); flyHome(); }
+  // Console: Esc resets the view only; an approved plan walk keeps going (spec §3 Reset).
+  if (e.key === "Escape") { if (ui) ui.reset(); else { if (walk) endWalk(); select(null); flyHome(); } }
 });
 
 // ---------------------------------------------------------------- pager ----
@@ -1388,7 +1394,7 @@ function mountPager() {
 }
 
 // ----------------------------------------------------------------- boot ----
-if (api.usingBackend) liveFeed.start(api.BASE);
+if (api.usingBackend) liveFeed.start(api.BASE); // live.js sends the auth.js token in the first /ws message
 startTrend(api.usingBackend ? api.BASE : "");
 // The backend sends state every second, and render() rebuilds the Selected card and the
 // tank list. A rebuild between mousedown and mouseup swallows the click, so while a press is
@@ -1460,7 +1466,7 @@ mountTwoNights({
   log: (text) => { shiftlog.add("whatif", text); renderLog(); },
   describe, nice, clockAt, usd,
 });
-mountJarvis({
+if (layout === "classic") mountJarvis({
   stage: $("stage"),
   selected: () => selectedId,
   focus: (id) => { if (ids.has(id)) { select(id, true); inspect.pointed(id); } },
@@ -1474,6 +1480,38 @@ mountJarvis({
     return c.toDataURL("image/png").split(",")[1];
   },
 });
+// Jarvis console (Track B): status line, agent stream, sidebar, fix card. Everything lives in
+// console/; these hooks are its only door in.
+const ui = layout === "console" ? mountConsole({
+  app: $("app"), stage: $("stage"), canvas, scene, camera, controls, renderer, BASE: api.BASE,
+  ready: () => !!data,
+  data: () => data,
+  stateClock: () => (data ? data.state.clock : null),
+  clockNow: () => shiftlog.clockNow(),
+  ids: () => [...ids],
+  tanks: () => ((field && field.tanks) || []).map((t) => t.id),
+  tankOf: (id) => { const p = ((field && field.pumps) || []).find((x) => x.id === id) || ((field && field.wells) || []).find((x) => x.id === id); return p ? p.tank_id : null; },
+  blind: () => (data ? blindTanks() : []),
+  selected: () => selectedId,
+  select: (id) => select(id),
+  focus: (id) => { if (ids.has(id)) { select(id, true); inspect.pointed(id, "jarvis"); } },
+  flyHome: () => flyHome(),
+  getTime: () => tMin,
+  setTime: (t) => { tMin = t; $("time").value = String(t); render(); },
+  getActions: () => actions.map((a) => ({ ...a })),
+  setActions: (list) => setActions(list),
+  walking: () => !!walk,
+  describe, nice, clockAt, usd,
+  logged: () => renderLog(),
+}) : null;
+if (layout === "classic") {
+  const back = document.createElement("button");
+  back.className = "upload-open";
+  back.textContent = "Console";
+  back.title = "Back to the Jarvis console";
+  back.onclick = () => { const u = new URL(location.href); u.searchParams.delete("layout"); location.href = u.toString(); };
+  document.querySelector("#side .brand-row").appendChild(back);
+}
 // Hand control drives the same hover, select, orbit and zoom the mouse does.
 mountHands({
   canvas, stage: $("stage"),
@@ -1552,6 +1590,7 @@ async function boot() {
   frame(model.root);
   buildFuses();
   inspect.ready(model.root);
+  if (ui) ui.ready(model.root);
   renderAll();
   // Storm check: the real NWS weather at the site, read in the browser (no key, no backend).
   let hadHazard = false;
@@ -1648,6 +1687,7 @@ renderer.setAnimationLoop(() => {
   }
   if (selBox) selBox.update();
   inspect.update(); // highlight lifts and dimming, after paint()
+  if (ui) ui.update(dt, t);
   renderer.render(scene, camera);
   inspect.overlay(t); // outlines on top of the frame
 });

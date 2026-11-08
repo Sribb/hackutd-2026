@@ -1,0 +1,353 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Last Call</title>
+<style>
+  :root {
+    --bg: #0a0c0f;
+    --surface: #11151a;
+    --surface-2: #171c22;
+    --line: #232a33;
+    --ink: #e7e9ec;
+    --ink-2: #a9b0b9;
+    --muted: #6d7580;
+    --live: #f0a63a;        /* an option that still works */
+    --live-dim: #6b5124;
+    --plan: #58c4e8;        /* the cheapest plan series */
+    --nothing: #8d949d;     /* do-nothing series */
+    --critical: #ef5a50;    /* shutdown, reserved */
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    --sans: ui-sans-serif, -apple-system, "Segoe UI", Inter, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.45 var(--sans); }
+  .wrap { max-width: 1120px; margin: 0 auto; padding: 20px 16px 48px; }
+  header { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap;
+           border-bottom: 1px solid var(--line); padding-bottom: 12px; }
+  .brand { font: 600 13px var(--mono); letter-spacing: .22em; color: var(--ink-2); }
+  .brand b { color: var(--live); }
+  .incident { font: 13px var(--mono); color: var(--ink-2); }
+  .incident .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--critical);
+                   margin-right: 6px; box-shadow: 0 0 0 3px rgba(239,90,80,.18); }
+
+  .hero { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); gap: 28px; padding: 28px 0 20px; align-items: end; }
+  .count { font: 600 clamp(64px, 12vw, 128px)/0.9 var(--mono); letter-spacing: -0.04em; font-variant-numeric: tabular-nums; }
+  .count small { font-size: 0.28em; letter-spacing: 0; color: var(--ink-2); margin-left: 6px; }
+  .count.dead { color: var(--critical); }
+  .kicker { font: 12px var(--mono); letter-spacing: .14em; text-transform: uppercase; color: var(--muted); margin-bottom: 8px; }
+  .plan-now { font-size: 18px; line-height: 1.35; }
+  .plan-now .cost { font: 600 18px var(--mono); }
+  .plan-now .delta { font: 13px var(--mono); color: var(--live); display: block; margin-top: 6px; }
+  .plan-now .delta.bad { color: var(--critical); }
+  .robust { font: 12px var(--mono); color: var(--ink-2); margin-top: 8px; }
+
+  .decide { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px 10px; }
+  .decide label { display: flex; justify-content: space-between; font: 12px var(--mono); color: var(--ink-2); }
+  .decide label b { color: var(--ink); font-size: 14px; }
+  input[type=range] { width: 100%; accent-color: var(--live); margin: 10px 0 2px; height: 28px; }
+
+  section { margin-top: 22px; }
+  h2 { font: 600 12px var(--mono); letter-spacing: .14em; text-transform: uppercase; color: var(--ink-2); margin: 0 0 4px; }
+  .sub { color: var(--muted); font-size: 13px; margin: 0 0 12px; }
+  .panel { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 14px 14px 8px; }
+
+  .ladder .row { display: grid; grid-template-columns: minmax(0, 300px) minmax(0, 1fr) 76px; gap: 12px; align-items: center;
+                 padding: 7px 0; border-top: 1px solid var(--line); transition: opacity .2s; }
+  .ladder .row:first-child { border-top: 0; }
+  .ladder .name { font-size: 13px; color: var(--ink); }
+  .ladder .name .when { display: block; font: 11px var(--mono); color: var(--muted); }
+  .ladder .usd { font: 13px var(--mono); text-align: right; font-variant-numeric: tabular-nums; }
+  .ladder .row.dead { opacity: .38; }
+  .ladder .row.dead .name { text-decoration: line-through; text-decoration-color: var(--muted); }
+  .ladder .row.best .name::before { content: "▶ "; color: var(--live); }
+  .fuse { position: relative; height: 18px; }
+  .fuse svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+
+  .chart svg { display: block; width: 100%; overflow: visible; }
+  .axis text, .lbl { font: 11px var(--mono); fill: var(--muted); }
+  .lbl.ink { fill: var(--ink-2); }
+  .grid line { stroke: var(--line); }
+  .tip { position: fixed; pointer-events: none; background: var(--surface-2); border: 1px solid var(--line); border-radius: 8px;
+         padding: 8px 10px; font: 12px var(--mono); color: var(--ink); max-width: 280px; opacity: 0; transition: opacity .1s; z-index: 5; }
+  .legend { display: flex; gap: 16px; font: 12px var(--mono); color: var(--ink-2); margin: 0 0 6px; flex-wrap: wrap; }
+  .legend i { display: inline-block; width: 16px; height: 2px; vertical-align: middle; margin-right: 6px; }
+
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .steps ol { margin: 0; padding-left: 20px; }
+  .steps li { margin: 6px 0; }
+  .steps .by { font: 12px var(--mono); color: var(--live); }
+  footer { margin-top: 26px; font: 12px var(--mono); color: var(--muted); }
+
+  @media (max-width: 760px) {
+    .hero, .two { grid-template-columns: 1fr; }
+    .ladder .row { grid-template-columns: 1fr 64px; }
+    .ladder .fuse { grid-column: 1 / -1; grid-row: 2; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="brand"><b>LAST CALL</b> · FREEBOARD</div>
+    <div class="incident" id="incident"></div>
+  </header>
+
+  <div class="hero">
+    <div>
+      <div class="kicker" id="countLabel">Cheapest plan expires in</div>
+      <div class="count" id="count"></div>
+    </div>
+    <div>
+      <div class="kicker" id="planLabel">Cheapest plan if you act now</div>
+      <div class="plan-now" id="planNow"></div>
+      <div class="robust" id="robust"></div>
+    </div>
+  </div>
+
+  <div class="decide">
+    <label><span>If the operator decides at</span><b id="decideClock"></b></label>
+    <input type="range" id="decide" min="0" step="0.5" value="0" aria-label="Decision time">
+    <label><span id="decideMin"></span><span id="decideLeft"></span></label>
+  </div>
+
+  <section>
+    <h2>The ladder</h2>
+    <p class="sub">Each rung is the cheapest plan for a stretch of time. The bar is how long the operator can wait before it stops working. Slower, cheaper fixes burn out first.</p>
+    <div class="panel ladder" id="ladder"></div>
+  </section>
+
+  <section>
+    <h2>Price of waiting</h2>
+    <p class="sub">Total cost of the cheapest plan that still works, by the minute the operator commits to it. Every step up is an option that just expired.</p>
+    <div class="panel chart" id="costChart"></div>
+  </section>
+
+  <section class="two">
+    <div>
+      <h2 id="levelTitle">Tank level</h2>
+      <p class="sub">Do nothing against the cheapest plan started at the slider time.</p>
+      <div class="panel chart" id="levelChart"></div>
+    </div>
+    <div class="steps">
+      <h2>Steps, with do-by times</h2>
+      <p class="sub">What the console hands the rover. Longest lead time goes first.</p>
+      <div class="panel" id="steps"></div>
+    </div>
+  </section>
+
+  <footer id="foot"></footer>
+</div>
+<div class="tip" id="tip"></div>
+
+<script src="data.js"></script>
+<script>
+(function () {
+  const D = window.LASTCALL;
+  const $ = (id) => document.getElementById(id);
+  const fmt = (n) => "$" + Math.round(n).toLocaleString("en-US");
+  const H0 = (() => { const [h, m] = D.clock.split(":").map(Number); return h * 60 + m; })();
+  const clock = (t) => {
+    const x = Math.round(H0 + t) % 1440, h = Math.floor(x / 60), m = x % 60;
+    return (h % 12 || 12) + ":" + String(m).padStart(2, "0") + (h < 12 ? " AM" : " PM");
+  };
+  const END = D.shutdown.t_min;              // time axis runs from now to shutdown
+  const PNR = D.point_of_no_return ? D.point_of_no_return.t_min : 0;
+  const nice = (s) => s.replace(/\.$/, "");
+  const tip = $("tip");
+  const showTip = (e, html) => { tip.innerHTML = html; tip.style.opacity = 1;
+    tip.style.left = Math.min(e.clientX + 14, innerWidth - 300) + "px"; tip.style.top = (e.clientY + 14) + "px"; };
+  const hideTip = () => { tip.style.opacity = 0; };
+  const NS = "http://www.w3.org/2000/svg";
+  const el = (tag, attrs, parent) => { const n = document.createElementNS(NS, tag);
+    for (const k in attrs) n.setAttribute(k, attrs[k]); if (parent) parent.appendChild(n); return n; };
+
+  const tankName = D.shutdown.asset_id.replace("_", " ").replace(/\b(\w)(\w*)/g, (a, b, c) => b + c.toLowerCase());
+  $("incident").innerHTML = `<span class="dot"></span>${clock(0)} · Pump 3 tripped · ${tankName} shuts down at ${D.shutdown.clock}`;
+  $("levelTitle").textContent = tankName + " level";
+  $("foot").textContent = `${D.plans_tested} plans replayed in ${D.compute_ms} ms. ${D.warnings.join(" ")}`;
+
+  const slider = $("decide");
+  slider.max = Math.floor(END);
+
+  function bestAt(t) {
+    // curve points are sorted; take the last one at or before t
+    let pt = D.curve[0];
+    for (const p of D.curve) if (p.start_min <= t + 1e-9) pt = p;
+    return pt;
+  }
+
+  // ---------- ladder ----------
+  const ladder = $("ladder");
+  const rows = D.ladder.map((r) => {
+    const row = document.createElement("div");
+    row.className = "row";
+    row.innerHTML = `<div class="name">${nice(r.summary)}<span class="when">works until ${r.expires_clock}${
+      r.expires_min_hot == null ? " · fails if inflow runs 15% hot" : ""}</span></div>
+      <div class="fuse"><svg preserveAspectRatio="none" viewBox="0 0 100 18"></svg></div>
+      <div class="usd">${fmt(r.usd_at_start)}</div>`;
+    ladder.appendChild(row);
+    const svg = row.querySelector("svg");
+    const x = (t) => (100 * t / END);
+    el("rect", { x: 0, y: 8, width: 100, height: 2, fill: "var(--line)" }, svg);
+    const burnt = el("rect", { x: 0, y: 5, width: 0, height: 8, rx: 0, fill: "var(--live-dim)" }, svg);
+    const fuse = el("rect", { x: 0, y: 5, width: x(r.expires_min), height: 8, rx: 0, fill: "var(--live)" }, svg);
+    if (r.expires_min_hot != null)
+      el("rect", { x: x(r.expires_min_hot) - 0.25, y: 2, width: 0.5, height: 14, fill: "var(--ink-2)" }, svg);
+    row.addEventListener("mousemove", (e) => showTip(e, `<b>${nice(r.summary)}</b><br>Commit by ${r.expires_clock}` +
+      (r.expires_min_hot != null ? `<br>By ${clock(r.expires_min_hot)} if inflow runs 15% hot (tick)` : `<br>Fails at +15% inflow`) +
+      `<br>Cost ${fmt(r.usd_at_start)}`));
+    row.addEventListener("mouseleave", hideTip);
+    return { row, r, fuse, burnt, x };
+  });
+
+  // ---------- cost step chart ----------
+  function drawCost(t) {
+    const box = $("costChart"); box.innerHTML = "";
+    const W = box.clientWidth - 28, Hh = 240, m = { l: 56, r: 12, t: 14, b: 26 };
+    const svg = el("svg", { viewBox: `0 0 ${W} ${Hh}`, height: Hh }, box);
+    const iw = W - m.l - m.r, ih = Hh - m.t - m.b;
+    const ymax = Math.ceil(D.do_nothing_usd / 2000) * 2000;
+    const X = (v) => m.l + iw * v / END, Y = (v) => m.t + ih * (1 - v / ymax);
+    const g = el("g", { class: "grid" }, svg), ax = el("g", { class: "axis" }, svg);
+    for (let v = 0; v <= ymax; v += 2000) {
+      el("line", { x1: m.l, x2: m.l + iw, y1: Y(v), y2: Y(v) }, g);
+      el("text", { x: m.l - 8, y: Y(v) + 4, "text-anchor": "end" }, ax).textContent = v ? "$" + v / 1000 + "k" : "$0";
+    }
+    for (let v = 0; v <= END; v += 10) el("text", { x: X(v), y: Hh - 6, "text-anchor": "middle" }, ax).textContent = clock(v);
+
+    // do-nothing reference
+    el("line", { x1: m.l, x2: m.l + iw, y1: Y(D.do_nothing_usd), y2: Y(D.do_nothing_usd), stroke: "var(--critical)",
+                 "stroke-width": 1, "stroke-dasharray": "3 4" }, svg);
+    el("text", { x: m.l + 6, y: Y(D.do_nothing_usd) - 6, class: "lbl ink" }, svg).textContent =
+      `Do nothing: ${fmt(D.do_nothing_usd)} (shutdown at ${D.shutdown.clock})`;
+
+    // step line of the cheapest working plan
+    let d = "";
+    D.curve.forEach((p, i) => {
+      const yy = Y(p.total_usd), xx = X(p.start_min);
+      d += i ? ` H${xx} V${yy}` : `M${xx} ${yy}`;
+    });
+    d += ` H${X(END)}`;
+    el("path", { d, fill: "none", stroke: "var(--live)", "stroke-width": 2, "stroke-linejoin": "round" }, svg);
+
+    // point of no return
+    if (D.point_of_no_return) {
+      el("line", { x1: X(PNR), x2: X(PNR), y1: m.t, y2: m.t + ih, stroke: "var(--critical)", "stroke-width": 1 }, svg);
+      el("text", { x: X(PNR) - 6, y: m.t + 12, "text-anchor": "end", class: "lbl ink" }, svg).textContent =
+        "No return " + D.point_of_no_return.clock;
+    }
+    // cliff labels: only the first one, to keep it calm
+    if (D.cliffs.length) {
+      const c = D.cliffs[0];
+      el("text", { x: X(c.t_min) + 6, y: Y(c.to_usd) - 8, class: "lbl ink" }, svg).textContent =
+        `+${fmt(c.jump_usd)} at ${c.clock}`;
+    }
+    // cursor
+    const b = bestAt(t);
+    el("line", { x1: X(t), x2: X(t), y1: m.t, y2: m.t + ih, stroke: "var(--ink-2)", "stroke-width": 1 }, svg);
+    el("circle", { cx: X(t), cy: Y(b.total_usd), r: 5, fill: "var(--bg)", stroke: b.keeps_running ? "var(--live)" : "var(--critical)", "stroke-width": 2 }, svg);
+
+    // hover layer
+    const hit = el("rect", { x: m.l, y: m.t, width: iw, height: ih, fill: "transparent" }, svg);
+    const hair = el("line", { y1: m.t, y2: m.t + ih, stroke: "var(--muted)", "stroke-dasharray": "2 3", opacity: 0 }, svg);
+    hit.addEventListener("mousemove", (e) => {
+      const r = svg.getBoundingClientRect();
+      const tv = Math.max(0, Math.min(END, (e.clientX - r.left - m.l * r.width / W) / (iw * r.width / W) * END));
+      const p = bestAt(tv);
+      hair.setAttribute("x1", X(tv)); hair.setAttribute("x2", X(tv)); hair.setAttribute("opacity", 1);
+      const plan = D.ladder.find((l) => l.plan_id === p.plan_id);
+      showTip(e, `Commit at <b>${clock(tv)}</b><br>${p.keeps_running ? fmt(p.total_usd) + "<br>" + nice(plan.summary)
+        : "<span style='color:var(--critical)'>Nothing keeps every well online.</span><br>" + fmt(p.total_usd)}`);
+    });
+    hit.addEventListener("mouseleave", () => { hideTip(); hair.setAttribute("opacity", 0); });
+    hit.addEventListener("click", (e) => {
+      const r = svg.getBoundingClientRect();
+      slider.value = Math.max(0, Math.min(END, (e.clientX - r.left - m.l * r.width / W) / (iw * r.width / W) * END));
+      update();
+    });
+  }
+
+  // ---------- tank level chart ----------
+  function drawLevel(t) {
+    const box = $("levelChart"); box.innerHTML = "";
+    const leg = document.createElement("div"); leg.className = "legend";
+    leg.innerHTML = `<span><i style="background:var(--nothing)"></i>Do nothing</span><span><i style="background:var(--plan)"></i>Cheapest plan at ${clock(t)}</span>`;
+    box.appendChild(leg);
+    const W = box.clientWidth - 28, Hh = 200, m = { l: 40, r: 12, t: 10, b: 24 };
+    const svg = el("svg", { viewBox: `0 0 ${W} ${Hh}`, height: Hh }, box);
+    const iw = W - m.l - m.r, ih = Hh - m.t - m.b, T = 120;
+    const X = (v) => m.l + iw * v / T, Y = (v) => m.t + ih * (1 - (v - 40) / 60);
+    const g = el("g", { class: "grid" }, svg), ax = el("g", { class: "axis" }, svg);
+    for (let v = 40; v <= 100; v += 20) {
+      el("line", { x1: m.l, x2: m.l + iw, y1: Y(v), y2: Y(v) }, g);
+      el("text", { x: m.l - 6, y: Y(v) + 4, "text-anchor": "end" }, ax).textContent = v + "%";
+    }
+    for (let v = 0; v <= T; v += 30) el("text", { x: X(v), y: Hh - 6, "text-anchor": "middle" }, ax).textContent = clock(v);
+    el("line", { x1: m.l, x2: m.l + iw, y1: Y(D.shutdown_pct), y2: Y(D.shutdown_pct), stroke: "var(--critical)", "stroke-dasharray": "3 4" }, svg);
+    el("text", { x: m.l + iw, y: Y(D.shutdown_pct) - 6, "text-anchor": "end", class: "lbl ink" }, svg).textContent = "Shutdown " + D.shutdown_pct + "%";
+    const line = (pts, color) => el("path", { d: pts.map((p, i) => (i ? "L" : "M") + X(p.t_min) + " " + Y(Math.min(100, p.level_pct))).join(""),
+      fill: "none", stroke: color, "stroke-width": 2, "stroke-linejoin": "round" }, svg);
+    line(D.do_nothing_timeline, "var(--nothing)");
+    const tl = D.level_by_start[Math.floor(t)];
+    if (tl && bestAt(t).keeps_running) line(tl.map((v, i) => ({ t_min: i * D.level_step_min, level_pct: v })), "var(--plan)");
+    el("line", { x1: X(t), x2: X(t), y1: m.t, y2: m.t + ih, stroke: "var(--ink-2)" }, svg);
+  }
+
+  // ---------- steps ----------
+  function drawSteps(t) {
+    const b = bestAt(t), box = $("steps");
+    const lad = D.ladder.find((l) => l.plan_id === b.plan_id);
+    if (!b.keeps_running) { box.innerHTML = `<p style="color:var(--critical);margin:4px 0">No plan keeps every well online from ${clock(t)}. Shut-in is now the cost of doing business: ${fmt(b.total_usd)}.</p>`; return; }
+    const steps = lad.steps;
+    box.innerHTML = "<ol>" + steps.map((s) => `<li>${s.text.replace(/ by \d+:\d+ [AP]M\./, ".")} <span class="by">Do by ${s.do_by_clock}</span></li>`).join("") + "</ol>";
+  }
+
+  // ---------- update ----------
+  function update() {
+    const t = Number(slider.value);
+    const b = bestAt(t);
+    const lad = D.ladder.find((l) => l.plan_id === b.plan_id);
+    $("decideClock").textContent = clock(t);
+    $("decideMin").textContent = t ? `${t} min after the trip` : "Right now";
+    $("decideLeft").textContent = `${Math.max(0, END - t).toFixed(0)} min to shutdown`;
+    $("planLabel").textContent = t ? `Cheapest plan if you commit at ${clock(t)}` : "Cheapest plan if you act now";
+    const count = $("count");
+    if (b.keeps_running) {
+      const left = Math.max(0, lad.expires_min - t);
+      count.className = "count";
+      count.innerHTML = `${Math.floor(left)}<small>min</small>`;
+      $("countLabel").textContent = "This plan expires in";
+      const delta = b.total_usd - D.curve[0].total_usd;
+      $("planNow").innerHTML = `${nice(lad.summary)}. <span class="cost">${fmt(b.total_usd)}</span>` +
+        `<span class="delta">${delta > 0 ? "Waiting cost +" + fmt(delta) + ". " : ""}Commit by ${lad.expires_clock}.</span>`;
+      $("robust").textContent = lad.expires_min_hot == null
+        ? "Fragile: fails even now if well inflow runs 15% hot."
+        : t > lad.expires_min_hot
+          ? `Fragile now: at +15% inflow it stopped working at ${clock(lad.expires_min_hot)}.`
+          : `Holds at +15% inflow until ${clock(lad.expires_min_hot)}.`;
+    } else {
+      count.className = "count dead";
+      count.innerHTML = `0<small>min</small>`;
+      $("countLabel").textContent = "Point of no return passed";
+      $("planNow").innerHTML = `${tankName} shuts down. <span class="cost">${fmt(b.total_usd)}</span><span class="delta bad">Waiting cost +${fmt(b.total_usd - D.curve[0].total_usd)}.</span>`;
+      $("robust").textContent = D.point_of_no_return.text;
+    }
+    rows.forEach(({ row, r, fuse, burnt, x }) => {
+      const dead = t > r.expires_min;
+      row.classList.toggle("dead", dead);
+      row.classList.toggle("best", r.plan_id === b.plan_id);
+      fuse.setAttribute("x", x(Math.min(t, r.expires_min)));
+      fuse.setAttribute("width", Math.max(0, x(r.expires_min) - x(Math.min(t, r.expires_min))));
+      burnt.setAttribute("width", x(Math.min(t, r.expires_min)));
+    });
+    drawCost(t); drawLevel(t); drawSteps(t);
+  }
+  slider.addEventListener("input", update);
+  addEventListener("resize", update);
+  update();
+})();
+</script>
+</body>
+</html>

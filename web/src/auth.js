@@ -95,7 +95,7 @@ export function notice(text) {
 }
 
 let asking = null;
-function askPin(message) {
+export function askPin(message) {
   if (asking) return asking;
   asking = new Promise((done) => {
     const box = document.createElement("form");

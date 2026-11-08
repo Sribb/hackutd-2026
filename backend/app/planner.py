@@ -77,7 +77,11 @@ def _levers(plant, field: dict, tid: str) -> list[list[list[dict]]]:
 
 
 def make_plans(scenario: dict, horizon: int = 360, top_n: int = 3) -> dict:
-    """POST /api/plans: cheapest first, always at least one plan."""
+    """POST /api/plans: cheapest first, always at least one plan.
+
+    Returns up to `top_n` plans, plus one more when none of those is robust and a
+    robust plan exists, so the operator always sees the safe-but-pricier option.
+    """
     field = scenario["field"]
     plant = build_plant(scenario)
     base = simulate(plant, [], horizon)
@@ -124,6 +128,18 @@ def make_plans(scenario: dict, horizon: int = 360, top_n: int = 3) -> dict:
         picked_keys.append(keys)
         if len(picked) >= top_n:
             break
+
+    # If none of the cheapest plans survives +15% inflow, also offer the cheapest one that does.
+    if picked and not any(p["robust"] for p in picked):
+        chosen = {p["id"] for p in picked}
+        for ok, cost, n, timed, run in feasible:
+            if plan_id(timed) in chosen:
+                continue
+            if not simulate(plant, clean_actions(plant, timed)[0], horizon, 1 + RANGE).shutdowns:
+                extra = _plan(plant, field, timed, run, True, horizon)
+                extra["summary"] += " The cheapest plan that still holds if inflow runs 15% high."
+                picked.append(extra)
+                break
 
     if len(picked) < top_n:
         failing = sorted((s for s in scored if not s[0]),

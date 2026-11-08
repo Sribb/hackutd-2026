@@ -1,18 +1,43 @@
-"""Build the Freeboard oil field, save blender/field.blend, and export blender/field.glb.
+"""Build an oil field from a blueprint: blueprint.json in, field.glb out.
 
 Run from the repo root:
   /Applications/Blender.app/Contents/MacOS/Blender --background --factory-startup \
-      --python blender/build_field.py -- [--render-dir DIR]
+      --python blender/build_field.py -- [--blueprint PATH.json] [--out DIR] \
+      [--detail full|lite|bare] [--render-dir DIR] [--render-assets ID,ID] [--no-scenery] \
+      [--look fast|full|bake] [--compress]
 
-Every name in docs/CONTRACT.md exists in the output. The layout (west to east):
-disposal well SWD_1, tank pads 1 to 6 north of the lease road, disposal well SWD_2.
-Wells sit north of their pad, the truck yard sits south of the road, and the trunk
-line runs along the road's north shoulder to both disposal wells.
+--compress writes Draco meshes and WebP textures (about a third of the size), which the console
+can only open with a DRACOLoader; see docs/CONTRACT.md. Builds are uncompressed without it.
+
+The blueprint follows docs/BLUEPRINT.md (format v1); ingest drafts with missing numbers
+build too, since the generator only needs IDs and links.
+
+After the field, scenery.py dresses it as desert under one hideable SCENERY root, with
+whatever triangle budget is left. --no-scenery builds the plain field: no SCENERY layer,
+and flat ground and road colors instead of the kit's textures.
+
+Last, look.py gives every part its realistic material, UVs and weathering. --look full adds
+baked ambient occlusion (the committed blender/field.glb); fast, the default, skips it;
+bake is full plus the AO_UV map (TEXCOORD_1) an AO texture bake needs.
+
+With no --blueprint it builds scenario/field.json into blender/, the field the team uses
+today. With --blueprint and no --out it writes to blender/out/<blueprint name>/. Every run
+writes build_report.json. A blueprint with errors exits with code 1 and writes no glb. A
+build that fails exits with code 2.
+
+blueprint.py checks the file, layout.py places every asset, and field_build.py and
+piping.py build the scene from field_parts.py (core assets), detail_equipment.py, and
+detail_site.py (detail). names.py lists the node names every build must contain.
 """
 import importlib
+import json
 import math
 import os
+import struct
 import sys
+import time
+import traceback
+from collections import Counter
 
 import bpy
 from mathutils import Vector
@@ -20,271 +45,415 @@ from mathutils import Vector
 HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
+import blueprint  # noqa: E402
+import layout  # noqa: E402
+import names  # noqa: E402
 import field_parts as fp  # noqa: E402
 import detail_equipment as de  # noqa: E402
 import detail_site as ds  # noqa: E402
+import piping  # noqa: E402
+import siting  # noqa: E402
+import equipment_parts  # noqa: E402
+import iot_parts  # noqa: E402
+import field_build  # noqa: E402
+import scenery_parts  # noqa: E402
+import scenery  # noqa: E402
+import look  # noqa: E402
+import optimize  # noqa: E402
 
-for _mod in (fp, de, ds):
+for _mod in (blueprint, layout, siting, names, fp, de, ds, piping, equipment_parts, iot_parts, field_build,
+             scenery_parts, scenery, look, optimize):
     importlib.reload(_mod)
 
-PAD_X = [-137.5, -82.5, -27.5, 27.5, 82.5, 137.5]
-PAD_TOP = 0.15
-TANK_Y = 46.0
-PUMP_DX, PUMP_Y = 4.83, 33.0
-TRUNK_Y, TRUNK_Z = 8.0, 0.6
-ROAD_HALF = 3.5
-SWD_X, SWD_Y = 205.0, 16.0
-HEADER_Y = 56.5
-WELLS = [(-16, 72, -8), (-6, 82, 3), (6, 82, -3), (16, 72, 8)]   # dx, y, rotation (deg)
-YARD = (0.0, -31.0)
-DRIVE_W = 6.0
+ROOT = os.path.dirname(HERE)
+DEFAULT_BLUEPRINT = os.path.join(ROOT, "scenario", "field.json")
+BUDGET_TRIS, BUDGET_MB, BUDGET_DRAWS = 300_000, 30.0, 1600   # for up to 12 tanks; see CONTRACT.md
+SCENERY_SHARE = 0.95        # scenery fills the triangle budget up to 95%, leaving headroom
+FULL_DETAIL_MAX_TANKS = 12
+LEVELS = {
+    "full": {"bolts": True, "small_labels": True, "posts": True, "trim": True},
+    "lite": {"bolts": False, "small_labels": False, "posts": False, "trim": True},
+    "bare": {"bolts": False, "small_labels": False, "posts": False, "trim": False},
+}
+DROPPED = {
+    "full": [],
+    "lite": ["bolts", "small labels, tags and signs", "containment and fence posts",
+             "hero trim: pumpjack ladders, wellhead valves and gauges, crank guards, roof walkway rails"],
+    "bare": ["bolts", "small labels, tags and signs", "containment and fence posts",
+             "hero trim: pumpjack ladders, wellhead valves and gauges, crank guards, roof walkway rails",
+             "wellhead trees, crank guards and well signs"],
+}
+# Triangles each asset adds at each level, measured from the sample builds. A tank includes
+# its pad and load-out, a pump its valve and lines, a well its flowline. The site (ground,
+# road, power, trunk, yard) costs one triangle per 12.5 m2 of ground plus 28 per road meter.
+# A tank also pays for its pad's RTU, and every monitored asset for its sensor node.
+COSTS = {   # full is the hero detail (#100); lite costs about what full did before it
+    "full": {"tank": 8820, "pump": 5220, "well": 4050, "swd": 7040, "truck": 5250, "xo": 1950, "equipment": 2400,
+             "sensor": 380},
+    "lite": {"tank": 7160, "pump": 3540, "well": 1830, "swd": 4590, "truck": 4190, "xo": 1400, "equipment": 2200,
+             "sensor": 300},
+    "bare": {"tank": 7160, "pump": 3540, "well": 1480, "swd": 4590, "truck": 4190, "xo": 1400, "equipment": 2200,
+             "sensor": 300},
+}
 
 
-def ground_height(x, y):
-    return (-0.2 + 0.07 * math.sin(x / 23) + 0.05 * math.sin(y / 17 + x / 41)
-            + 0.04 * math.sin((x + y) / 9.3))
+class UsageError(Exception):
+    pass
 
 
-def ground(site):
-    import bmesh
-    bm = bmesh.new()
-    x0, x1, y0, y1, nx, ny = -235, 235, -55, 100, 94, 31
-    grid = [[bm.verts.new((x0 + (x1 - x0) * i / nx, y0 + (y1 - y0) * j / ny,
-                           ground_height(x0 + (x1 - x0) * i / nx, y0 + (y1 - y0) * j / ny)))
-             for i in range(nx + 1)] for j in range(ny + 1)]
-    for j in range(ny):
-        for i in range(nx):
-            bm.faces.new((grid[j][i], grid[j][i + 1], grid[j + 1][i + 1], grid[j + 1][i]))
-    site.mesh("SITE_ground", bm, "M_GROUND", recalc=False)
+def parse_args(argv):
+    opts = {"blueprint": None, "out": None, "detail": None, "render_dir": None, "render_assets": None,
+            "scenery": True, "look": "fast", "compress": optimize.COMPRESS}
+    flags = {"--blueprint": "blueprint", "--out": "out", "--detail": "detail",
+             "--render-dir": "render_dir", "--render-assets": "render_assets", "--look": "look"}
+    i = 0
+    while i < len(argv):
+        if argv[i] in ("--no-scenery", "--compress"):
+            opts["scenery" if argv[i] == "--no-scenery" else "compress"] = argv[i] == "--compress"
+            i += 1
+            continue
+        key = flags.get(argv[i])
+        if key is None or i + 1 >= len(argv):
+            raise UsageError(f"unknown or incomplete option {argv[i]!r}; options: {', '.join(flags)}, "
+                             "--no-scenery, --compress")
+        opts[key] = argv[i + 1]
+        i += 2
+    if opts["detail"] not in (None, *LEVELS):
+        raise UsageError(f"--detail must be one of {', '.join(LEVELS)}")
+    if opts["look"] not in look.MODES:
+        raise UsageError(f"--look must be one of {', '.join(look.MODES)}")
+    return opts
 
 
-def slab(kit, mat, x0, x1, y0, y1, height):
-    fp.box(kit[mat], (x1 - x0, y1 - y0, height), ((x0 + x1) / 2, (y0 + y1) / 2, height / 2))
+def rel(path):
+    path = os.path.abspath(path)
+    return os.path.relpath(path, ROOT) if path.startswith(ROOT + os.sep) else path
 
 
-def drive_ranges():
-    return [(cx - 7 - DRIVE_W / 2, cx - 7 + DRIVE_W / 2) for cx in PAD_X]
+def estimate(bp, L, level):
+    c = COSTS[level]
+    gx0, gx1, gy0, gy1 = L["ground"]
+    site = (gx1 - gx0) * (gy1 - gy0) / 12.5 + 28 * (L["road"][1] - L["road"][0]) + 2000 * (L["rows"] - 1)
+    return int(site + c["tank"] * len(bp["tanks"]) + c["pump"] * len(bp["pumps"]) + c["well"] * len(bp["wells"])
+               + c["swd"] * len(bp["swds"]) + c["truck"] * len(bp["trucks"]) + c["xo"] * len(bp["crossovers"])
+               + c["equipment"] * len(bp["equipment"]) + c["sensor"] * len(names.sensors(bp)))
 
 
-def trunk_run(x0, x1):
-    """Trunk points from x0 to x1 along the shoulder, dipping under each driveway."""
-    lo, hi = sorted((x0, x1))
-    pts = [Vector((x0, TRUNK_Y, TRUNK_Z))]
-    dips = [(a, b) for a, b in drive_ranges() if lo < a and b < hi]
-    if x1 < x0:
-        dips = [(b, a) for a, b in reversed(dips)]
-    step = 1 if x1 >= x0 else -1
-    for a, b in dips:
-        pts += [Vector((a - step * 1.2, TRUNK_Y, TRUNK_Z)), Vector((a - step * 0.4, TRUNK_Y, -0.7)),
-                Vector((b + step * 0.4, TRUNK_Y, -0.7)), Vector((b + step * 1.2, TRUNK_Y, TRUNK_Z))]
-    pts.append(Vector((x1, TRUNK_Y, TRUNK_Z)))
-    return pts
+def clear_scene():
+    for obj in list(bpy.data.objects):
+        bpy.data.objects.remove(obj, do_unlink=True)
+    for col in list(bpy.data.collections):
+        bpy.data.collections.remove(col)
+    for blocks in (bpy.data.meshes, bpy.data.curves, bpy.data.cameras, bpy.data.lights):
+        for block in list(blocks):
+            if block.users == 0:
+                blocks.remove(block)
 
 
-def build(collection):
-    site = fp.Site(collection)
-    ground(site)
-    civil = fp.Kit(site, "SITE", None)
-    supports = fp.Kit(site, "SITE_supports", None)
-    slab(civil, "M_ROAD", -225, 225, -ROAD_HALF, ROAD_HALF, 0.08)
-    for a, b in drive_ranges():
-        slab(civil, "M_ROAD", a, b, ROAD_HALF, 29.0, 0.07)
-    slab(civil, "M_ROAD", -4, 4, -19.0, -ROAD_HALF, 0.07)
-    for sx in (-1, 1):
-        slab(civil, "M_ROAD", sx * SWD_X - 4, sx * SWD_X + 4, ROAD_HALF, 5.2, 0.07)
-
-    ties = []
-    for n, cx in enumerate(PAD_X, start=1):
-        pad = site.empty(f"PAD_{n}", (cx, 0, 0), size=1)
-        padkit = fp.Kit(site, f"PAD_{n}", pad)
-        fp.box(padkit["M_GRAVEL"], (24, 29, PAD_TOP), (0, 43.5, PAD_TOP / 2))
-        for dy in (-6.2, 6.2):
-            fp.box(padkit["M_STEEL"], (13, 0.3, 0.8), (0, TANK_Y + dy, PAD_TOP + 0.4))
-        for dx in (-6.2, 6.2):
-            fp.box(padkit["M_STEEL"], (0.3, 12.1, 0.8), (dx, TANK_Y, PAD_TOP + 0.4))
-        padkit.done()
-        ds.pad_extras(site, n, pad, TANK_Y, PAD_TOP)
-        ds.light_tower(site, f"PAD_{n}", (cx + 10.5, 56.8, PAD_TOP), 226)
-
-        xo = {3: 0.0, 4: 180.0}.get(n)
-        tank_root, tank = fp.build_tank(site, n, (cx, TANK_Y, PAD_TOP), xo_angle=xo)
-        lo = de.tank_extras(site, n, tank_root)
-        px = cx + PUMP_DX
-        pump_root, pump = fp.build_pump(site, n, (px, PUMP_Y, PAD_TOP))
-        de.pump_extras(site, n, pump_root)
-        vx, vy, vz = px - 0.8, PUMP_Y - 0.9, PAD_TOP + 2.05
-        valve_root, valve = fp.build_valve(site, f"VALVE_D_{n}", (vx, vy, vz))
-        de.valve_extras(site, f"VALVE_D_{n}", valve_root, f"D-{n}")
-        stand = (cx - 7.6, 35.0)
-        de.build_loadout(site, n, (*stand, PAD_TOP))
-        site.pipe(f"PIPE_TANK_{n}_LOADOUT_{n}", [lo, (lo.x, lo.y, 1.75), (lo.x, stand[1], 1.75),
-                                                 (stand[0], stand[1], 1.75)], 0.1)
-        o, s = tank["outlet"], pump["suction"]
-        site.pipe(f"PIPE_TANK_{n}_PUMP_{n}", [o, (o.x, o.y, 1.6), (o.x, s.y, 1.6), (o.x, s.y, s.z), s], 0.11)
-        d = pump["discharge"]
-        site.pipe(f"PIPE_PUMP_{n}_VALVE_D_{n}", [d, (d.x, d.y, vz), valve["north"]], 0.09)
-        sv = valve["south"]
-        site.pipe(f"PIPE_VALVE_D_{n}_TRUNK", [sv, (vx, vy - 1.0, vz), (vx, vy - 1.0, TRUNK_Z),
-                                              (vx, TRUNK_Y, TRUNK_Z)], 0.09)
-        ties.append(vx)
-        for y in (26.0, 20.0, 14.0):
-            fp.box(supports["M_CONCRETE"], (0.8, 0.5, TRUNK_Z - 0.08), (vx, y, (TRUNK_Z - 0.08) / 2))
-
-        inlet = tank["inlet"]
-        site.pipe(f"PIPE_INLET_{n}", [(cx - 4, HEADER_Y, 0.5), (cx + 4, HEADER_Y, 0.5)], 0.08)
-        site.pipe(f"PIPE_INLET_{n}_RISER", [(cx, HEADER_Y, 0.5), (cx, HEADER_Y, inlet.z),
-                                            (inlet.x, HEADER_Y, inlet.z), inlet], 0.08)
-        for j, (dx, wy, rot) in enumerate(WELLS):
-            k = 4 * (n - 1) + j + 1
-            well_root, well = fp.build_pumpjack(site, f"WELL_{k}", (cx + dx, wy, 0.0), rot)
-            de.well_extras(site, k, well_root)
-            w = well["outlet"]
-            hx = cx - 3 + 2 * j
-            site.pipe(f"PIPE_WELL_{k}_TANK_{n}", [w, (w.x + 0.5, w.y, 0.12), (w.x + 0.5, 60.0, 0.12),
-                                                  (hx, 60.0, 0.12), (hx, HEADER_Y + 0.2, 0.12),
-                                                  (hx, HEADER_Y, 0.5)], 0.06, segs=8)
-
-        site.empty(f"ROAD_JCT_TANK_{n}", (cx - 7, 0, 0.1), size=1)["kind"] = "waypoint"
-        site.empty(f"STOP_TANK_{n}", (cx - 10.2, 35.0, PAD_TOP), size=1)["kind"] = "waypoint"
-
-    # crossover between Tank 3 and Tank 4, with its valve on a small pad in the gap
-    xo_root, xo_valve = fp.build_valve(site, "VALVE_XO_34", (0.0, TANK_Y, 1.6), rot_z=math.pi / 2)
-    de.valve_extras(site, "VALVE_XO_34", xo_root, "XO-34")
-    t3 = Vector((PAD_X[2] + fp.NOZZLE_R, TANK_Y, PAD_TOP + 0.85))
-    t4 = Vector((PAD_X[3] - fp.NOZZLE_R, TANK_Y, PAD_TOP + 0.85))
-    west, east = sorted((xo_valve["north"], xo_valve["south"]), key=lambda v: v.x)
-    site.pipe("PIPE_XO_34_W", [t3, (t3.x, TANK_Y, 1.6), west], 0.11)
-    site.pipe("PIPE_XO_34_E", [east, (t4.x, TANK_Y, 1.6), t4], 0.11)
-    fp.box(supports["M_CONCRETE"], (1.6, 1.6, 0.16), (0, TANK_Y, 0.08))
-    for x in (-15.0, -8.0, 8.0, 15.0):
-        fp.box(supports["M_CONCRETE"], (0.6, 0.6, 0.3), (x, TANK_Y, 0.15))
-        fp.tube(supports["M_STEEL"], (x, TANK_Y, 0.3), (x, TANK_Y, 1.48), 0.06, 8)
-        fp.box(supports["M_STEEL"], (0.1, 0.7, 0.08), (x, TANK_Y, 1.45))
-
-    # disposal wells and the trunk line that feeds them
-    swd_in = {}
-    for sx, sid in ((-1, "SWD_1"), (1, "SWD_2")):
-        swd_root, swd = fp.build_swd(site, sid, (sx * SWD_X, SWD_Y, 0.0), fx=-sx)
-        ds.swd_extras(site, sid, swd_root, -sx, sid[-1])
-        swd_in[sid] = swd["inlet"]
-        site.empty(f"ROAD_JCT_{sid}", (sx * SWD_X, 0, 0.1), size=1)["kind"] = "waypoint"
-        site.empty(f"STOP_{sid}", (sx * SWD_X, 7.5, 0.15), size=1)["kind"] = "waypoint"
-    w_in, e_in = swd_in["SWD_1"], swd_in["SWD_2"]
-    nodes = [w_in.x] + ties + [e_in.x]
-    for i, (a, b) in enumerate(zip(nodes, nodes[1:])):
-        pts = trunk_run(a, b)
-        if i == 0:
-            pts = [w_in] + pts
-        if i == len(nodes) - 2:
-            pts = pts + [e_in]
-        site.pipe(f"PIPE_TRUNK_{i}", pts, 0.16, segs=12)
-    blocked = drive_ranges()
-    x = nodes[0] + 4
-    while x < nodes[-1] - 2:
-        if all(not (a - 1.5 < x < b + 1.5) for a, b in blocked):
-            fp.box(supports["M_CONCRETE"], (0.5, 0.9, TRUNK_Z - 0.15), (x, TRUNK_Y, (TRUNK_Z - 0.15) / 2))
-        x += 10.0
-
-    yard = fp.build_yard(site, (YARD[0], YARD[1], 0.0))
-    ds.yard_extras(site, yard)
-    for tid, x in (("TRUCK_1", -2.0), ("TRUCK_2", 12.5)):
-        ds.truck_extras(site, tid, fp.build_truck(site, tid, (x, -27.0, 0.12)))
-    ds.power(site, [(cx - 12.8, 30.0) for cx in PAD_X] + [(-216.0, 7.0), (216.0, 7.0), (-20.0, -20.0)])
-    site.empty("ROAD_JCT_YARD_1", (0, 0, 0.1), size=1)["kind"] = "waypoint"
-    site.empty("STOP_YARD_1", (0, -21.0, 0.12), size=1)["kind"] = "waypoint"
-    site.empty("ROAD_END_W", (-225, 0, 0.1), size=1)["kind"] = "waypoint"
-    site.empty("ROAD_END_E", (225, 0, 0.1), size=1)["kind"] = "waypoint"
-    civil.done()
-    supports.done()
-    return site
-
-
-def stage(collection, scene):
+def stage(collection, scene, L):
+    """Overview camera framing the whole field, a sun, and a sky color."""
+    x0, x1 = L["road"]
+    gx0, gx1, gy0, gy1 = L["ground"]
+    tank_ys = [p["frame"].world(0, layout.TANK_Y)[1] for p in L["pads"]]
+    ty = sum(tank_ys) / len(tank_ys) - (14.0 if L["rows"] == 1 else 0.0)
+    s = max(1.0, (x1 - x0) / 450.0, (gy1 - gy0) / 155.0)
     cam_data = bpy.data.cameras.new("CAM_OVERVIEW")
     cam_data.lens = 24
-    cam_data.clip_end = 3000
+    cam_data.clip_end = 3000 * s
     cam = bpy.data.objects.new("CAM_OVERVIEW", cam_data)
     collection.objects.link(cam)
-    cam.location = (0, -235, 170)
-    cam.rotation_euler = (Vector((0, 32, 0)) - cam.location).to_track_quat("-Z", "Y").to_euler()
+    cx = (x0 + x1) / 2
+    cam.location = (cx, ty - 267 * s, 170 * s)
+    cam.rotation_euler = (Vector((cx, ty, 0)) - cam.location).to_track_quat("-Z", "Y").to_euler()
     scene.camera = cam
     sun_data = bpy.data.lights.new("SUN", "SUN")
     sun_data.energy = 3.5
     sun = bpy.data.objects.new("SUN", sun_data)
     sun.rotation_euler = (math.radians(50), 0, math.radians(35))
     collection.objects.link(sun)
-    world = bpy.data.worlds.new("SKY")
+    world = bpy.data.worlds.get("SKY") or bpy.data.worlds.new("SKY")
     world.color = (0.55, 0.6, 0.66)
     scene.world = world
 
 
-def export_glb(path):
+def triangles(scene):
+    """Each n-gon is n - 2 triangles, so a mesh has (corners - 2 x faces) of them."""
+    return sum(len(o.data.loops) - 2 * len(o.data.polygons) for o in scene.objects if o.type == "MESH")
+
+
+def build_scene(scene, bp, L, level):
+    fp.LOD.update(LEVELS[level])
+    clear_scene()
+    field_build.build(scene.collection, bp, L)
+    stage(scene.collection, scene, L)
+    return triangles(scene)
+
+
+def export_glb(path, compress=False):
+    """Write the glb. GPU instancing turns each SCENERY_*_instances Empty from optimize.py into
+    one EXT_mesh_gpu_instancing node; nothing else in the scene qualifies (see optimize.py).
+    compress adds Draco and WebP (optimize.export_options), which the console must decode."""
     kwargs = dict(filepath=path, export_format="GLB", use_active_scene=True, export_apply=True,
                   export_extras=True, export_cameras=True, export_lights=False, export_yup=True,
-                  export_animations=False)
+                  export_animations=False, export_gpu_instances=True, **optimize.export_options(compress))
     try:
         bpy.ops.export_scene.gltf(**kwargs)
     except TypeError as exc:
         print("exporter rejected an option, retrying with defaults:", exc)
-        for key in ("use_active_scene", "export_animations", "export_lights", "export_cameras"):
+        for key in ("use_active_scene", "export_animations", "export_lights", "export_cameras", "export_gpu_instances"):
             kwargs.pop(key, None)
         bpy.ops.export_scene.gltf(**kwargs)
 
 
-def report(scene):
-    tris = 0
-    for obj in scene.objects:
-        if obj.type == "MESH":
-            tris += sum(len(p.vertices) - 2 for p in obj.data.polygons)
-    assets = sorted(o.name for o in scene.objects if "asset_id" in o.keys())
-    print(f"objects={len(scene.objects)} triangles={tris} assets={len(assets)}")
-    print("dotted names:", [o.name for o in scene.objects if "." in o.name])
+def glb_json(path):
+    with open(path, "rb") as f:
+        raw = f.read()
+    n, kind = struct.unpack_from("<II", raw, 12)
+    if raw[:4] != b"glTF" or kind != 0x4E4F534A:
+        raise ValueError(f"{path} is not a glb with a JSON chunk")
+    return json.loads(raw[20:20 + n])
 
 
-def render_checks(scene, out_dir):
+def glb_nodes(path):
+    """The glb's nodes (blender/export_kit.py, #89, reads these)."""
+    return glb_json(path).get("nodes", [])
+
+
+def glb_images_mb(path):
+    return glb_summary(glb_json(path))["images_mb"]
+
+
+def glb_summary(g):
+    """What the console has to draw: draw calls (one per primitive of a mesh node, so one per
+    instanced node too), instanced nodes and their copies, meshes, and MB of embedded images
+    (the plain field has none, so these are the scenery's textures)."""
+    views, acc = g.get("bufferViews", []), g.get("accessors", [])
+    draws = copies = 0
+    held = []
+    for nd in g.get("nodes", []):
+        if "mesh" not in nd:
+            continue
+        draws += len(g["meshes"][nd["mesh"]]["primitives"])
+        inst = nd.get("extensions", {}).get("EXT_mesh_gpu_instancing")
+        if inst:
+            held.append(nd.get("name", ""))
+            copies += acc[inst["attributes"]["TRANSLATION"]]["count"]
+    images = sum(views[i["bufferView"]]["byteLength"] for i in g.get("images", []) if "bufferView" in i)
+    return {"draw_calls": draws, "meshes": len(g.get("meshes", [])), "instanced_nodes": len(held),
+            "instances": copies, "images_mb": round(images / 1e6, 2), "instanced": sorted(held)}
+
+
+RENDER_VIEWS = {   # camera and target offsets in the asset's own frame
+    "tank": ((15.5, -24.0, 8.85), (0.0, -6.0, 2.35)), "well": ((7.5, -11.0, 4.5), (0.0, -1.5, 2.0)),
+    "truck": ((11.0, -11.0, 4.9), (1.0, 0.0, 1.7)), "disposal_well": ((0.0, -40.0, 22.0), (0.0, 0.0, 2.0)),
+    "valve": ((14.0, -20.0, 16.0), (0.0, 0.0, 1.0)), "yard": ((0.0, -45.0, 30.0), (0.0, 0.0, 0.0)),
+    "pump": ((6.0, -8.0, 4.0), (0.0, 0.0, 1.0)), "equipment": ((9.0, -13.0, 7.0), (0.0, 0.0, 2.0)),
+}
+
+
+def render_checks(scene, out_dir, assets):
+    """Workbench renders of the overview and a few assets, for a quick look."""
     os.makedirs(out_dir, exist_ok=True)
     scene.render.engine = "BLENDER_WORKBENCH"
     shading = scene.display.shading
     shading.light, shading.color_type = "STUDIO", "MATERIAL"
     shading.show_cavity, shading.show_shadows = True, True
     scene.render.resolution_x, scene.render.resolution_y = 1600, 900
-    shots = {"overview": None,
-             "tank_3": ((-12.0, 22.0, 9.0), (-27.5, 40.0, 2.5)),
-             "pumpjack": ((-36.0, 61.0, 4.5), (-43.5, 70.5, 2.0)),
-             "truck": ((9.0, -38.0, 5.0), (-1.0, -27.0, 1.8)),
-             "swd_2": ((176, -12, 20), (205, 16, 2))}
-    for name, view in shots.items():
-        cam = scene.camera
-        if view:
-            data = bpy.data.cameras.new(f"CHECK_{name}")
+    overview = scene.camera
+    for aid in [None] + assets:
+        cam = overview
+        if aid:
+            obj = bpy.data.objects.get(aid)
+            if obj is None or obj.get("kind") not in RENDER_VIEWS:
+                print(f"render: skipping {aid}, not an asset")
+                continue
+            eye, look = RENDER_VIEWS[obj["kind"]]
+            m = obj.matrix_world
+            data = bpy.data.cameras.new(f"CHECK_{aid}")
             data.lens = 28
-            cam = bpy.data.objects.new(f"CHECK_{name}", data)
+            cam = bpy.data.objects.new(f"CHECK_{aid}", data)
             scene.collection.objects.link(cam)
-            cam.location = view[0]
-            cam.rotation_euler = (Vector(view[1]) - Vector(view[0])).to_track_quat("-Z", "Y").to_euler()
+            cam.location = m @ Vector(eye)
+            cam.rotation_euler = (m @ Vector(look) - cam.location).to_track_quat("-Z", "Y").to_euler()
         scene.camera = cam
-        scene.render.filepath = os.path.join(out_dir, f"{name}.png")
+        scene.render.filepath = os.path.join(out_dir, f"{aid or 'overview'}.png")
         bpy.ops.render.render(write_still=True)
-        if view:
+        if aid:
             bpy.data.objects.remove(cam)
+    scene.camera = overview
+
+
+class Clock:
+    """Wall seconds per build step, for the report's "timing"."""
+
+    def __init__(self):
+        self.t, self.laps = time.time(), {}
+
+    def lap(self, step):
+        now = time.time()
+        self.laps[step] = round(self.laps.get(step, 0.0) + now - self.t, 2)
+        self.t = now
+
+
+def write_report(report, out_dir, t0):
+    report["seconds"] = round(time.time() - t0, 2)
+    report["cpu_seconds"] = round(time.process_time(), 2)
+    if out_dir:
+        with open(os.path.join(out_dir, "build_report.json"), "w") as f:
+            json.dump(report, f, indent=2)
+            f.write("\n")
+    status = "OK" if report["ok"] else "FAILED"
+    print(f"build_report: {status} in {report['seconds']} s" + "".join(f"\n  error: {e}" for e in report["errors"]))
+
+
+def paths(opts):
+    src = os.path.abspath(opts["blueprint"]) if opts["blueprint"] else DEFAULT_BLUEPRINT
+    stem = os.path.splitext(os.path.basename(src))[0]
+    out_dir = os.path.abspath(opts["out"]) if opts["out"] else (
+        os.path.join(HERE, "out", stem) if opts["blueprint"] else HERE)
+    os.makedirs(out_dir, exist_ok=True)
+    return src, out_dir
+
+
+def run(opts, src, out_dir, report):
+    """The build itself. Returns the exit code."""
+    clock = Clock()
+    report["timing"] = clock.laps
+    report["blueprint"] = rel(src)
+    data, errors = blueprint.load(src)
+    bp, more, warnings = blueprint.check(data) if data is not None else (None, [], [])
+    report["errors"] += errors + more
+    report["warnings"] += warnings
+    if report["errors"]:
+        return 1
+    fp.VALVE_MANUAL.clear()
+    fp.VALVE_MANUAL.update(fp.valve_modes(data))   # handwheel or actuator, from manual/remote
+    L = layout.plan(bp)
+    report["warnings"] += L["warnings"]
+    report["errors"] += L["errors"]
+    if report["errors"]:
+        return 1
+    report["name"] = bp["name"]
+    if bp["site"]:
+        report["site"] = bp["site"]
+    if bp["connectors"]:
+        report["connectors"] = [c["id"] for c in bp["connectors"]]
+    report["counts"] = blueprint.counts(bp)
+    clock.lap("plan")
+
+    order = list(LEVELS)
+    if opts["detail"]:
+        level = opts["detail"]
+    else:
+        floor = 0 if len(bp["tanks"]) <= FULL_DETAIL_MAX_TANKS else 1
+        level = next((lv for lv in order[floor:] if estimate(bp, L, lv) <= BUDGET_TRIS * 0.97), order[-1])
+    scene = bpy.context.scene
+    scene.name = "Field"
+    passes = []
+    while True:
+        tris = build_scene(scene, bp, L, level)
+        passes.append({"detail": level, "estimated": estimate(bp, L, level), "triangles": tris})
+        if tris <= BUDGET_TRIS or opts["detail"] or level == order[-1]:
+            break
+        level = order[order.index(level) + 1]
+
+    field_tris, want = tris, set(names.expected(bp))
+    clock.lap("field")
+    view = {"on": False}
+    if opts["scenery"]:
+        view = scenery.dress(scene.collection, bp, L, int(BUDGET_TRIS * SCENERY_SHARE) - tris)
+        tris = triangles(scene)
+        view.update({"triangles": tris - field_tris, "field_triangles": field_tris})
+        want.add("SCENERY")
+        clock.lap("scenery")
+
+    objs = list(scene.objects)
+    dotted = sorted(o.name for o in objs if "." in o.name)
+    if dotted:
+        report["errors"].append("names clash with each other (Blender added suffixes): " + ", ".join(dotted[:12]))
+    built = {o.name for o in objs}
+    missing = sorted(want - built)
+    if missing:
+        report["errors"].append("the build is missing contract names: " + ", ".join(missing[:20]))
+    if report["errors"]:
+        return 2
+
+    clock.lap("checks")
+    report["look"] = look.apply(scene, opts["look"], textures=opts["scenery"])
+    clock.lap("look")
+    glb, blend = os.path.join(out_dir, "field.glb"), os.path.join(out_dir, "field.blend")
+    kinds, n_objects = Counter(o["kind"] for o in objs if "asset_id" in o.keys()), len(objs)
+    del objs                             # optimize.run() removes merged objects
+    opt = optimize.run(scene, want)      # after look.apply, last step before export
+    clock.lap("optimize")
+    export_glb(glb, opts["compress"])
+    clock.lap("export")
+    bpy.ops.wm.save_as_mainfile(filepath=blend, compress=True)
+    clock.lap("blend")
+    g = glb_json(glb)
+    nodes, summary = g.get("nodes", []), glb_summary(g)
+    gone = sorted(want - {n.get("name") for n in nodes})
+    if gone:
+        report["errors"].append("field.glb is missing names after export: " + ", ".join(gone[:20]))
+        return 2
+    stray = [n for n in summary["instanced"] if not (n.startswith("SCENERY_") and n.endswith(optimize.GROUP_SUFFIX))]
+    if stray:
+        report["errors"].append("the exporter instanced nodes outside SCENERY: " + ", ".join(stray[:12]))
+        return 2
+    mb = os.path.getsize(glb) / 1e6
+    report.update({
+        "ok": True,
+        "outputs": {"glb": rel(glb), "blend": rel(blend), "report": rel(os.path.join(out_dir, "build_report.json"))},
+        "kinds": dict(sorted(kinds.items())),
+        "placed": {k: sorted(v) for k, v in L["placed"].items()},
+        "layout": {"rows": L["rows"], "pad_pitch_m": layout.PAD_PITCH, "road_m": round(L["road"][1] - L["road"][0], 1),
+                   "road_x": [round(v, 1) for v in L["road"]], "ground": [round(v, 1) for v in L["ground"]],
+                   "crossovers": {x["id"]: x["style"] for x in L["crossovers"]}},
+        "detail": {"level": level, "dropped": DROPPED[level], "passes": passes},
+        "iot": {"sensors": len(names.sensors(bp)), "rtus": len(bp["tanks"])},
+        "scenery": dict(view, **({"images_mb": summary["images_mb"]} if view["on"] else {})),
+        "triangles": tris, "glb_mb": round(mb, 2), "nodes": len(nodes), "objects": n_objects,
+        "draw_calls": summary["draw_calls"], "compressed": opts["compress"],
+        "optimize": dict(opt, glb_meshes=summary["meshes"], instanced_nodes=summary["instanced_nodes"],
+                         instances=summary["instances"]),
+        "budget": {"triangles": BUDGET_TRIS, "mb": BUDGET_MB, "draw_calls": BUDGET_DRAWS},
+    })
+    if level != "full":
+        why = (f"more than {FULL_DETAIL_MAX_TANKS} tanks" if len(bp["tanks"]) > FULL_DETAIL_MAX_TANKS
+               else "full detail would pass the triangle budget") if not opts["detail"] else "--detail was set"
+        report["warnings"].append(f"built at {level} detail ({why}); dropped: {', '.join(DROPPED[level])}")
+    if tris > BUDGET_TRIS or mb > BUDGET_MB or summary["draw_calls"] > BUDGET_DRAWS:
+        report["warnings"].append(f"over budget: {tris} triangles, {mb:.1f} MB and {summary['draw_calls']} draw calls "
+                                  f"(budget {BUDGET_TRIS}, {BUDGET_MB:.0f} MB and {BUDGET_DRAWS})")
+    if opts["render_dir"]:
+        assets = (opts["render_assets"] or "").split(",") if opts["render_assets"] else [
+            a for a in (bp["tanks"][0]["id"], bp["wells"][0]["id"] if bp["wells"] else None,
+                        bp["trucks"][0]["id"] if bp["trucks"] else None, bp["swds"][-1]["id"]) if a]
+        render_checks(scene, opts["render_dir"], [a for a in assets if a])
+    clock.lap("report")
+    return 0
 
 
 def main():
+    t0 = time.time()
     argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
-    scene = bpy.context.scene
-    for obj in list(bpy.data.objects):
-        bpy.data.objects.remove(obj, do_unlink=True)
-    for col in list(bpy.data.collections):
-        bpy.data.collections.remove(col)
-    scene.name = "Field"
-    build(scene.collection)
-    stage(scene.collection, scene)
-    report(scene)
-    export_glb(os.path.join(HERE, "field.glb"))
-    bpy.ops.wm.save_as_mainfile(filepath=os.path.join(HERE, "field.blend"), compress=True)
-    if "--render-dir" in argv:
-        render_checks(scene, argv[argv.index("--render-dir") + 1])
-        scene.camera = bpy.data.objects["CAM_OVERVIEW"]
+    report = {"ok": False, "errors": [], "warnings": []}
+    code, out_dir = 2, None
+    try:
+        opts = parse_args(argv)
+        src, out_dir = paths(opts)
+        code = run(opts, src, out_dir, report)
+    except UsageError as e:
+        report["errors"].append(str(e))
+    except Exception:  # noqa: BLE001
+        report["errors"].append("the build crashed:\n" + traceback.format_exc())
+    if code:
+        report["ok"] = False
+        if not report["errors"]:
+            report["errors"].append("the build failed")
+    write_report(report, out_dir, t0)
+    if bpy.app.background:
+        sys.exit(code)
 
 
 if __name__ == "__main__":

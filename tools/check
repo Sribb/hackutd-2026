@@ -25,7 +25,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 API = os.environ.get("CHECK_API", "http://127.0.0.1:8000").rstrip("/")
-STATUSES = {"OK", "WARNING", "ALARM", "OFFLINE"}
+STATUSES = {"OK", "WARNING", "ALARM", "OFFLINE", "UNKNOWN"}  # UNKNOWN: stale sensor (#38)
 
 results: list[tuple[str, str, str]] = []  # (PASS|FAIL|WARN|SKIP, name, detail)
 
@@ -111,6 +111,37 @@ def check_scenario(assets: set[str]) -> None:
         report("WARN", "scenario", f"contract IDs not defined: {', '.join(missing)}")
 
 
+def check_blueprints() -> None:
+    """Every blueprint in scenario/ against docs/blueprint.schema.json (docs/BLUEPRINT.md)."""
+    script = ROOT / "scenario" / "validate_blueprint.py"
+    files = [ROOT / "scenario" / "field.json", *sorted((ROOT / "scenario" / "samples").glob("*.json"))]
+    files = [f for f in files if f.exists()]
+    if not script.exists() or not files:
+        report("SKIP", "blueprint", "no scenario/validate_blueprint.py or blueprints yet")
+        return
+    try:
+        from jsonschema import Draft202012Validator
+    except ImportError:
+        report("SKIP", "blueprint", "pip install jsonschema to check blueprints")
+        return
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("validate_blueprint", script)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    validator = Draft202012Validator(json.loads(mod.SCHEMA.read_text()))
+    for f in files:
+        name = f"blueprint {f.relative_to(ROOT)}"
+        try:
+            problems = mod.check(json.loads(f.read_text()), validator)
+        except json.JSONDecodeError as e:
+            report("FAIL", name, f"invalid JSON: {e}")
+            continue
+        if problems:
+            report("FAIL", name, f"{len(problems)} problem(s), first: {problems[0]}")
+        else:
+            report("PASS", name)
+
+
 # ---------- blender ----------
 
 def glb_node_names(path: Path) -> list[str]:
@@ -158,6 +189,18 @@ def call(method: str, path: str, body: dict | None = None, timeout: float = 5.0)
         return json.loads(r.read() or b"null")
 
 
+def active_blueprint() -> str | None:
+    """The active uploaded blueprint's id, or None for the default field or a backend without #41."""
+    try:
+        got = call("GET", "/api/blueprints")
+    except (urllib.error.URLError, OSError, json.JSONDecodeError):
+        return None
+    active = got.get("active") if isinstance(got, dict) else None
+    if isinstance(active, dict):
+        active = active.get("id")
+    return active if isinstance(active, str) and active not in ("", "default") else None
+
+
 def check_api(assets: set[str]) -> None:
     try:
         field = call("GET", "/api/field")
@@ -170,6 +213,14 @@ def check_api(assets: set[str]) -> None:
     except json.JSONDecodeError:
         report("FAIL", "api /api/field", "response is not JSON")
         return
+
+    # The contract's fixed ID table describes the default (Avon) field. When an uploaded
+    # blueprint is active (#41), check against that field's own IDs instead.
+    custom = active_blueprint()
+    if custom or os.environ.get("CHECK_CONTRACT") == "0":
+        report("WARN", "api contract IDs", f"blueprint {custom or '(CHECK_CONTRACT=0)'} is active, so its own IDs "
+               "are checked instead of the contract table. Activate 'default' to check the contract.")
+        assets = all_ids(field) if isinstance(field, dict) else assets
 
     need = ["tanks", "pumps", "valves", "wells", "disposal_wells", "trucks"]
     gone = [k for k in need if not isinstance(field, dict) or k not in field]
@@ -277,6 +328,7 @@ def main() -> int:
         report("FAIL", "contract", str(e))
         return 1
     check_scenario(assets)
+    check_blueprints()
     check_glb(assets, meshes)
     check_api(assets)
     check_backend_tests()

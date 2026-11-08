@@ -6,11 +6,13 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
 from contextlib import asynccontextmanager
 from typing import Optional, Union
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -29,10 +31,22 @@ async def lifespan(_app: FastAPI):
     # Mirror the starting state into SpacetimeDB without blocking startup.
     threading.Thread(target=spacetime_sync.push_state,
                      args=(state_payload(SCENARIO),), daemon=True).start()
+    live = getattr(_app.state, "live", None)  # live layer (#38), mounted at the bottom
+    if live:
+        live.start()
     yield
+    if live:
+        await live.stop()
 
 
 app = FastAPI(title="Freeboard backend", lifespan=lifespan)
+
+
+@app.exception_handler(Exception)
+async def unhandled(_request: Request, exc: Exception) -> JSONResponse:
+    """Any bug comes back as JSON the console can show, never a bare crash page."""
+    log.exception("Unhandled error: %s", exc)
+    return JSONResponse(status_code=500, content={"detail": f"Internal error: {type(exc).__name__}: {exc}"})
 
 # The web console runs on a local dev server (Vite defaults to 5173).
 app.add_middleware(
@@ -112,7 +126,8 @@ def _push_plan(out: dict) -> None:
 
 @app.get("/api/health")
 def health() -> dict:
-    return {"ok": True, "spacetime": spacetime_sync.status, "lastcall": LASTCALL}
+    return {"ok": True, "scenario": SCENARIO.get("_source"), "spacetime": spacetime_sync.status,
+            "lastcall": LASTCALL, "ingest": INGEST}
 
 
 @app.post("/api/spacetime/sync")
@@ -154,3 +169,29 @@ try:
     LASTCALL = "mounted"
 except ImportError:
     LASTCALL = "not installed (lastcall/ is not on this branch yet)"
+
+
+# ---------- Ingest (ingest/, owned by @teameuphoriainv-dot) ----------
+# POST /api/ingest turns an uploaded site plan into blueprint.json. Images and PDFs
+# need ANTHROPIC_API_KEY in the server environment. Never put it in the repo or the browser.
+
+try:
+    from ingest.router import router as ingest_router
+
+    app.include_router(ingest_router)
+    INGEST = "mounted" if os.environ.get("ANTHROPIC_API_KEY") else \
+        "mounted (JSON and CSV only: ANTHROPIC_API_KEY is not set, so images and PDFs will fail)"
+except ImportError as e:
+    INGEST = f"not installed ({e})"
+except RuntimeError as e:  # FastAPI raises this when python-multipart is missing
+    INGEST = f"not mounted ({e})"
+
+# ---------- Live layer: connectors, alerts, actions, Jarvis, /ws (#38, @vinnycodes67) ----------
+
+try:
+    from .live_api import install as install_live
+
+    LIVE = install_live(app, SCENARIO)
+except ImportError as e:
+    LIVE = None
+    log.warning("Live layer not mounted: %s", e)

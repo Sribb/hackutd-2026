@@ -1,0 +1,60 @@
+{
+  "_note": "Equipment presets a human can apply to fill a gap in an uploaded blueprint. Every value is a placeholder until the mentors answer. The source says where each number came from.",
+  "presets": [
+    {
+      "preset_id": "tank_pw_500", "kind": "tank", "name": "Produced water tank, 500 bbl",
+      "values": { "capacity_bbl": 500, "shutdown_pct": 90, "warning_pct": 80, "pump_low_pct": 40 },
+      "source": "scenario/field.json placeholder"
+    },
+    {
+      "preset_id": "tank_pw_1000", "kind": "tank", "name": "Produced water tank, 1000 bbl",
+      "values": { "capacity_bbl": 1000, "shutdown_pct": 90, "warning_pct": 80, "pump_low_pct": 40 },
+      "source": "docs/CONTRACT.md example size, with the scenario's shutdown and warning levels"
+    },
+    {
+      "preset_id": "pump_transfer_150", "kind": "pump", "name": "Transfer pump, 150 bbl/hr",
+      "values": { "rate_bbl_hr": 150 },
+      "source": "scenario/field.json placeholder"
+    },
+    {
+      "preset_id": "well_pumpjack_typical", "kind": "well", "name": "Pumpjack well, typical",
+      "values": { "water_bbl_hr": 22, "lost_usd_hr": 260 },
+      "source": "Middle of the 24 placeholder wells in scenario/field.json"
+    },
+    {
+      "preset_id": "crossover_manual_200", "kind": "crossover_valve", "name": "Manual crossover valve",
+      "values": { "max_bbl_hr": 200, "bbl_hr_per_pct": 20, "manual": true, "default": "CLOSED" },
+      "source": "scenario/field.json placeholder (VALVE_XO_34)"
+    },
+    {
+      "preset_id": "discharge_valve_open", "kind": "discharge_valve", "name": "Pump discharge valve",
+      "values": { "default": "OPEN" },
+      "source": "scenario/field.json"
+    },
+    {
+      "preset_id": "swd_450", "kind": "disposal_well", "name": "Disposal well, 450 bbl/hr",
+      "values": { "max_bbl_hr": 450 },
+      "source": "scenario/field.json placeholder"
+    },
+    {
+      "preset_id": "truck_vacuum_130", "kind": "truck", "name": "Vacuum truck, 130 bbl",
+      "values": { "capacity_bbl": 130, "load_minutes": 20, "minutes_to_disposal": 30, "unload_minutes": 15, "usd_hr": 110 },
+      "source": "scenario/field.json placeholder"
+    },
+    {
+      "preset_id": "yard_default", "kind": "yard", "name": "Truck yard",
+      "values": {},
+      "source": "scenario/field.json"
+    },
+    {
+      "preset_id": "costs_placeholder", "kind": "costs", "name": "Cost placeholders",
+      "values": { "disposal_usd_bbl": 1.25, "truck_usd_hr": 110, "well_restart_usd": 500 },
+      "source": "Disposal from JPT ($0.60 to $1.50 per bbl, 2018 figures). Trucking and restarts are placeholders."
+    },
+    {
+      "preset_id": "lead_min_default", "kind": "lead_min", "name": "Action lead times (minutes)",
+      "values": { "SET_VALVE_manual": 20, "SET_VALVE_remote": 1, "CHOKE_WELL": 2, "SEND_TRUCK": 5, "SET_PUMP": 1 },
+      "source": "scenario/field.json placeholder"
+    }
+  ]
+}

@@ -1,0 +1,861 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/teameuphoriainv-dot/hackutd-2026/docs/blueprint.schema.json",
+  "title": "Freeboard blueprint v1",
+  "description": "One file drives the 3D generator, the backend forecast, and the console. It is scenario/field.json plus optional x and y per asset, connections, site, and connectors. See docs/BLUEPRINT.md. This schema describes a COMPLETE blueprint, with every number the forecast needs. An ingest draft fails it until a person fills the review items, and that is on purpose.",
+  "type": "object",
+  "required": [
+    "name",
+    "tanks",
+    "pumps",
+    "valves",
+    "wells",
+    "disposal_wells"
+  ],
+  "patternProperties": {
+    "^_": true
+  },
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "clock_start": {
+      "type": "string",
+      "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$"
+    },
+    "site": {
+      "$ref": "#/$defs/site"
+    },
+    "tanks": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 20,
+      "items": {
+        "$ref": "#/$defs/tank"
+      }
+    },
+    "pumps": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/pump"
+      }
+    },
+    "valves": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/valve"
+      }
+    },
+    "wells": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/well"
+      }
+    },
+    "disposal_wells": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 4,
+      "items": {
+        "$ref": "#/$defs/disposal_well"
+      }
+    },
+    "trucks": {
+      "type": "array",
+      "maxItems": 6,
+      "items": {
+        "$ref": "#/$defs/truck"
+      }
+    },
+    "yards": {
+      "type": "array",
+      "maxItems": 1,
+      "items": {
+        "$ref": "#/$defs/yard"
+      }
+    },
+    "connections": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/connection"
+      }
+    },
+    "connectors": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/connector"
+      }
+    },
+    "lead_min": {
+      "$ref": "#/$defs/numbers"
+    },
+    "costs": {
+      "$ref": "#/$defs/numbers"
+    },
+    "initial": {
+      "type": "object",
+      "patternProperties": {
+        "^_": true
+      },
+      "additionalProperties": false,
+      "properties": {
+        "tank_pct": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "#/$defs/tank_id"
+          },
+          "additionalProperties": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 100
+          }
+        }
+      }
+    },
+    "faults": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/fault"
+      }
+    },
+    "sensors": {
+      "type": "object",
+      "patternProperties": {
+        "^_": true
+      },
+      "additionalProperties": false,
+      "properties": {
+        "level_noise_pct": {
+          "type": "number",
+          "minimum": 0
+        },
+        "flow_noise_bbl_hr": {
+          "type": "number",
+          "minimum": 0
+        },
+        "stale_after_min": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        }
+      }
+    },
+    "equipment": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/equipment"
+      }
+    }
+  },
+  "$defs": {
+    "tank_id": {
+      "type": "string",
+      "pattern": "^TANK_[A-Z0-9_]+$"
+    },
+    "pump_id": {
+      "type": "string",
+      "pattern": "^PUMP_[A-Z0-9_]+$"
+    },
+    "valve_id": {
+      "type": "string",
+      "pattern": "^VALVE_(D|XO)_[A-Z0-9_]+$"
+    },
+    "swd_id": {
+      "type": "string",
+      "pattern": "^SWD_[A-Z0-9_]+$"
+    },
+    "yard_id": {
+      "type": "string",
+      "pattern": "^YARD_[A-Z0-9_]+$"
+    },
+    "asset_id": {
+      "type": "string",
+      "pattern": "^[A-Z][A-Z0-9_]*$"
+    },
+    "pct": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 100
+    },
+    "coord": {
+      "type": "number",
+      "minimum": -5000,
+      "maximum": 5000
+    },
+    "valve_state": {
+      "enum": [
+        "OPEN",
+        "CLOSED"
+      ]
+    },
+    "numbers": {
+      "type": "object",
+      "patternProperties": {
+        "^_": true
+      },
+      "additionalProperties": {
+        "type": "number",
+        "minimum": 0
+      }
+    },
+    "placed": {
+      "description": "x and y are meters on the plan: x east along the lease road, y north. Give both or neither. Missing means the generator lays the asset out.",
+      "dependentRequired": {
+        "x": [
+          "y"
+        ],
+        "y": [
+          "x"
+        ]
+      }
+    },
+    "site": {
+      "type": "object",
+      "patternProperties": {
+        "^_": true
+      },
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "operator": {
+          "type": "string"
+        },
+        "lat": {
+          "type": "number",
+          "minimum": -90,
+          "maximum": 90
+        },
+        "lon": {
+          "type": "number",
+          "minimum": -180,
+          "maximum": 180
+        },
+        "width_m": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "timezone": {
+          "type": "string"
+        }
+      }
+    },
+    "tank": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/placed"
+        }
+      ],
+      "type": "object",
+      "required": [
+        "id",
+        "capacity_bbl",
+        "shutdown_pct"
+      ],
+      "patternProperties": {
+        "^_": true
+      },
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/tank_id"
+        },
+        "label": {
+          "type": "string"
+        },
+        "capacity_bbl": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "shutdown_pct": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 100
+        },
+        "warning_pct": {
+          "$ref": "#/$defs/pct"
+        },
+        "pump_low_pct": {
+          "$ref": "#/$defs/pct"
+        },
+        "setpoint_pct": {
+          "$ref": "#/$defs/pct"
+        },
+        "x": {
+          "$ref": "#/$defs/coord"
+        },
+        "y": {
+          "$ref": "#/$defs/coord"
+        }
+      }
+    },
+    "pump": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/placed"
+        }
+      ],
+      "type": "object",
+      "required": [
+        "id",
+        "tank_id",
+        "rate_bbl_hr"
+      ],
+      "patternProperties": {
+        "^_": true
+      },
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/pump_id"
+        },
+        "label": {
+          "type": "string"
+        },
+        "tank_id": {
+          "$ref": "#/$defs/tank_id"
+        },
+        "rate_bbl_hr": {
+          "type": "number",
+          "minimum": 0
+        },
+        "valve_id": {
+          "$ref": "#/$defs/valve_id"
+        },
+        "swd_id": {
+          "$ref": "#/$defs/swd_id"
+        },
+        "x": {
+          "$ref": "#/$defs/coord"
+        },
+        "y": {
+          "$ref": "#/$defs/coord"
+        }
+      }
+    },
+    "valve": {
+      "type": "object",
+      "required": [
+        "id",
+        "kind",
+        "connects"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "DISCHARGE",
+            "CROSSOVER"
+          ]
+        }
+      },
+      "oneOf": [
+        {
+          "$ref": "#/$defs/discharge_valve"
+        },
+        {
+          "$ref": "#/$defs/crossover_valve"
+        }
+      ]
+    },
+    "discharge_valve": {
+      "type": "object",
+      "patternProperties": {
+        "^_": true
+      },
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^VALVE_D_[A-Z0-9_]+$"
+        },
+        "label": {
+          "type": "string"
+        },
+        "kind": {
+          "const": "DISCHARGE"
+        },
+        "pump_id": {
+          "$ref": "#/$defs/pump_id"
+        },
+        "connects": {
+          "description": "[the pump, the disposal well it sends to]. The backend needs both ends.",
+          "type": "array",
+          "prefixItems": [
+            {
+              "$ref": "#/$defs/pump_id"
+            },
+            {
+              "$ref": "#/$defs/swd_id"
+            }
+          ],
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "default": {
+          "$ref": "#/$defs/valve_state"
+        },
+        "remote": {
+          "type": "boolean"
+        }
+      }
+    },
+    "crossover_valve": {
+      "type": "object",
+      "required": [
+        "max_bbl_hr",
+        "manual"
+      ],
+      "patternProperties": {
+        "^_": true
+      },
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^VALVE_XO_[A-Z0-9_]+$"
+        },
+        "label": {
+          "type": "string"
+        },
+        "kind": {
+          "const": "CROSSOVER"
+        },
+        "connects": {
+          "type": "array",
+          "prefixItems": [
+            {
+              "$ref": "#/$defs/tank_id"
+            },
+            {
+              "$ref": "#/$defs/tank_id"
+            }
+          ],
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "default": {
+          "$ref": "#/$defs/valve_state"
+        },
+        "max_bbl_hr": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "bbl_hr_per_pct": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "manual": {
+          "type": "boolean"
+        }
+      }
+    },
+    "well": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/placed"
+        }
+      ],
+      "type": "object",
+      "required": [
+        "id",
+        "tank_id",
+        "water_bbl_hr",
+        "lost_usd_hr"
+      ],
+      "patternProperties": {
+        "^_": true
+      },
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^WELL_[A-Z0-9_]+$"
+        },
+        "label": {
+          "type": "string"
+        },
+        "tank_id": {
+          "$ref": "#/$defs/tank_id"
+        },
+        "water_bbl_hr": {
+          "type": "number",
+          "minimum": 0
+        },
+        "lost_usd_hr": {
+          "type": "number",
+          "minimum": 0
+        },
+        "x": {
+          "$ref": "#/$defs/coord"
+        },
+        "y": {
+          "$ref": "#/$defs/coord"
+        }
+      }
+    },
+    "disposal_well": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/placed"
+        }
+      ],
+      "type": "object",
+      "required": [
+        "id",
+        "max_bbl_hr"
+      ],
+      "patternProperties": {
+        "^_": true
+      },
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/swd_id"
+        },
+        "label": {
+          "type": "string"
+        },
+        "max_bbl_hr": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "x": {
+          "$ref": "#/$defs/coord"
+        },
+        "y": {
+          "$ref": "#/$defs/coord"
+        }
+      }
+    },
+    "truck": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/placed"
+        }
+      ],
+      "type": "object",
+      "required": [
+        "id",
+        "capacity_bbl",
+        "minutes_to"
+      ],
+      "patternProperties": {
+        "^_": true
+      },
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^TRUCK_[A-Z0-9_]+$"
+        },
+        "label": {
+          "type": "string"
+        },
+        "capacity_bbl": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "home_id": {
+          "$ref": "#/$defs/yard_id"
+        },
+        "minutes_to": {
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": {
+            "$ref": "#/$defs/tank_id"
+          },
+          "additionalProperties": {
+            "type": "number",
+            "minimum": 0
+          }
+        },
+        "load_minutes": {
+          "type": "number",
+          "minimum": 0
+        },
+        "minutes_to_disposal": {
+          "type": "number",
+          "minimum": 0
+        },
+        "unload_minutes": {
+          "type": "number",
+          "minimum": 0
+        },
+        "usd_hr": {
+          "type": "number",
+          "minimum": 0
+        },
+        "x": {
+          "$ref": "#/$defs/coord"
+        },
+        "y": {
+          "$ref": "#/$defs/coord"
+        }
+      }
+    },
+    "yard": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/placed"
+        }
+      ],
+      "type": "object",
+      "required": [
+        "id"
+      ],
+      "patternProperties": {
+        "^_": true
+      },
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/yard_id"
+        },
+        "label": {
+          "type": "string"
+        },
+        "x": {
+          "$ref": "#/$defs/coord"
+        },
+        "y": {
+          "$ref": "#/$defs/coord"
+        }
+      }
+    },
+    "connection": {
+      "description": "A pipe or link between two assets. Checked, not drawn: the generator pipes by tank_id, pump, and valve fields.",
+      "oneOf": [
+        {
+          "type": "array",
+          "prefixItems": [
+            {
+              "$ref": "#/$defs/asset_id"
+            },
+            {
+              "$ref": "#/$defs/asset_id"
+            }
+          ],
+          "minItems": 2,
+          "maxItems": 2
+        },
+        {
+          "type": "object",
+          "required": [
+            "from",
+            "to"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "from": {
+              "$ref": "#/$defs/asset_id"
+            },
+            "to": {
+              "$ref": "#/$defs/asset_id"
+            },
+            "kind": {
+              "enum": [
+                "WATER",
+                "OIL",
+                "GAS",
+                "POWER",
+                "SIGNAL"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "fault": {
+      "type": "object",
+      "required": [
+        "asset_id",
+        "type"
+      ],
+      "patternProperties": {
+        "^_": true
+      },
+      "additionalProperties": false,
+      "properties": {
+        "asset_id": {
+          "$ref": "#/$defs/asset_id"
+        },
+        "type": {
+          "enum": [
+            "TRIP",
+            "STUCK_VALVE",
+            "SENSOR_STALE",
+            "LEAK"
+          ]
+        },
+        "at_min": {
+          "type": "number",
+          "minimum": 0
+        },
+        "reason": {
+          "type": "string"
+        }
+      }
+    },
+    "connector": {
+      "description": "Where live signals come from and where confirmed commands go. With no connectors, the backend simulates every asset.",
+      "type": "object",
+      "required": [
+        "id",
+        "kind",
+        "signals"
+      ],
+      "patternProperties": {
+        "^_": true
+      },
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^CONN_[A-Z0-9_]+$"
+        },
+        "kind": {
+          "enum": [
+            "sim",
+            "mqtt",
+            "modbus",
+            "opcua",
+            "webhook",
+            "sparkplug",
+            "enip",
+            "dnp3",
+            "piwebapi",
+            "lorawan"
+          ]
+        },
+        "config": {
+          "description": "Connection settings, for example host, port, topic prefix, or unit id. Never put passwords or tokens here: name an environment variable instead, for example {\"password_env\": \"MQTT_PASSWORD\"}.",
+          "type": "object",
+          "propertyNames": {
+            "not": {
+              "pattern": "(?i)^(password|token|secret|api_key|key)$"
+            }
+          }
+        },
+        "signals": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "asset_id",
+              "signal"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "asset_id": {
+                "$ref": "#/$defs/asset_id"
+              },
+              "signal": {
+                "enum": [
+                  "level_pct",
+                  "flow_bbl_hr",
+                  "running",
+                  "position",
+                  "pressure_psi",
+                  "motor_amps"
+                ]
+              },
+              "address": {
+                "type": "string"
+              },
+              "scale": {
+                "type": "number"
+              }
+            }
+          }
+        },
+        "commands": {
+          "description": "Commands this connector may send, only after a person confirms in the console.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "asset_id",
+              "command"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "asset_id": {
+                "$ref": "#/$defs/asset_id"
+              },
+              "command": {
+                "enum": [
+                  "SET_VALVE",
+                  "SET_PUMP",
+                  "CHOKE_WELL"
+                ]
+              },
+              "address": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    "equipment": {
+      "description": "Other equipment the 3D generator draws (#47). Display and context only: the forecast ignores it. A type with no model yet builds as a labeled placeholder.",
+      "allOf": [
+        {
+          "$ref": "#/$defs/placed"
+        }
+      ],
+      "type": "object",
+      "required": [
+        "id",
+        "type"
+      ],
+      "patternProperties": {
+        "^_": true
+      },
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^(SEP|HT|FLARE|COMP|LACT|METER|EQ)_[A-Z0-9_]+$"
+        },
+        "type": {
+          "enum": [
+            "SEPARATOR",
+            "HEATER_TREATER",
+            "FLARE",
+            "COMPRESSOR",
+            "LACT",
+            "METER_RUN",
+            "OTHER"
+          ]
+        },
+        "label": {
+          "type": "string"
+        },
+        "tank_id": {
+          "$ref": "#/$defs/tank_id"
+        },
+        "connects": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/asset_id"
+          }
+        },
+        "x": {
+          "$ref": "#/$defs/coord"
+        },
+        "y": {
+          "$ref": "#/$defs/coord"
+        }
+      }
+    }
+  }
+}

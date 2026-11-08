@@ -1,6 +1,7 @@
-# Secrets
+# Secrets (the example file has no secrets, so it is kept)
 .env
 .env.*
+!.env.example
 
 # Python
 .venv/
@@ -8,6 +9,8 @@ __pycache__/
 *.pyc
 *.db
 *.sqlite3
+# Audit log file (FREEBOARD_AUDIT_FILE, CF-10)
+backend/data/*.jsonl
 
 # Web
 node_modules/
@@ -18,8 +21,9 @@ dist/
 *.blend1
 *.blend2
 
-# Agent board local state
+# Agent board local state, and agent worktrees
 .board/
+.claude/worktrees/
 
 # Mac
 .DS_Store
