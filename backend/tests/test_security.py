@@ -149,8 +149,14 @@ def test_radio_never_says_every_tank_when_a_tank_is_unknown_or_plan_not_robust()
 
 
 def test_approve_radio_script_matches_the_plan():
+    from backend.app import now
+    from backend.app.scenario import load_scenario
+
     plans = client.post("/api/plans", json={}).json()["plans"]
     for p in plans:
+        # Each from the field it was planned on: an approved plan is recorded (static clock), and a
+        # second plan on top of it is re-scored at approval and refused as out of date (#175).
+        now.set_static(load_scenario())
         radio = client.post(f"/api/plans/{p['id']}/approve").json()["radio_script"]
         if not p["robust"]:
             assert "every tank stays below shutdown" not in radio.lower(), radio
