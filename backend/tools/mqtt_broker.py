@@ -73,6 +73,7 @@ class MqttBroker:
         self.on_message = on_message
         self.sessions: set[_Session] = set()
         self.retained: dict[str, bytes] = {}
+        self.drop_pubacks = False  # tests: deliver QoS 1 publishes but never acknowledge them
         self.server: Optional[asyncio.base_events.Server] = None
 
     async def start(self) -> None:
@@ -86,6 +87,11 @@ class MqttBroker:
                 s.writer.close()
             await self.server.wait_closed()
             self.server = None
+
+    def drop_clients(self) -> None:
+        """Close every client connection (tests: a link that drops). Call from the broker's loop."""
+        for s in list(self.sessions):
+            s.writer.close()
 
     @property
     def clients(self) -> int:
@@ -146,7 +152,7 @@ class MqttBroker:
                 (pid,) = struct.unpack_from("!H", body, i)
                 i += 2
             payload = body[i:]
-            if qos == 1:
+            if qos == 1 and not self.drop_pubacks:
                 s.send(_packet(PUBACK << 4, struct.pack("!H", pid)))
             elif qos == 2:
                 s.send(_packet(PUBREC << 4, struct.pack("!H", pid)))

@@ -10,7 +10,10 @@ Actions: Jarvis or the console *proposes* a command. It is stored PENDING and ch
 nothing. Only POST /api/actions/{id}/confirm sends it through the asset's connector:
 the proposal is claimed (SENDING) before anything awaits, so it is sent at most once.
 JARVIS_CONFIRM=0 lets Jarvis skip the confirm, but only for commands that go to the
-simulator: a command for real equipment always waits for a person.
+simulator: a command for real equipment always waits for a person. A command for an
+asset a real connector feeds but has no command path for is FAILED at once, never
+sent to the simulator. A send whose acknowledgement timed out is UNCERTAIN (it may
+have reached the device) and is never sent again by the backend.
 
 This layer is additive. GET /api/state and the forecast keep reading the scenario file.
 reload() points it at a newly activated blueprint (live_api installs app.state.live_reload).
@@ -25,7 +28,7 @@ import os
 from collections import defaultdict
 from typing import Optional
 
-from .connectors import Registry
+from .connectors import NoCommandPath, Registry
 from .connectors.sim import _fraction, _on
 from .detect import Detector, new_history, now_iso
 from .fieldmap import COMMANDS, FieldMap, name
@@ -104,7 +107,9 @@ class LiveField:
         if self._task:
             self._task.cancel()
             self._task = None
-        self.registry.close()
+        # close() returns at once; wait for the socket and thread cleanup off the loop.
+        for t in self.registry.close():
+            await asyncio.to_thread(t.join, 5)
 
     async def _loop(self) -> None:
         while True:
@@ -367,8 +372,14 @@ class LiveField:
         p = {"id": f"act_{next(self._ids)}", "action": a, "reason": (reason or describe(a)).strip(),
              "status": "PENDING", "created_t": now_iso(), "text": describe(a), "source": source,
              "connector_id": conn.id}
+        if isinstance(conn, NoCommandPath):
+            # A real connector feeds this asset but can't take this command. Never let the
+            # simulator "do" it: nothing would change in the field.
+            p.update(status="FAILED", decided_t=now_iso(), decided_by="router", result=conn.send(a)["detail"])
         self.proposals[p["id"]] = p
         await self.hub.broadcast("proposal", {"proposal": p})
+        if p["status"] == "FAILED":
+            return p
         await self.focus(a["asset_id"], f"Waiting for confirmation: {p['text']}", source=source)
         # The broadcasts above yield, so a person may already have decided it: only
         # auto-confirm while it is still PENDING (checked and claimed with no await between).
@@ -398,7 +409,10 @@ class LiveField:
             log.exception("sending %s failed", action_id)
             res = {"ok": False, "detail": f"Send failed: {e}"}
         ok = bool(res.get("ok"))
-        p.update(status="CONFIRMED" if ok else "FAILED", result=res.get("detail", ""), decided_t=now_iso())
+        # UNCERTAIN: it left for the device but no acknowledgement came back. It may have
+        # moved, so it is not FAILED (which invites a retry); a person checks the field.
+        status = "CONFIRMED" if ok else "UNCERTAIN" if res.get("uncertain") else "FAILED"
+        p.update(status=status, result=res.get("detail", ""), decided_t=now_iso())
         if ok and a["type"] in ("SET_VALVE", "SET_PUMP"):
             self.commanded[a["asset_id"]] = {"value": a["value"], "t": self.t}
         await self.hub.broadcast("proposal", {"proposal": p})

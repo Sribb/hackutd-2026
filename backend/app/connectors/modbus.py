@@ -19,6 +19,12 @@ Commands, written only after a person confirms:
     SET_PUMP    ON 1, OFF 0
     CHOKE_WELL  percent kept, 0 (shut in) to 100 (untouched), in a holding register
 
+A write the PLC answers with a Modbus exception is FAILED (it refused, nothing moved).
+A write that was sent but got no reply within timeout_s (or whose link dropped while
+waiting) is `uncertain` (UNCERTAIN, never FAILED): the PLC may have applied it. The
+client runs with retries=0, so pymodbus never re-sends a write on its own, and the
+connector never retries one either.
+
 Config: host (required), port (502), unit_id (1), poll_s (1), timeout_s (2),
 bad_value (65535).
 
@@ -34,7 +40,7 @@ import time
 from typing import Callable, Optional
 
 from ..fieldmap import FieldMap
-from .base import Connector, Reading, coerce, import_optional
+from .base import UNCERTAIN_DETAIL, Connector, Reading, coerce, import_optional
 
 TABLES = {"hr": "hr", "holding": "hr", "ir": "ir", "input": "ir", "coil": "coil", "co": "coil",
           "di": "di", "discrete": "di"}
@@ -244,20 +250,26 @@ class ModbusConnector(Connector):
         if raw is None:
             return {"ok": False, "detail": f"{self.id} can't encode {command.get('type')} {command.get('value')!r}."}
         table, n = target
-        try:
-            with self._io:
+        where = f"{table}:{n} on {self.host}:{self.port} (unit {self.unit})"
+        with self._io:
+            try:
                 if not self._ensure(force=True):
-                    return {"ok": False, "detail": f"Couldn't reach {self.id} at {self.host}:{self.port}."}
+                    return {"ok": False, "detail": f"Couldn't reach {self.id} at {self.host}:{self.port}. Nothing was sent."}
+            except Exception as e:  # noqa: BLE001 - connecting failed: nothing was sent
+                self._fail(str(e))
+                return {"ok": False, "detail": f"Couldn't reach {self.id} at {self.host}:{self.port}: {e}. Nothing was sent."}
+            try:
                 if table == "coil":
                     self._call("write_coil", n, value=bool(raw))
                 else:
                     self._call("write_register", n, value=raw)
-        except DeviceRefused as e:
-            return {"ok": False, "detail": f"{self.id} refused the write: {e}"}
-        except Exception as e:  # noqa: BLE001 - a dead PLC must never break the console
-            self._fail(str(e))
-            return {"ok": False, "detail": f"Couldn't write to {self.id}: {e}"}
-        return {"ok": True, "detail": f"Wrote {raw} to {table}:{n} on {self.host}:{self.port} (unit {self.unit})."}
+            except DeviceRefused as e:  # the PLC answered: it did not apply the write
+                return {"ok": False, "detail": f"{self.id} refused the write: {e}"}
+            except Exception as e:  # noqa: BLE001 - the request went out; the reply never came
+                self._fail(str(e))
+                return {"ok": False, "uncertain": True,
+                        "detail": f"{self.id}: wrote {raw} to {where}, {UNCERTAIN_DETAIL} ({e})."}
+        return {"ok": True, "detail": f"Wrote {raw} to {where}."}
 
     def status(self) -> dict:
         if self.client is None:
@@ -272,12 +284,18 @@ class ModbusConnector(Connector):
             detail += f"; the PLC refused {len(self.refused)} points ({self.refused[0]})"
         return {"id": self.id, "kind": self.kind, "available": True, "detail": detail}
 
-    def close(self) -> None:
+    def close(self):
+        """Returns at once. The poller stops at its next wait; joining it and closing the
+        socket run on a daemon thread, so a PLC mid-timeout never blocks the event loop."""
         self._stop.set()
-        if self._thread is not None:
-            self._thread.join(timeout=self.timeout + self.poll_s + 1)
-        if self.client is not None:
-            try:
-                self.client.close()
-            except Exception:  # noqa: BLE001
-                pass
+        thread, client = self._thread, self.client
+        if thread is None and client is None:
+            return None
+
+        def stop() -> None:
+            if thread is not None:
+                thread.join(timeout=self.timeout + self.poll_s + 1)
+            if client is not None:
+                with self._io:
+                    client.close()
+        return self.close_later(stop, f"modbus-close-{self.id}")

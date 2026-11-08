@@ -311,7 +311,7 @@ def test_mqtt_without_library_is_unavailable(monkeypatch):
 
     monkeypatch.setattr(importlib, "import_module", missing)
     raw = {**json.loads(json.dumps({"connectors": [{
-        "id": "CONN_SCADA", "kind": "mqtt", "config": {"host": "10.0.0.5", "password_env": "MQTT_PASSWORD"},
+        "id": "CONN_SCADA", "kind": "mqtt", "config": {"host": "10.0.0.5", "password_env": "FREEBOARD_CONN_MQTT_PASSWORD"},
         "signals": [{"asset_id": "TANK_3", "signal": "level_pct", "address": "tank3/level"}],
         "commands": [{"asset_id": "VALVE_XO_34", "command": "SET_VALVE", "address": "xo34/cmd"}]}]}))}
     live = LiveField(healthy_scenario(), raw)
@@ -338,9 +338,9 @@ def test_webhook_connector_posts_the_command(monkeypatch):
         seen.append((str(request.url), request.headers.get("authorization"), json.loads(request.content)))
         return httpx.Response(200, json={"ok": True})
 
-    monkeypatch.setenv("HOOK_TOKEN", "s3cret")
+    monkeypatch.setenv("FREEBOARD_CONN_HOOK_TOKEN", "s3cret")
     raw = {"connectors": [{"id": "CONN_HOOK", "kind": "webhook",
-                           "config": {"url": "http://gateway.local/cmd", "token_env": "HOOK_TOKEN"},
+                           "config": {"url": "http://gateway.local/cmd", "token_env": "FREEBOARD_CONN_HOOK_TOKEN"},
                            "signals": [{"asset_id": "VALVE_XO_34", "signal": "position", "address": "xo34/pos"}],
                            "commands": [{"asset_id": "VALVE_XO_34", "command": "SET_VALVE", "address": "xo34/cmd"}]}]}
     live = LiveField(healthy_scenario(), raw)

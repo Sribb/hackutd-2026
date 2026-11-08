@@ -4,7 +4,7 @@
     GET  /api/live/connectors             connector status
     POST /api/live/readings/{connector}   push readings into a webhook connector
     POST /api/live/sim                    demo controls: speed, pause, advance
-    POST /api/live/faults                 demo: inject a fault into the simulator
+    POST /api/live/faults                 demo: inject a fault into the simulator (409 for an asset on a real connector)
     GET  /api/alerts                      every alert, newest last
     POST /api/alerts/{id}/ack             acknowledge (the ntfy button calls this)
     GET  /api/actions                     every proposal
@@ -34,6 +34,9 @@ from .live import ActionError, LiveField
 from .planner import make_plans
 
 log = logging.getLogger("freeboard.live_api")
+
+# Fault type -> the word backend.tools.fake_field's console takes ('trip PUMP_2').
+FAULT_WORDS = {"TRIP": "trip", "STUCK_VALVE": "stuck", "SENSOR_STALE": "stale", "LEAK": "leak", "REPAIR": "repair"}
 
 
 class ActionIn(BaseModel):
@@ -115,7 +118,17 @@ def build_router(live: LiveField, jarvis: Jarvis) -> APIRouter:
 
     @r.post("/api/live/faults")
     async def inject_fault(body: FaultIn) -> dict:
-        why = live.registry.sim.inject(body.model_dump(exclude_none=True))
+        fault = body.model_dump(exclude_none=True)
+        fault["asset_id"] = str(fault.get("asset_id", "")).upper()
+        via = live.registry.feeder(fault["asset_id"])
+        if via is not None:
+            # The simulator doesn't own this asset: injecting there would answer ok and change
+            # nothing on screen. The fake devices have no control endpoint to call instead.
+            word = FAULT_WORDS.get(str(fault.get("type", "TRIP")).upper(), "trip")
+            raise HTTPException(409, f"{fault['asset_id']} is read over {via.id} ({via.kind}): fault injection "
+                                     f"only works on simulated assets; trip it at the device (e.g. type "
+                                     f"'{word} {fault['asset_id']}' in backend.tools.fake_field)")
+        why = live.registry.sim.inject(fault)
         if why:
             raise HTTPException(422, why)
         return {"ok": True}

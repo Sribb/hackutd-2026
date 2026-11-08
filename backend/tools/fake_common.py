@@ -128,8 +128,22 @@ class LoopThread:
         return self.run(wrap(), timeout)
 
     def stop(self) -> None:
+        """Stop the loop, cancel what is left on it, and close it (its selector and sockets)."""
+        if self.loop.is_closed():
+            return
         self.loop.call_soon_threadsafe(self.loop.stop)
         self.thread.join(timeout=5)
+        if self.thread.is_alive():  # still stuck in a callback: closing a running loop raises
+            return
+        try:
+            pending = [t for t in asyncio.all_tasks(self.loop) if not t.done()]
+            for t in pending:
+                t.cancel()
+            if pending:
+                self.loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+            self.loop.run_until_complete(self.loop.shutdown_asyncgens())
+        finally:
+            self.loop.close()
 
 
 async def run_field(field: FieldSim, devices: list, speed: float, interval: float) -> None:

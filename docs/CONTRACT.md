@@ -416,7 +416,12 @@ A proposal changes nothing. Only confirm sends it, through the connector that ow
 ```
 
 - `action.type`: `SET_VALVE` (value `OPEN`/`CLOSED`), `SET_PUMP` (`ON`/`OFF`), `CHOKE_WELL` (0 shut in to 1 untouched), `SEND_TRUCK` (value null, plus `target_id`, a tank).
-- `status`: `PENDING`, then `REJECTED`, or `SENDING` (a person confirmed it and the command is on its way to the connector), then `CONFIRMED` or `FAILED` (the connector refused or was unreachable). A proposal is sent at most once: the first confirm claims it as `SENDING`, so a second confirm (another screen) or a late reject gets 409. After a decision the proposal also has `decided_t` and `decided_by`, and once sent, `result` (what the connector said).
+- `status`: `PENDING`, then `REJECTED`, or `SENDING` (a person confirmed it and the command is on its way to the connector), then one of:
+  - `CONFIRMED`: the connector acknowledged it (MQTT PUBACK, Modbus write reply, webhook 2xx, or the simulator).
+  - `FAILED`: nothing reached the device (the connector refused, was unreachable, or the PLC answered with a Modbus exception). Safe to propose again.
+  - `UNCERTAIN`: the command was sent but its acknowledgement never came (MQTT PUBACK or Modbus reply timed out, or the link dropped while waiting). `result` says `sent; delivery not confirmed — check the field before retrying`. The device may have moved. The backend never re-sends it (paho's own re-send after a reconnect is cancelled too); a person checks the field, then proposes again if needed. Treat it like `FAILED` for buttons (it is final), but show it as a warning, not an error.
+
+  A proposal for an asset that a real connector reads or commands, with a command that connector doesn't declare, is `FAILED` as soon as it is proposed, with `decided_by` `"router"` and `result` `no command path to PUMP_6 on CONN_PLC: ...`. It never goes to the simulator, whose change would not reach the field. A proposal is sent at most once: the first confirm claims it as `SENDING`, so a second confirm (another screen) or a late reject gets 409. After a decision the proposal also has `decided_t` and `decided_by`, and once sent, `result` (what the connector said).
 - `GET /api/actions` → `{"proposals": [proposal]}`.
 - `POST /api/actions` with `{type, asset_id, value, target_id?, reason?}` → a PENDING proposal (422 if the action is invalid).
 - `POST /api/actions/{id}/confirm` and `POST /api/actions/{id}/reject` (optional body `{"by": "name"}`) → the updated proposal. 404 for an unknown id, 409 if it isn't PENDING (including while it is SENDING).
@@ -454,16 +459,16 @@ The live layer follows `POST /api/blueprints/{id}/activate` once #64's `_use_sce
 - `GET /api/live/connectors` → `{"connectors": [...], "jarvis": {"mode", "model", "llm_available"}, "push": {"enabled", "last_error"}}`.
 - `POST /api/live/readings/{connector_id}` (webhook connectors only) with `{"readings": [{"asset_id", "signal", "value"} | {"address", "value"}]}` → `{"accepted": [...], "rejected": [...]}`. Only signals the blueprint declares for that connector are accepted. If the connector has `token_env`, send the token in `X-Freeboard-Token`.
 - `POST /api/live/sim` with `{speed?, paused?, advance_min?}` → the live clock.
-- `POST /api/live/faults` with `{asset_id, type: TRIP | STUCK_VALVE | SENSOR_STALE | LEAK | REPAIR, reason?, rate_bbl_hr?}` injects a fault into the simulator.
+- `POST /api/live/faults` with `{asset_id, type: TRIP | STUCK_VALVE | SENSOR_STALE | LEAK | REPAIR, reason?, rate_bbl_hr?}` injects a fault into the simulator → `{"ok": true}`, or 422 if the fault doesn't apply to that asset. For an asset a real connector reads or commands it is **409** and changes nothing: `"PUMP_2 is read over CONN_SCADA (mqtt): fault injection only works on simulated assets; trip it at the device (e.g. type 'trip PUMP_2' in backend.tools.fake_field)"`.
 
 ### Connector protocols (#62)
 
-Declared in the blueprint's `connectors` (see [BLUEPRINT.md](BLUEPRINT.md)). Config holds hosts and ports only; a secret is named by a `*_env` key. Every command below is sent **only after a person confirms** it; `JARVIS_CONFIRM=0` never applies to these connectors.
+Declared in the blueprint's `connectors` (see [BLUEPRINT.md](BLUEPRINT.md)). Config holds hosts and ports only; a secret is named by a `*_env` key whose value starts with `FREEBOARD_CONN_`. Every command below is sent **only after a person confirms** it; `JARVIS_CONFIRM=0` never applies to these connectors.
 
 | `kind` | Config | Signal `address` and value | Command `address` and payload |
 |---|---|---|---|
-| `mqtt` (paho-mqtt, MQTT 3.1.1) | `host`, `port` (1883), `topic_prefix` (""), `username`, `password_env`, `tls`, `client_id`, `keepalive_s` (30), `timeout_s` (5) | Topic `topic_prefix + address` (default `ASSET_ID/signal`). Payload is a plain value (`72.4`, `1`, `true`, `ON`, `OPEN`) or JSON (`{"value": 72.4}`) | Topic `topic_prefix + address` (default `ASSET_ID/set`), QoS 1, plain text: `OPEN`/`CLOSED`, `ON`/`OFF`, or the choke fraction (`0.5`). `CONFIRMED` means the broker acknowledged it |
-| `modbus` (pymodbus, Modbus TCP) | `host`, `port` (502), `unit_id` (1), `poll_s` (1), `timeout_s` (2), `bad_value` (65535) | `hr:N`, `ir:N`, `coil:N`, `di:N`, 0-based (a bare `N` is a holding register). A register is unsigned 16-bit; value = `raw * scale` (the signal's `scale`, default 1). `bad_value` means no reading. `running`/`position`: nonzero is running/`OPEN` | `hr:N` or `coil:N`. `SET_VALVE` OPEN 1 / CLOSED 0, `SET_PUMP` ON 1 / OFF 0, `CHOKE_WELL` percent kept 0 to 100 (holding register). `CONFIRMED` means the PLC accepted the write |
+| `mqtt` (paho-mqtt, MQTT 3.1.1) | `host`, `port` (1883), `topic_prefix` (""), `username`, `password_env`, `tls`, `client_id`, `keepalive_s` (30), `timeout_s` (5) | Topic `topic_prefix + address` (default `ASSET_ID/signal`), one exact topic: `+` or `#` makes the connector `unavailable` at load. Payload is a plain value (`72.4`, `1`, `true`, `ON`, `OPEN`) or JSON (`{"value": 72.4}`). A retained message is not a reading (it may be hours old): the asset stays `UNKNOWN` until a live message | Topic `topic_prefix + address` (default `ASSET_ID/set`), QoS 1, plain text: `OPEN`/`CLOSED`, `ON`/`OFF`, or the choke fraction (`0.5`). `CONFIRMED` means the broker acknowledged it; no PUBACK within `timeout_s` is `UNCERTAIN` |
+| `modbus` (pymodbus, Modbus TCP) | `host`, `port` (502), `unit_id` (1), `poll_s` (1), `timeout_s` (2), `bad_value` (65535) | `hr:N`, `ir:N`, `coil:N`, `di:N`, 0-based (a bare `N` is a holding register). A register is unsigned 16-bit; value = `raw * scale` (the signal's `scale`, default 1). `bad_value` means no reading. `running`/`position`: nonzero is running/`OPEN` | `hr:N` or `coil:N`. `SET_VALVE` OPEN 1 / CLOSED 0, `SET_PUMP` ON 1 / OFF 0, `CHOKE_WELL` percent kept 0 to 100 (holding register). `CONFIRMED` means the PLC accepted the write; a Modbus exception is `FAILED`; no reply within `timeout_s` is `UNCERTAIN` (sent once, never retried) |
 | `opcua` | `endpoint` | not implemented yet: reports `unavailable` | |
 
 Readings are stamped with the live clock when the backend reads them, so a device that stops publishing goes stale after `stale_after_min`. Publish at least that often. Whether a device actually moved shows in its readings: `VALVE_MISMATCH` catches a valve that didn't.
@@ -478,7 +483,7 @@ Connect to `ws://127.0.0.1:8000/ws?role=web` (`role` is `web`, `phone`, `device`
 |---|---|---|
 | `state` | `{"type": "state", "seq": 1, "state": <GET /api/live/state body>}` | On connect, every tick, and after each confirm |
 | `alert` | `{"type": "alert", "seq": 2, "alert": <alert>}` | Raised or resolved |
-| `proposal` | `{"type": "proposal", "seq": 3, "proposal": <proposal>}` | Created, sending, confirmed, rejected, or failed |
+| `proposal` | `{"type": "proposal", "seq": 3, "proposal": <proposal>}` | Created, sending, confirmed, rejected, failed, or uncertain |
 | `ui` | `{"type": "ui", "seq": 4, "action": "focus", "asset_id": "PUMP_3", "reason": "...", "source": "jarvis"}` | Jarvis, a new ALARM, a proposal, or a phone wants every screen on an asset |
 
 Clients may send `{"type": "ping"}` (answered with `pong`) and `{"type": "ui", "action": "focus", "asset_id": "TANK_3"}` to point every console at an asset.
@@ -496,7 +501,7 @@ Clients may send `{"type": "ping"}` (answered with `pong`) and `{"type": "ui", "
 | `NTFY_SERVER` | `https://ntfy.sh` | ntfy server. |
 | `PUBLIC_URL` | unset | Where a phone can reach this server, for the notification's buttons. |
 | `CORS_ORIGINS` | unset | Extra allowed origins, comma separated. Localhost is always allowed. |
-| `*_env` in connector config | | Names the variable holding a connector secret, e.g. `"token_env": "HOOK_TOKEN"`. |
+| `FREEBOARD_CONN_*` | unset | Connector secrets. A `*_env` key in connector config names one, e.g. `"token_env": "FREEBOARD_CONN_HOOK_TOKEN"`. Any other name (say `ANTHROPIC_API_KEY`) makes that connector `unavailable` with "bad config", so a blueprint can never send an unrelated secret to its host. |
 
 ### `POST /api/ingest`
 

@@ -92,7 +92,7 @@ Additive: the endpoints above are unchanged. Shapes are in [docs/CONTRACT.md](..
 
 | File | What it does |
 |---|---|
-| `app/connectors/` | One interface: `read()` returns `{asset_id, signal, value, t}` readings, `send(command)` returns `{ok, detail}`. `sim` (the default, a live digital twin), `webhook` (readings pushed in, commands POSTed out), `mqtt` (paho-mqtt) and `modbus` (pymodbus TCP) real drivers (#62), and a stub for `opcua` that reports "unavailable" |
+| `app/connectors/` | One interface: `read()` returns `{asset_id, signal, value, t}` readings, `send(command)` returns `{ok, detail, uncertain?}`. `sim` (the default, a live digital twin), `webhook` (readings pushed in, commands POSTed out), `mqtt` (paho-mqtt) and `modbus` (pymodbus TCP) real drivers (#62), and a stub for `opcua` that reports "unavailable" |
 | `app/detect.py` | Pump trip (stopped, no flow, or tank rising faster than its wells explain), stale sensor (UNKNOWN, never OK), valve mismatch. Confirmed over 2 readings |
 | `app/live.py` | The live loop, readings, statuses, and proposals that only a confirm sends |
 | `app/jarvis.py` | Rules fast path (no key needed) plus Claude tool use: focus camera, explain asset, forecast, plans, propose action |
@@ -126,9 +126,10 @@ curl -s localhost:8000/api/live/state | python -m json.tool | grep -A3 CONN_   #
 
 Pump 6 trips 2 minutes in on the PLC and raises `PUMP_TRIP`. Propose and confirm `SET_VALVE VALVE_XO_56 OPEN`, and the fake PLC prints the holding-register write (`hr:10 = 1`). Stop the fake field and both connectors go `unavailable` and their assets `UNKNOWN` at once.
 
-- **MQTT**: readings are plain values (`72.4`, `1`, `OPEN`) or JSON `{"value": ...}` on `topic_prefix + address`. Commands are published at QoS 1 as `OPEN`/`CLOSED`, `ON`/`OFF`, or the choke fraction.
+- **MQTT**: readings are plain values (`72.4`, `1`, `OPEN`) or JSON `{"value": ...}` on `topic_prefix + address`, one exact topic each (`+` and `#` are rejected when the blueprint loads). A retained message is the broker's old value, so it doesn't count as a reading: the asset stays `UNKNOWN` until the device publishes live. Commands are published at QoS 1 as `OPEN`/`CLOSED`, `ON`/`OFF`, or the choke fraction.
 - **Modbus**: addresses are `hr:N`, `ir:N`, `coil:N`, `di:N` (0-based; a bare number is a holding register). A register reads `raw * scale`; 65535 means bad quality (no reading). Commands write 1/0 for valves and pumps, and the percent kept (0 to 100) for `CHOKE_WELL`.
-- Missing library, unreachable endpoint, or unset `*_env` variable: the connector says why in `/api/live/state`, never crashes, and its assets are `UNKNOWN`. Commands to it fail cleanly (`FAILED`).
-- Commands reach a broker or PLC **only after a person confirms**. `JARVIS_CONFIRM=0` never applies to them.
+- Missing library, unreachable endpoint, or unset `*_env` variable: the connector says why in `/api/live/state`, never crashes, and its assets are `UNKNOWN`. Commands to it fail cleanly (`FAILED`, nothing sent). A `*_env` key must name a variable starting with `FREEBOARD_CONN_` (e.g. `"password_env": "FREEBOARD_CONN_SCADA_PASSWORD"`); any other name is a bad config, so a blueprint can't send an unrelated secret to its host.
+- A command that left but was never acknowledged (no MQTT PUBACK, no Modbus reply within `timeout_s`) is `UNCERTAIN`, not `FAILED`: the device may have moved. Nothing re-sends it, not even paho after a reconnect. Check the field before proposing it again.
+- Commands reach a broker or PLC **only after a person confirms**. `JARVIS_CONFIRM=0` never applies to them. An asset a real connector reads is never handed to the simulator: a command its connector doesn't declare is `FAILED` ("no command path to PUMP_6 on CONN_PLC"), and `POST /api/live/faults` on it is 409 (break it at the fake device instead: type `trip PUMP_2` in `fake_field`).
 
-Tests: `backend/tests/test_connectors_real.py` starts the fake broker and PLC in-process on free ports.
+Tests: `backend/tests/test_connectors_real.py` and `test_connectors_safety.py` start the fake broker and PLC (or a PLC that never answers) in-process on free ports.

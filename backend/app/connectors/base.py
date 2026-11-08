@@ -10,13 +10,25 @@ A connector is where live signals come from and where confirmed commands go.
 never raise out of read(), send(), or status(): a broken device shows up as stale
 readings and an "unavailable" status, never as a crashed console.
 
+A send() result may also carry `"uncertain": True`: the command left for the
+device but its acknowledgement never came back (an MQTT PUBACK or a Modbus reply
+timed out). The live layer records that as UNCERTAIN, never FAILED, and nothing
+sends it again: a person checks the field first.
+
 Secrets never live in the blueprint. A config key ending in `_env` names an
-environment variable, and `secret()` reads it.
+environment variable, and `secret()` reads it. The name must start with
+FREEBOARD_CONN_ (ENV_PREFIX), so a blueprint can't point a connector at an
+unrelated secret such as ANTHROPIC_API_KEY and send it to its host.
+
+close() must return at once: it is called on the event loop (shutdown, reload).
+Joining threads or waiting on sockets goes on a daemon thread (`close_later`).
 """
 from __future__ import annotations
 
 import importlib
 import os
+import re
+import threading
 from types import ModuleType
 from typing import Callable, Optional
 
@@ -25,6 +37,18 @@ from ..fieldmap import FieldMap
 Reading = dict  # {"asset_id": str, "signal": str, "value": float | bool | str, "t": float}
 
 ANALOG = ("level_pct", "flow_bbl_hr", "pressure_psi", "motor_amps")
+ENV_PREFIX = "FREEBOARD_CONN_"
+ENV_NAME = re.compile(r"^FREEBOARD_CONN_[A-Za-z0-9_]+$")  # docs/blueprint.schema.json says the same
+UNCERTAIN_DETAIL = "sent; delivery not confirmed — check the field before retrying"
+
+
+def check_env_names(config: dict) -> None:
+    """Every `*_env` value names a FREEBOARD_CONN_ variable. Raises ValueError otherwise."""
+    for key, var in config.items():
+        if str(key).endswith("_env") and var not in (None, "") and \
+                not (isinstance(var, str) and ENV_NAME.fullmatch(var)):
+            raise ValueError(f"config {key} must name an environment variable starting with {ENV_PREFIX} "
+                             f"(for example {ENV_PREFIX}{str(key)[:-4].upper()}), got {var!r}")
 
 
 def import_optional(module: str, package: str) -> tuple[Optional[ModuleType], Optional[str]]:
@@ -86,6 +110,12 @@ class Connector:
                         for s in spec.get("signals") or [] if s.get("asset_id") and s.get("signal")}
         self.commands = {(c["asset_id"], c["command"]): c.get("address")
                          for c in spec.get("commands") or [] if c.get("asset_id") and c.get("command")}
+        self.check_config()
+
+    def check_config(self) -> None:
+        """Raise ValueError for a config that must not load. The registry then shows the
+        connector as unavailable with the reason."""
+        check_env_names(self.config)
 
     # ---- the interface ----
     def read(self) -> list[Reading]:
@@ -100,21 +130,38 @@ class Connector:
     def advance(self, dt_min: float) -> None:
         """Called once per live tick. Only the simulator does anything here."""
 
-    def close(self) -> None:
-        """Release sockets and threads on shutdown."""
+    def close(self) -> Optional[threading.Thread]:
+        """Release sockets and threads. Returns at once; returns the thread still
+        finishing the cleanup, if any, so shutdown can join it off the event loop."""
+        return None
 
     # ---- helpers ----
     def missing_env(self) -> Optional[str]:
         """The first `*_env` variable the config names that isn't set, else None."""
         for key, var in self.config.items():
-            if key.endswith("_env") and var and os.environ.get(var) is None:
+            if key.endswith("_env") and var and self.secret(key[:-4]) is None:
                 return str(var)
         return None
 
     def secret(self, key: str) -> Optional[str]:
-        """config[key + '_env'] names an environment variable; return its value, or None."""
+        """config[key + '_env'] names an environment variable; return its value, or None.
+        Only FREEBOARD_CONN_ variables are ever read."""
         var = self.config.get(f"{key}_env")
-        return os.environ.get(var) if var else None
+        if not (isinstance(var, str) and ENV_NAME.fullmatch(var)):
+            return None
+        return os.environ.get(var)
+
+    @staticmethod
+    def close_later(fn: Callable[[], None], name: str) -> threading.Thread:
+        """Run blocking cleanup on a daemon thread, so close() never blocks the event loop."""
+        def run() -> None:
+            try:
+                fn()
+            except Exception:  # noqa: BLE001 - cleanup of a dead device must never raise
+                pass
+        t = threading.Thread(target=run, name=name, daemon=True)
+        t.start()
+        return t
 
     def reading(self, asset_id: str, signal: str, value) -> Reading:
         return {"asset_id": asset_id, "signal": signal, "value": value, "t": round(self.now(), 3)}
@@ -129,6 +176,9 @@ class UnavailableConnector(Connector):
         super().__init__(spec, fmap, now)
         self.kind = str(spec.get("kind", "unknown"))
         self.why = why
+
+    def check_config(self) -> None:
+        """It already stands for a config that didn't load."""
 
     def send(self, command: dict) -> dict:
         return {"ok": False, "detail": self.why}

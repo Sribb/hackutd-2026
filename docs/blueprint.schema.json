@@ -731,11 +731,17 @@
           ]
         },
         "config": {
-          "description": "Connection settings, for example host, port, topic prefix, or unit id. Never put passwords or tokens here: name an environment variable instead, for example {\"password_env\": \"MQTT_PASSWORD\"}.",
+          "description": "Connection settings, for example host, port, topic prefix, or unit id. Never put passwords or tokens here: name an environment variable instead, for example {\"password_env\": \"FREEBOARD_CONN_MQTT_PASSWORD\"}. A *_env value must start with FREEBOARD_CONN_.",
           "type": "object",
           "propertyNames": {
             "not": {
               "pattern": "(?i)^(password|token|secret|api_key|key)$"
+            }
+          },
+          "patternProperties": {
+            "_env$": {
+              "type": "string",
+              "pattern": "^FREEBOARD_CONN_[A-Za-z0-9_]+$"
             }
           }
         },

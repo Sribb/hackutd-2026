@@ -250,12 +250,12 @@ def test_missing_libraries_are_unavailable(monkeypatch, live_factory):
 
 
 def test_missing_secret_env_is_unavailable(monkeypatch, live_factory):
-    monkeypatch.delenv("PECOS_MQTT_PASSWORD", raising=False)
+    monkeypatch.delenv("FREEBOARD_CONN_PECOS_MQTT_PASSWORD", raising=False)
     raw = blueprint(free_port(), free_port())
-    raw["connectors"][0]["config"].update(username="night", password_env="PECOS_MQTT_PASSWORD")
+    raw["connectors"][0]["config"].update(username="night", password_env="FREEBOARD_CONN_PECOS_MQTT_PASSWORD")
     live = live_factory(raw)
     (row,) = [c for c in live.state()["connectors"] if c["id"] == "CONN_SCADA"]
-    assert row["status"] == "unavailable" and "PECOS_MQTT_PASSWORD" in row["detail"]
+    assert row["status"] == "unavailable" and "FREEBOARD_CONN_PECOS_MQTT_PASSWORD" in row["detail"]
 
 
 # ---------- the small pieces ----------
