@@ -258,6 +258,10 @@ Every command to equipment needs the operator token. When the backend serves `GE
 - **Privacy:** the server masks client addresses and never records tokens, PINs or query strings. The console only shows what the server returns.
 - **Handoff:** section 7 lists counts by kind and the latest refused write. A backend without the log says "Not on this backend". A failed read says "Not checked", never "none".
 
+## EOG data in the gaia console (#147 item 16)
+
+When the backend serves the sponsor data (`GET /api/field` answers `mode: "dataset"`), the console's 3D shows that network, one system at a time, instead of `/field.glb`. Each system's model comes from `GET /api/dataset/field.glb?system=<id>`, built by `ingest.eog_field`. Its nodes keep the generator's names (`TANK_A`), and the console reads the sponsor ID from each node's `extras.source_id` (`S2_TANK_A`), so status, picking and moving parts use the backend's IDs. The console opens on the system of the incident in `/api/state`. `?system=S4` picks another, and the pill row at the bottom right switches system by reloading. Only that system's assets are checked for "not in the model". Without dataset mode nothing changes.
+
 ## Dataset console (`/dataset`, EOG sponsor data)
 
 `web/dataset.html` runs the sponsor's "Beat the Shutdown" data: any folder holding `network.json`, `ops.json` and `telemetry.csv` (the history folders, the mock test, and `test/` at judging). "Now" is the last telemetry timestamp, never the system clock.
