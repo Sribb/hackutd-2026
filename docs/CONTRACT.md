@@ -202,6 +202,24 @@ The backend sends the status. The web console picks the color.
 
 The default server address is `http://127.0.0.1:8000`. All numbers below are examples. Times are minutes from now.
 
+### Control token (#105, CF-15)
+
+Reads (GET) are always open. Writes depend on the server's environment:
+
+- None of `FREEBOARD_TOKEN`, `OPERATOR_PIN`, `FREEBOARD_PHONE_TOKEN` set: writes are open, as before.
+- Any of them set: every non-GET request needs the header `X-Freeboard-Token`. Missing or wrong gets
+  401 `{"detail": "Enter the operator PIN to send commands."}`.
+  - `FREEBOARD_TOKEN` or `OPERATOR_PIN`: role `operator`, every write.
+  - `FREEBOARD_PHONE_TOKEN`: role `phone`, only `POST /api/actions/{id}/confirm`, `/api/actions/{id}/reject`,
+    and `/api/alerts/{id}/ack`. Anything else gets 403.
+- Always, tokens or not: a write whose `Origin` names a different host than the server gets 403. Same host on
+  another port (the console on :5173, the API on :8000) and localhost are fine. Extra hosts:
+  `FREEBOARD_ALLOWED_HOSTS=a,b`.
+- `/api/blueprints` takes only `application/json` or `multipart/form-data` (anything else 415), and the 5 MB cap
+  is enforced while the body streams in.
+- Handlers read the role from `request.state.role`; `backend/app/auth.py` `role_for(token)` serves `/ws?token=`.
+  `decided_by` comes from the role, never from the body.
+
 ### `GET /api/field`
 
 Everything that doesn't change during the night.
