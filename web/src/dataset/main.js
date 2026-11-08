@@ -1,28 +1,32 @@
 // Dataset console: the sponsor's "Beat the Shutdown" data on one page.
-// Loads any dataset folder (network.json, ops.json, telemetry.csv), shows every system,
-// lists the backend's alerts in SPEC order, replays a pump-failure plan minute by
-// minute, trends any sensor, and can replay any past moment as "now".
-// "Now" always comes from the telemetry, never from the system clock.
+// One source of numbers (#148): detection, countdowns, plans, Last Call, the what-if, the
+// handoff and events.json all come from the backend's dataset mode (/api/eog, eog.js).
+// The page itself only draws the raw files (network.json, ops.json, telemetry.csv): the
+// map, the 3D field and the sensor charts. "Now" comes from the telemetry, never the
+// system clock, and any past moment can be replayed as "now".
 
 import "@fontsource/gloock/400.css";
 import "@fontsource/great-vibes/400.css"; // the gaia mark, same as the console
 import "@fontsource/azeret-mono/400.css";
 import "@fontsource/azeret-mono/600.css";
 import "./dataset.css";
-import { apiSource, fileSource, assetIndex, checkDataset, STEP_S } from "./data.js";
+import { fileSource, assetIndex, checkDataset, STEP_S } from "./data.js";
 import { lineChart, fmtTime } from "./chart.js";
-import { replay, doNothing, tankRow, inputFor, planFromActions, planToActions, cheapestJoint, walkCurve, money, revenuePerHour } from "./plan.js";
-import { normAlerts, sortAlerts, actionLines, handoffText, durationText, categoryOf, trucksInUse } from "./alerts.js";
-import { screenDataset, screenAt, screenSeries, recentMean, faultRuns, noiseSd, confidenceAt, plainAlarmAt, PLAIN, WEAR } from "./screen.js";
+import { normAlerts, sortAlerts, actionLines, durationText, categoryOf, money } from "./alerts.js";
+import { eogClient } from "./eog.js";
 
 const $ = (id) => document.getElementById(id);
-// A peak just under the limit must not print as the limit: 91.96% is "91.9%", not "92.0%".
-const peak1 = (v) => (Math.floor(v * 10 + 1e-9) / 10).toFixed(1);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const params = new URLSearchParams(location.search);
-const API = params.get("api") ?? import.meta.env.VITE_API ?? "";
+// npm run demo sets VITE_API=same-origin: the dev server proxies /api to the backend.
+const RAW_API = params.get("api") ?? import.meta.env.VITE_API ?? "";
+const API = (RAW_API === "same-origin" ? "" : RAW_API).replace(/\/$/, "");
 
 const state = {
+  eog: eogClient(API),
+  backend: null, // the last GET /api/eog/datasets answer, or null when dataset mode is off
+  resolved: [], // resolved events up to the moment on screen (/api/eog/events)
+  plansBy: new Map(), // event id -> its /api/eog/plans item (plan, alternatives, wait curve)
   source: null,
   folder: null,
   network: null,
@@ -33,11 +37,12 @@ const state = {
   alerts: [],
   detection: "loading", // loading | ok | absent | error
   detectionNote: "",
-  selected: null, // { kind: "facility" | "alert" | "whatif", id }
+  selected: null, // { kind: "facility" | "alert" | "system", id }
   win: 24 * 3600,
   view: "map", // map | 3d
   sys3d: null,
-  plans: new Map(), // per alert/what-if: the plan the operator is looking at
+  plans: new Map(), // per alert and moment: the what-if plan the operator is editing
+  approved: new Map(), // per alert and moment: the approve answer (steps, radio script)
   loadSeq: 0,
   alertSeq: 0,
 };
@@ -52,16 +57,11 @@ function setStatus(text, tone = "") {
 // ---------- source and folders ----------
 
 async function pickSource() {
-  // The backend's dataset mode first; the dev server's /eog/ folder when it has none.
-  const api = apiSource(API);
-  try {
-    const info = await api.info();
-    if (Array.isArray(info?.folders)) return { source: api, info };
-  } catch (e) {
-    if (e.status && e.status !== 404) console.warn("dataset API:", e.message);
-  }
+  // The raw files come from the dev server's /eog/ folder (EOG_DIR or FREEBOARD_EOG_DIR,
+  // the same folder the backend reads). Detection and plans come from /api/eog.
   const files = fileSource("/eog");
   const info = await files.info();
+  try { state.backend = await state.eog.datasets(); } catch { state.backend = null; }
   return { source: files, info };
 }
 
@@ -85,6 +85,8 @@ function folderFromUrl(folders) {
   const added = Array.isArray(known) ? folders.filter((f) => !known.includes(f)) : [];
   if (added.length) return testFirst(added);
   if (want && folders.includes(want)) return want;
+  const active = state.backend?.active;
+  if (active && folders.includes(active)) return active; // what the backend (and the console) show now
   if (last && folders.includes(last)) return last;
   return testFirst(folders);
 }
@@ -94,7 +96,7 @@ async function boot() {
   try {
     picked = await pickSource();
   } catch (e) {
-    setStatus("No dataset found. Start the backend with dataset mode, or run the dev server with EOG_DIR pointing at the sponsor data.", "alarm");
+    setStatus("No dataset found. Run npm run demo with FREEBOARD_EOG_DIR pointing at the sponsor data.", "alarm");
     $("dsFoot").textContent = String(e.message || e);
     return;
   }
@@ -118,10 +120,15 @@ async function loadFolder(folder) {
   state.folder = folder;
   state.selected = null;
   state.plans.clear();
+  state.approved.clear();
   state.picked?.clear(); // picks name this folder's sensors
-  state.outageH = null; // a new folder can have a different repair time
   state.alerts = [];
+  state.resolved = [];
+  state.plansBy = new Map();
+  state.planSystems = [];
   state.detection = "loading";
+  state.storeFolder = null; // the readings on screen belong to no folder until this one loads
+  $("dsAt").disabled = true; // no time travel on the old folder's readings under the new name
   try { localStorage.setItem("freeboard.dataset.folder", folder); } catch {}
   const url = new URL(location.href);
   url.searchParams.set("folder", folder);
@@ -138,10 +145,20 @@ async function loadFolder(folder) {
   } catch (e) {
     if (seq !== state.loadSeq) return;
     setStatus(`Could not load ${folder}: ${e.message}`, "alarm");
+    // Never leave the previous folder's map and alerts up under this folder's name.
+    state.store = state.network = state.ops = null;
+    state.selected = null;
+    $("dsMap").innerHTML = "";
+    $("dsAlerts").innerHTML = "";
+    $("dsAlertCount").textContent = "";
+    $("dsResolvedWrap").hidden = true;
+    $("dsDetail").innerHTML = "";
+    $("dsFoot").textContent = "";
     return;
   }
   if (seq !== state.loadSeq) return;
   Object.assign(state, data);
+  state.storeFolder = folder;
   state.assets = assetIndex(data.network);
   const problems = checkDataset(data.network, data.ops);
   const atParam = Number(params.get("at"));
@@ -160,12 +177,15 @@ let slideTimer = null; // a pending alerts refresh from the slider; a folder loa
 
 function setupSlider() {
   const s = $("dsAt");
+  s.disabled = false;
+  const loadSeq = state.loadSeq; // this slider belongs to this load only
   // Start an hour in: a detector needs some history before "now".
   s.min = String(Math.min(state.store.now, state.store.start + 3600));
   s.max = String(state.store.now);
   s.step = String(STEP_S);
   s.value = String(state.at);
   s.oninput = () => {
+    if (loadSeq !== state.loadSeq) return;
     state.at = Number(s.value);
     // The alerts on screen belong to the old moment: never show them as current.
     state.alertSeq++;
@@ -174,9 +194,9 @@ function setupSlider() {
     renderNow();
     renderMap();
     renderAlerts();
+    renderDetail(); // a plan or what-if on screen belongs to the old moment
     clearTimeout(slideTimer);
-    const seq = state.loadSeq;
-    slideTimer = setTimeout(() => { if (seq === state.loadSeq) { syncAtToUrl(); refreshAlerts(); } }, 250);
+    slideTimer = setTimeout(() => { if (loadSeq === state.loadSeq) { syncAtToUrl(); refreshAlerts(); } }, 250);
   };
   $("dsLatest").onclick = () => { s.value = String(state.store.now); s.oninput(); };
 }
@@ -203,284 +223,59 @@ function renderNow() {
 
 // ---------- alerts ----------
 
+// The backend reads one dataset at a time, for everyone. Opening a folder here makes it
+// the active one (POST, so it may ask for the operator PIN).
+async function ensureActive(folder) {
+  if (state.backend?.active === folder) return;
+  state.backend = await state.eog.datasets();
+  if (state.backend.active === folder) return;
+  if (!state.backend.datasets?.some((d) => d.id === folder))
+    throw Object.assign(new Error(`the backend has no dataset named ${folder}`), { status: 404 });
+  state.backend = await state.eog.activate(folder);
+}
+
 async function refreshAlerts() {
   const seq = ++state.alertSeq;
-  const at = state.at;
-  if (state.source.kind !== "api") {
-    state.alerts = [];
-    state.detection = "absent";
-    state.detectionNote = "Detection runs in the backend's dataset mode, and this page is reading the files directly.";
-    renderAlerts();
-    renderDetail();
-    return;
-  }
+  const at = state.at, folder = state.folder;
+  if (state.storeFolder !== folder) return; // the folder's own readings are not in yet
   try {
-    const folder = state.folder;
-    const resp = await state.source.alerts(travelling() ? at : null, folder);
+    await ensureActive(folder);
+    if (seq !== state.alertSeq) return;
+    const [al, ev, pl] = await Promise.all([state.eog.alerts(at), state.eog.events(at), state.eog.plans(at)]);
     if (seq !== state.alertSeq || at !== state.at || folder !== state.folder) return;
-    // The backend answers for the folder it has loaded, which another tab can change.
-    if (resp && !Array.isArray(resp) && resp.folder && resp.folder !== folder)
-      throw Object.assign(new Error(`the backend has ${resp.folder} loaded, not ${folder}`), { status: 409 });
-    state.alerts = normAlerts(resp);
+    // Another tab (the console, a teammate) can switch the backend's dataset.
+    const other = [al, ev, pl].find((r) => r.dataset !== folder);
+    if (other) { state.backend = null; throw Object.assign(new Error(`the backend has ${other.dataset} active now, not ${folder}`), { status: 409 }); }
+    state.plansBy = new Map((pl.plans || []).map((p) => [p.event?.id ?? p.plan?.event_id, p]));
+    state.planSystems = pl.systems || [];
+    state.alerts = normAlerts(al).map((a) => {
+      const none = state.plansBy.get(a.id)?.alternatives?.find((x) => x.actions?.every((y) => y.type === "none"));
+      return none ? { ...a, doNothingCost: none.cost } : a;
+    });
+    state.resolved = normAlerts(ev).filter((a) => a.status === "resolved");
     state.detection = "ok";
     state.detectionNote = "";
   } catch (e) {
     if (seq !== state.alertSeq) return;
     state.alerts = [];
-    state.detection = e.status === 404 ? "absent" : "error";
-    state.detectionNote = e.status === 404 ? "The backend has no alerts for datasets yet." : `The alerts did not load (${e.message}).`;
+    state.resolved = [];
+    state.plansBy = new Map();
+    state.planSystems = [];
+    state.detection = !e.status || e.status === 503 ? "absent" : "error";
+    state.detectionNote = !e.status ? "The backend is not running."
+      : e.status === 503 ? `The backend's dataset mode is off (${e.message})`
+      : `The backend's alerts did not load: ${e.message}.`;
   }
   renderAlerts();
   renderMap();
   renderDetail();
+  renderFoot();
 }
 
-// When the backend's detection is not there (file mode, or its alerts failed), the page
-// screens the readings itself: pump fault signals, leaks and worn pumps (screen.js). Every
-// list below reads from pool(), so the map, cards and detail agree on one set.
-const usesScreen = () => state.detection === "absent" || state.detection === "error";
-const pool = () => (state.detection === "ok" ? state.alerts : usesScreen() ? screenPool() : []);
-const liveAlerts = () => sortAlerts(pool().filter((a) => a.status !== "resolved"));
+// Every list below reads from pool(), so the map, cards and detail agree on one set.
+const pool = () => (state.detection === "ok" ? [...state.alerts, ...state.resolved] : []);
+const liveAlerts = () => sortAlerts(state.detection === "ok" ? state.alerts : []);
 const alertsFor = (facilityId) => liveAlerts().filter((a) => a.facility === facilityId);
-// Readings at the moment on screen. Well rates are the last hour's mean of producing
-// readings, so one noisy sample does not move a countdown by minutes.
-const readers = () => ({
-  latest: (a, m) => state.store.latest(a, m, state.at),
-  rate: (w) => state.store.mean(w, "water_bpd", state.at, 3600, true),
-  // While the pump is down and the tank fills in a straight line, fit the last 30 min of
-  // level readings instead of trusting one noisy sample. Otherwise the latest reading.
-  level: (tank, pump) => {
-    const st = state.store;
-    for (let k = 0; k < 6; k++) if (st.latest(pump, "status", state.at - k * STEP_S) === 1) return null;
-    const lim = state.network.defaults.tank_limits_pct.shutdown;
-    const raw = st.latest(tank, "level_pct", state.at);
-    if (raw === null || raw >= lim - 0.5) return null; // at the limit the level holds: no line to fit
-    const fit = st.fitAt(tank, "level_pct", state.at, 6);
-    return fit === null || Math.abs(fit - raw) > 2 ? null : fit;
-  },
-});
-const repairH = () => state.ops?.expected_repair_hours?.pump_failure ?? null;
-
-// Pumps whose own status signal reads 2 (fault) at this moment, with when that run of
-// fault readings began. This is one raw sensor, not detection: a leak or a worn pump
-// never shows here. Used only when the backend's detection is not available.
-function pumpFaults(at = state.at) {
-  const out = [];
-  if (!state.network || !state.store) return out;
-  const { times, series } = state.store;
-  for (const s of state.network.systems) for (const f of s.facilities) {
-    if (state.store.latest(f.pump.id, "status", at) !== 2) continue;
-    const col = series.get(f.pump.id + "|status");
-    let i = Math.min(times.length - 1, Math.floor((at - times[0]) / STEP_S));
-    while (i > 0 && col[i - 1] === 2) i--; // a gap ends the run: never stretch the onset across missing data
-    out.push({ system: s.id, facility: f.id, pump: f.pump.id, onset: times[i] });
-  }
-  return out;
-}
-
-// The page's own cheapest-plan search for every pump failure in progress, by system, so
-// tanks in one system share its trucks. In file mode it is the plan; in backend mode it
-// checks the backend's. Keyed by facility. Memoized per folder and moment.
-let jointMemo = { key: null, map: new Map() };
-function ownPlans() {
-  const key = `${state.at}@${state.detection}@${state.alerts.length}`;
-  if (jointMemo.store === state.store && jointMemo.key === key) return jointMemo.map;
-  const map = new Map();
-  const h = repairH();
-  const failures = state.detection === "ok"
-    ? state.alerts.filter((a) => a.status !== "resolved" && a.category === "pump_failure" && a.facility && a.onset !== null)
-        .map((a) => ({ system: a.system, facility: a.facility, onset: a.onset, repairEnd: a.repairEnd }))
-    : pumpFaults();
-  const bySystem = new Map();
-  for (const x of failures) {
-    if (h === null) break;
-    const horizonMin = Math.round(((x.repairEnd ?? x.onset + h * 3600) - state.at) / 60);
-    if (horizonMin <= 0) continue;
-    const built = inputFor({ network: state.network, ops: state.ops, facilityId: x.facility, ...readers(), horizonMin });
-    if (!built.input || !built.opsFacility) continue;
-    const sys = built.system.id;
-    if (!bySystem.has(sys)) bySystem.set(sys, []);
-    bySystem.get(sys).push({ id: x.facility, input: built.input, truckSpec: {
-      responseMin: built.opsFacility.response_min, cycleMin: built.opsFacility.cycle_min,
-      capacityBbl: state.ops.emergency_trucking.truck_capacity_bbl, costPerTrip: state.ops.emergency_trucking.cost_per_trip } });
-  }
-  for (const [sys, tanks] of bySystem) {
-    const fleet = state.ops.systems?.[sys]?.emergency_fleet_size ?? 0;
-    const best = cheapestJoint(tanks, fleet);
-    if (!best) continue;
-    for (const p of best.picks) {
-      const tk = tanks.find((t) => t.id === p.id);
-      map.set(p.id, { ...p, doNothing: doNothing(tk.input), shared: tanks.length > 1 ? tanks.map((t) => t.id) : null });
-    }
-  }
-  jointMemo = { store: state.store, key, map, bySystem };
-  return map;
-}
-
-// README "How big should the trucking fleet be?": the cheapest total for this system's
-// failures in progress with 0 to fleet + 2 trucks. Same search, only the fleet changes.
-function fleetCurve(systemId) {
-  ownPlans();
-  const tanks = jointMemo.bySystem?.get(systemId);
-  if (!tanks?.length) return null;
-  const fleet = state.ops.systems?.[systemId]?.emergency_fleet_size ?? 0;
-  const out = [];
-  for (let n = 0; n <= fleet + 2; n++) out.push({ n, total: cheapestJoint(tanks, n)?.total ?? null, current: n === fleet });
-  return { tanks: tanks.map((t) => t.id), fleet, rows: out };
-}
-
-function fleetHtml(systemId) {
-  const c = fleetCurve(systemId);
-  if (!c || c.rows.some((r) => r.total === null)) return "";
-  const max = Math.max(...c.rows.map((r) => r.total), 1);
-  const cur = c.rows.find((r) => r.current)?.total ?? null;
-  const rows = c.rows.map((r) => {
-    const save = cur !== null && r.n > c.fleet && cur - r.total > 0.5 ? ` · saves ${money(cur - r.total)}` : "";
-    return `<div class="ds-fleet-row${r.current ? " on" : ""}"><span>${r.n} truck${r.n === 1 ? "" : "s"}${r.current ? " (today)" : ""}</span>
-      <i style="width:${Math.max(1, (r.total / max) * 100).toFixed(1)}%"></i><b>${money(r.total)}</b><em>${save}</em></div>`;
-  }).join("");
-  return `<div class="ds-fleet"><span class="kicker">Fleet size: cheapest total for ${esc(systemId)}'s ${c.tanks.length} failure${c.tanks.length === 1 ? "" : "s"} in progress</span>${rows}</div>`;
-}
-
-// ---------- the page's own screen ----------
-
-// Pumps the screen could not check at this moment: stopped ones (no flow to compare), and
-// ones missing a fresh reading of any signal the screen reads. Faulted pumps are listed
-// as failures, so they are not repeated here.
-function unscreened(at = state.at) {
-  const off = [], blind = [];
-  for (const sys of state.network.systems) {
-    const disp = Number(sys.disposal_site?.pressure_psi);
-    for (const f of sys.facilities) {
-      const st = state.store.latest(f.pump.id, "status", at);
-      if (st === 2) continue;
-      if (st === 0) { off.push(f.pump.id); continue; }
-      const fresh = st === 1 && Number.isFinite(disp) && ["flow_bpd", "discharge_psi"].every((m) => state.store.latest(f.pump.id, m, at) !== null)
-        && state.store.latest(f.pipeline.id, "receive_flow_bpd", at) !== null;
-      if (!fresh) blind.push(f.pump.id);
-    }
-  }
-  return { off, blind };
-}
-
-// Memos are keyed on the store object itself, so a folder reload (even one with the same
-// name or the same "now") can never serve another load's screen.
-let screenMemo = { store: null, events: [] };
-function screenEvents() {
-  if (screenMemo.store !== state.store) screenMemo = { store: state.store, events: state.store && state.network ? screenDataset(state.network, state.store) : [] };
-  return screenMemo.events;
-}
-
-const pct1 = (v) => `${v.toFixed(1)}%`;
-const bpd = (v) => `${Math.round(v).toLocaleString("en-US")} bbl/day`;
-const blank = { confidence: null, estCost: null, doNothingCost: null, hours: null, hoursP10: null, hoursP90: null, levelPct: null,
-  lostRevPerHour: null, tripsAt: null, repairEnd: null, tripped: false, planSummary: null };
-
-// Leaks and worn pumps the screen had seen by `at`, plus pump failures that had already
-// ended, as alert-shaped objects with plain-English evidence. Memoized per moment.
-let poolMemo = { store: null, at: null, list: [] };
-function screenPool() {
-  if (poolMemo.store === state.store && poolMemo.at === state.at) return poolMemo.list;
-  const at = state.at;
-  const list = [];
-  for (const e of screenAt(screenEvents(), at)) {
-    const hit = facilityOf(e.facility);
-    if (!hit) continue;
-    const disp = Number(hit.s.disposal_site?.pressure_psi);
-    const ser = screenSeries(state.store, hit.f, disp);
-    const ongoing = e.status === "ongoing";
-    const ev = [];
-    const pumpSt = ongoing ? state.store.latest(hit.f.pump.id, "status", at) : 1;
-    if (e.category === "pipeline_leak") {
-      const now = ongoing ? recentMean(ser.lost, at) : e.atSeen;
-      const flow = state.store.mean(hit.f.pump.id, "flow_bpd", ongoing ? at : e.seen, 3600, true);
-      if (now !== null) ev.push(`${ongoing ? "Over the last hour of pumping" : "When it was seen"}, ${pct1(now)} of the pump's flow${flow ? ` (about ${bpd((now / 100) * flow)})` : ""} did not arrive at disposal. Healthy is 0, within about 1%.`);
-    } else {
-      const now = ongoing ? recentMean(ser.excess, at) : e.atSeen;
-      if (now !== null) ev.push(`${ongoing ? "Over the last hour of pumping" : "When it was seen"}, discharge pressure ran ${Math.round(-now)} psi under the healthy ${Math.round(disp + WEAR.healthy)} psi (disposal + 150).`);
-      const before = state.store.mean(hit.f.pump.id, "flow_bpd", e.onset, 6 * 3600, true);
-      const after = state.store.mean(hit.f.pump.id, "flow_bpd", ongoing ? at : e.end ?? e.seen, 6 * 3600, true);
-      if (before && after && after < before) ev.push(`It moves ${pct1(((before - after) / before) * 100)} less water than before it started (${bpd(after)} vs ${bpd(before)}).`);
-    }
-    ev.push(e.afterGap && e.from
-      ? `The pump was off from ${fmtTime(e.from, true)} to ${fmtTime(e.onset, true)} UTC; it started in that window and showed at the first reading after.`
-      : `Started about ${fmtTime(e.onset, true)} UTC, fitted from the readings. First seen ${fmtTime(e.seen, true)} UTC.`);
-    const sig = e.category === "pipeline_leak" ? ser.lost : ser.excess;
-    const conf = confidenceAt(sig, ongoing ? at : e.seen, noiseSd(sig, e.onset), e.category === "pipeline_leak" ? 1 : -1, 24, e.onset);
-    if (conf) ev.push(`Confidence ${Math.round(conf.share * 100)}%: ${conf.k} of the ${conf.n} latest running readings since it started sit outside this ${e.category === "pipeline_leak" ? "line" : "pump"}'s normal noise (±${e.category === "pipeline_leak" ? pct1(conf.band) : `${Math.round(conf.band)} psi`}).`);
-    // How early: against a fixed alarm on the same signal, judged only up to now.
-    const leak = e.category === "pipeline_leak";
-    const plainAt = plainAlarmAt(sig, e.onset, ongoing ? at : e.end ?? at, leak ? PLAIN.leak : PLAIN.wear);
-    const plainName = leak ? `a fixed alarm at ${PLAIN.leak}% lost` : `a fixed alarm at ${-PLAIN.wear} psi under healthy`;
-    let lead = null;
-    if (plainAt !== null) {
-      lead = (plainAt - e.seen) / 3600;
-      const Plain = plainName[0].toUpperCase() + plainName.slice(1);
-      ev.push(lead > 0 ? `Seen ${durationText(lead)} before ${plainName} (hour average) went off, at ${fmtTime(plainAt, true)} UTC.`
-        : lead < 0 ? `${Plain} (hour average) went off first, ${durationText(-lead)} before the screen saw it.`
-        : `${Plain} (hour average) went off at the same time.`);
-    } else if (ongoing) {
-      lead = (at - e.seen) / 3600; // at least this much, and counting
-      ev.push(`${plainName[0].toUpperCase()}${plainName.slice(1)} (hour average) has not gone off by ${fmtTime(at, true)} UTC; the screen saw it at ${fmtTime(e.seen, true)} UTC, ${durationText(lead)} earlier.`);
-    } else ev.push(`${plainName[0].toUpperCase()}${plainName.slice(1)} (hour average) never went off before it ended.`);
-    if (pumpSt === null) ev.push("No fresh reading from the pump now, so these are its last running readings. Not checked since.");
-    else if (pumpSt !== 1) ev.push("The pump is not running now, so these are its last running readings.");
-    if (!ongoing) ev.push(e.endedByFault ? `Ended when the pump failed at ${fmtTime(e.end, true)} UTC (a separate pump failure).` : `Back to normal by ${fmtTime(e.end, true)} UTC.`);
-    list.push({ ...blank, id: `screen:${e.category}:${e.asset}:${e.onset}`, screened: true, category: e.category, status: e.status,
-      system: e.system, facility: e.facility, asset: e.asset, onset: e.onset, end: e.end, evidence: ev, confidence: conf ? conf.share : null, lead, leadOpen: plainAt === null,
-      actions: [{ type: "field_inspection", asset_id: e.asset }] });
-  }
-  // Pump failures that ended by `at`, from the status signal (ongoing ones are fault rows).
-  for (const sys of state.network.systems) for (const f of sys.facilities) {
-    for (const r of faultRuns(state.store, f.pump.id)) {
-      if (r.onset > at || r.end === null || r.end > at) continue;
-      list.push({ ...blank, id: `fault:${f.id}:${r.onset}`, screened: true, category: "pump_failure", status: "resolved",
-        system: sys.id, facility: f.id, asset: f.pump.id, onset: r.onset, end: r.end, actions: [],
-        evidence: [`${f.pump.id} read status 2 (fault) from ${fmtTime(r.onset, true)} to ${fmtTime(r.last, true)} UTC.`] });
-    }
-  }
-  poolMemo = { store: state.store, at: state.at, list };
-  return list;
-}
-
-// One line on how early the screen is: the median head start over a fixed alarm, for the
-// leaks and worn pumps seen up to now. Counts only problems the fixed alarm did catch (or
-// still hasn't, ongoing: at least that much), so it never overstates.
-function leadSummary() {
-  const leads = pool().filter((a) => a.screened && a.lead !== undefined && a.lead !== null && (!a.leadOpen || a.status === "ongoing"));
-  if (!leads.length) return "";
-  const v = leads.map((a) => a.lead).sort((p, q) => p - q);
-  const med = v.length % 2 ? v[v.length >> 1] : (v[v.length / 2 - 1] + v[v.length / 2]) / 2;
-  const never = pool().filter((a) => a.screened && a.leadOpen && a.status === "resolved").length;
-  return `<p class="ds-lead">Early: across ${leads.length} problem${leads.length === 1 ? "" : "s"} so far (leaks and worn pumps), the screen saw ${leads.length === 1 ? "it" : "each a median"} <strong>${esc(durationText(med))}</strong> before a fixed alarm on the same reading (${PLAIN.leak}% lost, or ${-PLAIN.wear} psi under healthy) would go off.${never ? ` ${never} more ended before a fixed alarm ever went off.` : ""}</p>`;
-}
-
-// A pump fault as an alert-shaped object, so the what-if can plan it. No backend plan.
-const faultAlert = (x) => ({ id: `fault:${x.facility}`, synthetic: true, category: "pump_failure", status: "ongoing",
-  system: x.system, facility: x.facility, asset: x.pump, onset: x.onset, end: null, actions: [], evidence: [],
-  estCost: null, doNothingCost: null, hours: null, levelPct: null, confidence: null });
-
-// Pumps in fault now, each with the do-nothing replay and the page's own plan, in the
-// SPEC alerts order: soonest shutdown first, ties to the bigger loss of revenue.
-function faultRows() {
-  const h = repairH();
-  return pumpFaults().map((x) => {
-    const horizonMin = h === null ? 0 : Math.round((x.onset + h * 3600 - state.at) / 60);
-    const built = horizonMin > 0 ? inputFor({ network: state.network, ops: state.ops, facilityId: x.facility, ...readers(), horizonMin }) : null;
-    const r = built?.input ? doNothing(built.input) : null;
-    const loss = built?.input ? built.input.wells.reduce((n, w) => n + (w.producing ? w.revPerHour : 0), 0) : 0;
-    const own = ownPlans().get(x.facility);
-    const level = state.store.latest(x.facility && facilityOf(x.facility)?.f.tank.id, "level_pct", state.at);
-    // The same fault as a filled-in alert, for the handoff and the export.
-    const a = { ...faultAlert(x), lostRevPerHour: loss, levelPct: level, tripped: !!r?.tripped,
-      hours: r ? (r.tripped ? 0 : r.safe ? null : r.tripsAtMin / 60) : null,
-      repairEnd: h === null ? null : x.onset + h * 3600,
-      actions: own ? planToActions(own.plan, x.facility) : [], estCost: own ? own.result.cost.total : null,
-      doNothingCost: own ? own.doNothing.cost.total : r ? r.cost.total : null,
-      evidence: [`${x.pump} reads status 2 (fault) since ${fmtTime(x.onset, true)} UTC.`] };
-    return { x, r, loss, own, a };
-  }).sort((p, q) => (p.r?.tripsAtMin ?? Infinity) - (q.r?.tripsAtMin ?? Infinity) || q.loss - p.loss);
-}
 
 function renderAlerts() {
   const box = $("dsAlerts");
@@ -490,45 +285,9 @@ function renderAlerts() {
   if (state.detection === "loading") {
     box.innerHTML = `<p class="ds-hint">Checking for problems…</p>`;
   } else if (state.detection !== "ok") {
-    const rows = faultRows();
-    $("dsAlertCount").textContent = `${rows.length + live.length} in progress`;
-    box.innerHTML = `<div class="ds-unknown"><b>Screened by this page</b><p>${esc(state.detectionNote)} gaia screened the readings itself:
-      pump fault signals, leaks (pump flow that never reaches disposal) and worn pumps (discharge pressure sagging).</p>
-      <p class="ds-hint">It is a screen, not the backend's detection. Anything it can't read, it doesn't call safe.</p>${leadSummary()}</div>`;
-    if (rows.length) {
-      const wrap = document.createElement("div");
-      wrap.className = "ds-faults";
-      wrap.innerHTML = `<span class="kicker">Pump failures: pumps reporting a fault on their own status signal</span>`;
-      for (const { x, r, own, a: full } of rows) {
-        const a = faultAlert(x);
-        const when = !r ? "" : r.tripped ? "tank at shutdown: its wells are shut in until the repair" : r.safe ? "will not reach shutdown before the repair" : `shuts in at ${fmtTime(state.at + r.tripsAtMin * 60)} UTC (in ${durationText(r.tripsAtMin / 60)}) if nobody acts`;
-        const b = document.createElement("button");
-        b.type = "button";
-        b.className = `ds-fault${state.selected?.id === a.id ? " on" : ""}`;
-        let plan = "";
-        if (own) {
-          const lines = actionLines(full, { at: state.at, ops: state.ops });
-          plan = `<ul class="ds-plan">${lines.map((l) => `<li>${esc(l)}</li>`).join("")}</ul>
-            <span class="ds-cost"><b>${money(own.result.cost.total)}</b> vs ${money(own.doNothing.cost.total)} doing nothing${own.shared ? ` · shares ${esc(x.system)}'s trucks` : ""}</span>`;
-        }
-        b.innerHTML = `<span class="ds-tag alarm">FAULT</span><b>${esc(x.pump)}</b><span>since ${esc(fmtTime(x.onset, true))}${when ? " · " + esc(when) : ""}</span><em>Plan it</em>${plan}`;
-        b.onclick = () => select({ kind: "fault", id: a.id });
-        wrap.appendChild(b);
-      }
-      box.appendChild(wrap);
-    }
-    const wrap = document.createElement("div");
-    wrap.className = "ds-faults";
-    wrap.innerHTML = `<span class="kicker">Leaks and worn pumps, from the readings</span>`;
-    live.forEach((a, i) => wrap.appendChild(alertCard(a, rows.length + i + 1)));
-    const gaps = unscreened();
-    const note = [
-      !live.length ? `None in progress at ${esc(fmtTime(state.at, true))} UTC among the pumps it could check.` : "",
-      gaps.off.length ? `${gaps.off.length} pump${gaps.off.length === 1 ? " is" : "s are"} stopped, so ${gaps.off.length === 1 ? "its line" : "their lines"} can't be checked until ${gaps.off.length === 1 ? "it runs" : "they run"}.` : "",
-      gaps.blind.length ? `Not checked, no fresh reading: ${esc(gaps.blind.join(", "))}.` : "",
-    ].filter(Boolean).join(" ");
-    if (note) wrap.insertAdjacentHTML("beforeend", `<p class="ds-hint">${note}</p>`);
-    box.appendChild(wrap);
+    box.innerHTML = `<div class="ds-unknown"><b>Detection is off</b><p>${esc(state.detectionNote)} Alerts, countdowns and plans come only from
+      the backend's dataset mode: run <code>npm run demo</code> with <code>FREEBOARD_EOG_DIR</code> set to the sponsor data.</p>
+      <p class="ds-hint">The map and charts still show the raw readings. This is not an all-clear.</p></div>`;
   } else if (!live.length) {
     box.innerHTML = `<div class="ds-clear"><b>No problems in progress</b><p>Every pump and pipeline reads normal at ${esc(fmtTime(state.at, true))} UTC.</p></div>`;
   } else {
@@ -554,12 +313,15 @@ function alertCard(a, rank) {
   const since = a.onset !== null ? `since ${fmtTime(a.onset, true)} (${durationText((state.at - a.onset) / 3600)} ago)` : "";
   let body = "";
   if (a.category === "pump_failure") {
-    const when = a.hours !== null ? fmtTime(state.at + a.hours * 3600) : null;
+    // The backend's trips_at is null when the repair comes first, even with an hours_to_limit.
+    const when = a.tripsAt !== null ? fmtTime(a.tripsAt) : null;
     const range = a.hoursP10 !== null && a.hoursP90 !== null ? ` <span class="ds-range">(${durationText(a.hoursP10)} to ${durationText(a.hoursP90)})</span>` : "";
     body += a.tripped
       ? `<div class="ds-count-big"><span class="kicker">Tank at shutdown</span><b>Wells shut in</b><span>${a.tripsAt !== null ? `since ${esc(fmtTime(a.tripsAt))} UTC, ` : ""}until the repair${a.repairEnd ? ` at ${esc(fmtTime(a.repairEnd))} UTC` : ""}</span></div>`
-      : a.hours !== null
-      ? `<div class="ds-count-big"><span class="kicker">Shuts in at</span><b>${esc(when)} UTC</b><span>in ${esc(durationText(a.hours))}${range}</span></div>`
+      : a.tripsAt !== null
+      ? `<div class="ds-count-big"><span class="kicker">Shuts in at</span><b>${esc(when)} UTC</b><span>in ${esc(durationText(Math.max(0, a.tripsAt - state.at) / 3600))}${range}</span></div>`
+      : a.levelPct === null
+      ? `<div class="ds-count-big"><span class="kicker">Countdown</span><b>No level readings</b><span>treat the tank as filling: not checked, not safe</span></div>`
       : `<div class="ds-count-big quiet"><span class="kicker">Countdown</span><b>Will not trip</b><span>tank stays under shutdown until the repair</span></div>`;
     if (a.levelPct !== null) body += `<div class="ds-meta">Tank ${Math.round(a.levelPct)}% now</div>`;
   }
@@ -569,8 +331,10 @@ function alertCard(a, rank) {
     const saves = a.doNothingCost !== null && a.doNothingCost > a.estCost ? ` · saves ${money(a.doNothingCost - a.estCost)}` : "";
     body += `<div class="ds-cost"><b>${money(a.estCost)}</b>${a.doNothingCost !== null ? ` vs ${money(a.doNothingCost)} doing nothing` : ""}${saves}</div>`;
   }
-  const check = a.category === "pump_failure" ? replayCheck(a) : null;
-  if (check) body += `<div class="ds-check ${check.tone}">${esc(check.text)}</div>`;
+  if (a.category === "pump_failure" && a.approval)
+    body += `<div class="ds-check ok">Approved by ${esc(a.approval.by || "operator")} at ${esc(fmtTime(a.approval.at))} UTC</div>`;
+  else if (a.category === "pump_failure" && a.expiresAt !== null)
+    body += `<div class="ds-check ${a.expiresAt - state.at < 1800 ? "alarm" : "warning"}">Last call: start by ${esc(fmtTime(a.expiresAt))} UTC (${esc(durationText(Math.max(0, a.expiresAt - state.at) / 3600))} left)</div>`;
   if (a.confidence !== null) body += `<div class="ds-meta">Confidence ${Math.round(a.confidence * 100)}%</div>`;
   card.innerHTML = `<header><span class="ds-rank">${rank}</span><span class="ds-tag ${c.tone}">${esc(c.short)}</span>
     <b>${esc(a.facility || a.asset)}</b><span class="ds-since">${esc(since)}</span></header>
@@ -578,29 +342,6 @@ function alertCard(a, rank) {
   card.onclick = () => select({ kind: "alert", id: a.id });
   card.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); select({ kind: "alert", id: a.id }); } };
   return card;
-}
-
-// Replays the backend's plan from this moment's readings. If the replay says the tank
-// trips but the backend's plan says it won't (or the costs differ), the card says so.
-function replayCheck(a) {
-  const h = repairH();
-  if (!a.facility || a.onset === null || (h === null && !a.repairEnd)) return null;
-  const horizonMin = Math.round(((a.repairEnd ?? a.onset + h * 3600) - state.at) / 60);
-  if (horizonMin <= 0) return { tone: "ok", text: "Repair time is up: the pump should be back." };
-  const plan = { ...planFromActions(a.actions, a.facility), fleet: undefined };
-  const built = inputFor({ network: state.network, ops: state.ops, facilityId: a.facility,
-    ...readers(), horizonMin, plan });
-  if (built.error) return { tone: "warning", text: `Replay not possible: ${built.error}` };
-  const r = replay(built.input);
-  if (r.tripped) return { tone: "alarm", text: "Replayed: the tank is already at shutdown, so its wells stay shut in until the repair." };
-  if (!r.safe && a.actions.some((x) => x.type === "dispatch_truck" || x.type === "shut_in_wells"))
-    return { tone: "alarm", text: `Replay disagrees: with this plan the tank still reaches shutdown at ${fmtTime(state.at + r.tripsAtMin * 60)} UTC.` };
-  if (a.estCost !== null && Math.abs(r.cost.total - a.estCost) > Math.max(10, a.estCost * 0.03))
-    return { tone: "warning", text: `Replay prices this plan at ${money(r.cost.total)}, not ${money(a.estCost)}.` };
-  const own = ownPlans().get(a.facility);
-  if (own && own.result.cost.total < r.cost.total - Math.max(10, r.cost.total * 0.03))
-    return { tone: "warning", text: `Gaia's own planner finds ${money(own.result.cost.total)} here (the backend's plan replays at ${money(r.cost.total)}). Open the plan to compare.` };
-  return { tone: r.safe ? "ok" : "warning", text: r.safe ? `Replayed: peaks at ${peak1(r.peakPct)}%, never reaches shutdown.` : `Replayed: the tank reaches shutdown at ${fmtTime(state.at + r.tripsAtMin * 60)} UTC, as the backend says.` };
 }
 
 // ---------- map ----------
@@ -667,7 +408,7 @@ function renderMap() {
       const worst = al.find((a) => a.category === "pump_failure") || al[0];
       const tone = worst ? categoryOf(worst.category).tone : pump === 2 || (level !== null && level >= lim.shutdown) ? "alarm" : level !== null && level >= lim.warning ? "warning" : "";
       const flag = worst ? categoryOf(worst.category).short : pump === 2 ? "FAULT" : "";
-      const sel = state.selected && (state.selected.id === f.id || state.selected.id === `fault:${f.id}` || al.some((a) => a.id === state.selected.id)) ? " on" : "";
+      const sel = state.selected && (state.selected.id === f.id || al.some((a) => a.id === state.selected.id)) ? " on" : "";
       const n = f.wells.length;
       let g = `<g class="fac ${tone}${sel}" data-fac="${esc(f.id)}" tabindex="0" role="button" aria-label="${esc(f.id)}">`;
       g += `<circle class="hit" cx="${fx}" cy="${fy}" r="26"/>`;
@@ -726,7 +467,9 @@ async function open3d() {
     f3dLoading = import("./field3d.js").then(({ mountField3d }) => {
       // The generated field (#131) comes from the backend's dataset mode; in file mode
       // the view is built from network.json only.
-      const glbUrl = (sys) => state.source?.kind === "api"
+      // #152's generated field per system (ingest.eog_field). field3d.js keeps the view it
+      // builds from network.json when the route is missing or the build fails.
+      const glbUrl = (sys) => state.detection === "ok"
         ? { glb: `${API}/api/dataset/field.glb?system=${encodeURIComponent(sys)}`, ids: `${API}/api/dataset/field_ids?system=${encodeURIComponent(sys)}` }
         : null;
       f3d = mountField3d($("ds3dHost"), { onPick: (fac) => fac && select({ kind: "facility", id: fac }), glbUrl });
@@ -752,14 +495,13 @@ function tipFor(id) {
 function render3d() {
   if (!f3d || state.view !== "3d" || !state.network) return;
   const systems = state.network.systems;
-  const selFac = state.selected && (facilityOf(state.selected.id) || facilityOf(state.selected.id.replace(/^fault:/, ""))
-    || facilityOf(pool().find((a) => a.id === state.selected.id)?.facility));
+  const selFac = state.selected && (facilityOf(state.selected.id) || facilityOf(pool().find((a) => a.id === state.selected.id)?.facility));
   if (selFac) state.sys3d = selFac.s.id;
   if (!systems.some((s) => s.id === state.sys3d)) state.sys3d = systems[0]?.id;
   const sys = systems.find((s) => s.id === state.sys3d);
   if (!sys) return;
   $("ds3dTabs").innerHTML = systems.map((s) => {
-    const n = s.facilities.reduce((k, f) => k + alertsFor(f.id).length + (state.store.latest(f.pump.id, "status", state.at) === 2 && state.detection !== "ok" ? 1 : 0), 0);
+    const n = s.facilities.reduce((k, f) => k + alertsFor(f.id).length, 0);
     return `<button type="button" data-s="${esc(s.id)}" class="${s.id === sys.id ? "on" : ""}">${esc(s.id)}${n ? ` · ${n}` : ""}</button>`;
   }).join("");
   for (const b of $("ds3dTabs").querySelectorAll("button")) b.onclick = () => { state.sys3d = b.dataset.s; render3d(); };
@@ -806,15 +548,13 @@ function renderDetail() {
   const sel = state.selected;
   if (sel.kind === "system") { compare(box, sel.id); return; }
   let alert = null, facId = sel.id;
-  if (sel.kind === "fault") {
-    const x = pumpFaults().find((f) => `fault:${f.facility}` === sel.id);
-    if (!x) { box.innerHTML = `<p class="ds-hint">That pump is not reporting a fault at this time.</p>`; return; }
-    alert = faultAlert(x);
-    facId = x.facility;
-  } else if (sel.kind === "alert") {
+  if (sel.kind === "alert") {
     alert = pool().find((a) => a.id === sel.id);
     if (!alert) { box.innerHTML = `<p class="ds-hint">That alert is not in progress at this time.</p>`; return; }
     facId = alert.facility;
+  } else {
+    // A facility with a pump failure in progress opens on its plan.
+    alert = alertsFor(sel.id).find((a) => a.category === "pump_failure") || null;
   }
   const hit = facilityOf(facId);
   if (!hit) { box.innerHTML = `<p class="ds-hint">${esc(facId)} is not in this dataset's network.</p>`; return; }
@@ -829,22 +569,13 @@ function renderDetail() {
   box.appendChild(head);
   for (const b of head.querySelectorAll("[data-h]")) b.onclick = () => { state.win = Number(b.dataset.h) * 3600; renderDetail(); };
 
-  if (alert && alert.category === "pump_failure" && alert.status !== "resolved") box.appendChild(whatIf(f, s, alert));
-  else if (sel.kind === "whatif") box.appendChild(whatIf(f, s, null));
-  else if (alert && alert.evidence.length) {
+  if (alert && alert.evidence.length) {
     const ev = document.createElement("div");
     ev.className = "ds-evidence";
-    ev.innerHTML = `<span class="kicker">${alert.screened ? "Why gaia's screen flagged it" : "Why the backend flagged it"}</span><ul>${alert.evidence.map((e) => `<li>${esc(e)}</li>`).join("")}</ul>`;
+    ev.innerHTML = `<span class="kicker">Why the backend flagged it</span><ul>${alert.evidence.map((e) => `<li>${esc(e)}</li>`).join("")}</ul>`;
     box.appendChild(ev);
   }
-  if (!alert || alert.category !== "pump_failure") {
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "ds-whatif-btn";
-    btn.textContent = sel.kind === "whatif" ? "Back to readings" : "What if this pump failed now?";
-    btn.onclick = () => select(sel.kind === "whatif" ? { kind: "facility", id: f.id } : { kind: "whatif", id: f.id });
-    box.appendChild(btn);
-  }
+  if (alert && alert.category === "pump_failure" && alert.status !== "resolved") box.appendChild(planPanel(f, s, alert));
   box.appendChild(traces(f, alert));
 }
 
@@ -864,132 +595,6 @@ function lostSeries(f, from, to) {
   return R(f.pump.id, "flow_bpd").filter(([t, v]) => run.get(t) === 1 && v > 0 && recv.has(t)).map(([t, v]) => [t, v - recv.get(t)]);
 }
 
-// README "Go further": what if the whole disposal site shut down? Every pump in the system
-// stops at once, every tank fills, and they all share the system's trucks. Plans every tank
-// together for the outage, and prices the same outage with 0 to fleet + 3 trucks.
-// Assumes the trucks haul to another site on the same cycle times as ops.json.
-const outageMemo = new Map(); // `${at}@${system}@${hours}` -> Promise of the result, per loaded store
-const OUTAGE_KEEP = 4; // results hold every replay's points: keep only the last few
-let outageStore = null, outageSeq = 0, outageKey = null;
-let outageWorkers = [];
-const outagePending = new Map(); // job id -> { key, resolve }
-// Stops every worker and settles its jobs, so nothing waits forever and a stale plan never
-// queues ahead of the one on screen. The pool is rebuilt on the next job.
-function outageReset(why) {
-  for (const w of outageWorkers) w.terminate();
-  outageWorkers = [];
-  for (const [, p] of outagePending) p.resolve({ error: why });
-  outagePending.clear();
-}
-// One tank per worker, a small pool sized to the machine. Without workers (blocked, or
-// an old browser) the tank is planned on the page itself: slower, still right.
-function outageTank(tank, maxK, key) {
-  if (!outageWorkers.length) {
-    const size = Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 2) - 1));
-    try {
-      for (let i = 0; i < size; i++) {
-        const w = new Worker(new URL("./outage.worker.js", import.meta.url), { type: "module" });
-        w.onmessage = (e) => { const p = outagePending.get(e.data.id); outagePending.delete(e.data.id); p?.resolve(e.data); };
-        w.onerror = w.onmessageerror = (e) => { e.preventDefault?.(); outageReset("the planning worker stopped"); };
-        outageWorkers.push(w);
-      }
-    } catch {
-      outageReset("no workers");
-      return new Promise((resolve) => setTimeout(() => {
-        try { resolve({ row: tankRow(tank, maxK), nothing: doNothing(tank.input) }); } catch (err) { resolve({ error: String(err?.message || err) }); }
-      }));
-    }
-  }
-  const id = ++outageSeq;
-  return new Promise((resolve) => { outagePending.set(id, { key, resolve }); outageWorkers[id % outageWorkers.length].postMessage({ id, tank, maxK }); });
-}
-function outageRun(tanks, maxFleet, key) {
-  return Promise.all(tanks.map((t) => outageTank(t, t.truckSpec ? maxFleet : 0, key))).then((rows) => {
-    const bad = rows.find((r) => r.error);
-    if (bad) return { error: bad.error };
-    const table = rows.map((r) => [...r.row, ...Array(maxFleet + 1 - r.row.length).fill(null)]);
-    return { curve: walkCurve(tanks, table, maxFleet), nothing: rows.map((r, i) => ({ id: tanks[i].id, r: r.nothing })) };
-  });
-}
-function outagePlan(sys, hours) {
-  if (outageStore !== state.store) { outageMemo.clear(); outageStore = state.store; }
-  const key = `${state.at}@${sys.id}@${hours}`;
-  if (outageMemo.has(key)) return outageMemo.get(key);
-  // A new question: drop the jobs still planning an old one.
-  if (outageKey !== key && [...outagePending.values()].some((p) => p.key !== key)) outageReset("superseded");
-  outageKey = key;
-  const horizonMin = Math.round(hours * 60);
-  const tanks = [], skipped = [];
-  for (const f of sys.facilities) {
-    const built = inputFor({ network: state.network, ops: state.ops, facilityId: f.id, ...readers(), horizonMin });
-    if (!built.input) { skipped.push(`${f.id} is left out: ${built.error || "no readings"}.`); continue; }
-    // No truck times in ops.json: the tank still fills and still costs; it gets no trucks.
-    if (!built.opsFacility) { skipped.push(`${f.id} has no truck times in ops.json, so it is planned with shut-ins only.`); tanks.push({ id: f.id, input: built.input, truckSpec: null }); continue; }
-    tanks.push({ id: f.id, input: built.input, truckSpec: {
-      responseMin: built.opsFacility.response_min, cycleMin: built.opsFacility.cycle_min,
-      capacityBbl: state.ops.emergency_trucking.truck_capacity_bbl, costPerTrip: state.ops.emergency_trucking.cost_per_trip } });
-  }
-  const fleet = state.ops.systems?.[sys.id]?.emergency_fleet_size ?? 0;
-  const p = (tanks.length ? outageRun(tanks, fleet + 3, key) : Promise.resolve({ curve: [], nothing: [] })).then((r) => {
-    if (r.error && outageMemo.get(key) === p) outageMemo.delete(key); // a failed or dropped run is asked again next time
-    return { hours, fleet, tanks, skipped, error: r.error || null, curve: r.curve || [], today: r.curve?.[fleet]?.best ?? null, nothing: r.nothing || [] };
-  });
-  outageMemo.set(key, p);
-  while (outageMemo.size > OUTAGE_KEEP) outageMemo.delete(outageMemo.keys().next().value);
-  return p;
-}
-
-function outagePanel(sys) {
-  const el = document.createElement("div");
-  el.className = "ds-outage";
-  const repair = repairH();
-  const choices = [...new Set([repair, 12, 24].filter((h) => Number.isFinite(h) && h > 0))];
-  state.outageH ||= null;
-  const head = `<span class="kicker">What if ${esc(sys.disposal_site?.id || "the disposal site")} shut down now?</span>
-    <div class="ds-win" role="group" aria-label="Outage length">${choices.map((h) => `<button type="button" data-o="${h}" class="${state.outageH === h ? "on" : ""}">${h} h${h === repair ? " (a repair)" : ""}</button>`).join("")}</div>`;
-  if (!state.outageH) {
-    el.innerHTML = `${head}<p class="ds-hint">Every pump in ${esc(sys.id)} stops, every tank fills, and they share ${esc(sys.id)}'s trucks. Pick how long it lasts.</p>`;
-  } else {
-    el.innerHTML = `${head}<p class="ds-hint">Planning every tank together, with 0 to ${(state.ops.systems?.[sys.id]?.emergency_fleet_size ?? 0) + 3} trucks. A long outage takes a few seconds.</p>`;
-  }
-  for (const b of el.querySelectorAll("[data-o]")) b.onclick = () => { state.outageH = state.outageH === Number(b.dataset.o) ? null : Number(b.dataset.o); renderDetail(); };
-  if (!state.outageH) return el;
-  const want = { at: state.at, h: state.outageH, sys: sys.id };
-  outagePlan(sys, state.outageH).then((o) => {
-    // The operator may have moved on while it planned: draw only for what is still asked.
-    if (!el.isConnected || state.at !== want.at || state.outageH !== want.h || o.error === "superseded") return;
-    const end = state.at + o.hours * 3600;
-    if (!o.today) { el.innerHTML = `${head}<p class="ds-hint">No plan possible: ${esc(o.error || o.skipped.join("; ") || "no tanks with readings")}.</p>`; wire(); return; }
-    const nothingTotal = o.nothing.reduce((n, x) => n + x.r.cost.total, 0);
-    const rows = o.today.picks.map((p) => {
-      const dn = o.nothing.find((x) => x.id === p.id).r;
-      const trips = dn.tripped ? "already at shutdown" : dn.safe ? "never reaches shutdown" : `shuts in ${fmtTime(state.at + dn.tripsAtMin * 60)} UTC`;
-      const fake = { category: "pump_failure", facility: p.id, system: sys.id, hours: dn.safe ? null : dn.tripsAtMin / 60, tripped: dn.tripped, actions: planToActions(p.plan, p.id) };
-      const lines = actionLines(fake, { at: state.at, ops: state.ops });
-      return `<tr><th>${esc(p.id)}<span class="ds-hint">${esc(trips)} if nobody acts</span></th>
-        <td><ul class="ds-plan">${lines.map((l) => `<li>${esc(l)}</li>`).join("")}</ul></td>
-        <td>${money(p.result.cost.total)}${p.result.safe ? "" : `<span class="ds-hint">shuts in ${esc(fmtTime(state.at + p.result.tripsAtMin * 60))}</span>`}</td></tr>`;
-    }).join("");
-    const max = Math.max(...o.curve.map((c) => c.best?.total ?? 0), 1);
-    const bars = o.curve.map((c) => {
-      const save = c.n > o.fleet && o.today.total - c.best.total > 0.5 ? ` · saves ${money(o.today.total - c.best.total)}` : "";
-      return `<div class="ds-fleet-row${c.n === o.fleet ? " on" : ""}"><span>${c.n} truck${c.n === 1 ? "" : "s"}${c.n === o.fleet ? " (today)" : ""}</span>
-        <i style="width:${Math.max(1, (c.best.total / max) * 100).toFixed(1)}%"></i><b>${money(c.best.total)}</b><em>${save}</em></div>`;
-    }).join("");
-    const extra = o.curve.find((c) => c.n > o.fleet && o.today.total - c.best.total > 0.5);
-    el.innerHTML = `${head}
-      <p class="ds-outage-sum">Until ${esc(fmtTime(end, true))} UTC: <b>${money(o.today.total)}</b> with ${esc(sys.id)}'s ${o.fleet} truck${o.fleet === 1 ? "" : "s"}, vs <b>${money(nothingTotal)}</b> doing nothing.${
-        extra ? ` With ${extra.n} trucks it would cost ${money(o.today.total - (o.today.total - extra.best.total))}, ${money(o.today.total - extra.best.total)} less.` : ` More trucks would not save anything.`}</p>
-      <table class="ds-costs ds-outage-t"><tbody>${rows}</tbody></table>
-      <div class="ds-fleet"><span class="kicker">Fleet size for this outage</span>${bars}</div>
-      ${o.skipped.length ? `<p class="ds-problems">${esc(o.skipped.join(" "))}</p>` : ""}
-      <p class="ds-hint">Assumes the trucks haul to another site on the cycle times in ops.json, and the wells keep their last hour's rates.</p>`;
-    wire();
-    function wire() { for (const b of el.querySelectorAll("[data-o]")) b.onclick = () => { state.outageH = state.outageH === Number(b.dataset.o) ? null : Number(b.dataset.o); renderDetail(); }; }
-  });
-  return el;
-}
-
 function compare(box, systemId) {
   const sys = state.network.systems.find((x) => x.id === systemId);
   if (!sys) { box.innerHTML = `<p class="ds-hint">${esc(systemId)} is not in this dataset.</p>`; return; }
@@ -999,7 +604,8 @@ function compare(box, systemId) {
     <div class="ds-win" role="group" aria-label="Metric">${COMPARE.map((c) => `<button type="button" data-m="${c.key}" class="${c.key === m.key ? "on" : ""}">${esc(c.label)}</button>`).join("")}</div>
     <div class="ds-win" role="group" aria-label="Trend window">${[[6, "6 h"], [24, "24 h"], [72, "3 d"], [168, "week"]].map(([h, l]) =>
       `<button type="button" data-h="${h}" class="${state.win === h * 3600 ? "on" : ""}">${l}</button>`).join("")}</div></div>`;
-  box.appendChild(outagePanel(sys));
+  const sp = state.detection === "ok" ? state.planSystems?.find((x) => x.system === sys.id) : null;
+  if (sp) box.insertAdjacentHTML("beforeend", `<p class="ds-outage-sum">${esc(sys.id)} at ${esc(fmtTime(state.at))} UTC: ${esc(sp.events.length)} pump failure${sp.events.length === 1 ? "" : "s"} planned together on ${esc(sp.trucks_used)} of ${esc(sp.fleet_size)} trucks, <b>${money(sp.cost)}</b> in all.</p>`);
   for (const b of box.querySelectorAll("[data-m]")) b.onclick = () => { state.compareMetric = b.dataset.m; renderDetail(); };
   for (const b of box.querySelectorAll("[data-h]")) b.onclick = () => { state.win = Number(b.dataset.h) * 3600; renderDetail(); };
   const wrap = document.createElement("div");
@@ -1107,138 +713,168 @@ function pickedCharts(f, wrap, add, R) {
   }
 }
 
-// What-if: replays a plan for one tank from this moment and prices it against doing
-// nothing. Starts from the backend's plan for an alert; the operator can change it.
-function whatIf(f, s, alert) {
+// The plan for one pump failure in progress, all from the backend: its recommended plan
+// (shared trucks), the other options, Last Call (what waiting costs), approval with steps
+// and a radio script, and a what-if the backend replays (POST /api/eog/whatif).
+const planText = (p) => esc(p.summary || "");
+// The approve answer's steps and radio script (kept in state.approved, so a refresh keeps them).
+const stepsHtml = (r) => !r ? "" : `<ol class="ds-plan">${(r.steps || []).map((x) => `<li>${esc(x.at ? fmtTime(x.at) + " UTC · " : "")}${esc(x.text)}</li>`).join("")}</ol>
+  ${r.radio_script ? `<span class="kicker">Radio script</span><p class="ds-radio">${esc(r.radio_script)}</p>` : ""}`;
+function planPanel(f, s, alert) {
   const box = document.createElement("div");
   box.className = "ds-whatif";
-  const h = repairH();
-  const key = alert ? `alert:${alert.id}@${state.at}` : `fac:${f.id}@${state.at}`;
-  let horizonMin;
-  if (alert) horizonMin = alert.repairEnd ? Math.round((alert.repairEnd - state.at) / 60)
-    : alert.onset !== null && h !== null ? Math.round((alert.onset + h * 3600 - state.at) / 60) : null;
-  else horizonMin = h !== null ? Math.round(h * 60) : null;
-  if (horizonMin === null) { box.innerHTML = `<p class="ds-hint">ops.json has no pump repair time, so no plan can be checked.</p>`; return box; }
-  if (horizonMin <= 0) { box.innerHTML = `<p class="ds-hint">The repair time is up at this moment: the pump should be running again.</p>`; return box; }
+  const item = state.plansBy.get(alert.id);
+  if (!item) { box.innerHTML = `<p class="ds-hint">The backend has no plan for this failure at this moment.</p>`; return box; }
+  const p = item.plan || {};
+  const at = state.at;
+  const left = alert.repairEnd !== null ? ` · repair due ${esc(fmtTime(alert.repairEnd))} UTC, ${esc(durationText(Math.max(0, alert.repairEnd - at) / 3600))} left` : "";
+  const alts = (item.alternatives || []).map((x) => `<tr><th>${planText(x)}</th><td>${money(x.cost)}</td>
+    <td class="ds-hint">${x.trips ? `trips ${esc(x.trip_at ? fmtTime(x.trip_at) + " UTC" : "")}` : "stays under shutdown"}</td></tr>`).join("");
+  const appr = item.approval || alert.approval;
+  box.innerHTML = `<div class="ds-sec-head"><span class="kicker">Plan for this failure</span><span class="ds-count">from ${esc(fmtTime(at))} UTC${left}</span></div>
+    <div class="ds-wi-verdict ${p.trips ? "alarm" : "ok"}">${p.trips
+      ? `<b>Reaches shutdown at ${esc(fmtTime(p.trip_at))} UTC even so</b><span>${planText(p)}</span>`
+      : `<b>${planText(p)}</b><span>peaks at ${Number.isFinite(p.peak_level_pct) ? p.peak_level_pct.toFixed(1) : "?"}%, never reaches shutdown</span>`}</div>
+    <ul class="ds-plan">${actionLines(alert, { at, ops: state.ops }).map((l) => `<li>${esc(l)}</li>`).join("")}</ul>
+    ${(p.notes || []).length ? `<p class="ds-hint">${esc(p.notes.join(" "))}</p>` : ""}
+    <div class="ds-lastcall"></div>
+    <table class="ds-costs"><tbody>${alts}</tbody></table>
+    <div class="ds-approve">${appr
+      ? `<p class="ds-check ok">Approved by ${esc(appr.by || "operator")} at ${esc(fmtTime(appr.at))} UTC.</p>`
+      : `<button type="button" data-act="approve">Approve this plan</button>`}<div class="ds-steps">${stepsHtml(state.approved.get(`${alert.id}@${at}`))}</div></div>
+    <details class="ds-wi-edit"><summary>Try another plan (the backend replays it)</summary><div class="ds-wi-body"></div></details>`;
 
-  const fleetTotal = state.ops.systems?.[s.id]?.emergency_fleet_size ?? 0;
-  let used = trucksInUse(state.alerts, s.id, alert?.id);
-  if (alert?.synthetic) {
-    // Pump faults planned by hand share the system's fleet the same way.
-    for (const x of pumpFaults()) {
-      if (x.system !== s.id || x.facility === f.id) continue;
-      used += (state.plans.get(`alert:fault:${x.facility}@${state.at}`) ?? ownPlans().get(x.facility)?.plan)?.trucks || 0;
-    }
-  }
-  const fleet = Math.max(0, fleetTotal - used);
-  if (!state.plans.has(key)) {
-    const own = alert?.synthetic ? ownPlans().get(f.id)?.plan : null;
-    state.plans.set(key, own ? structuredClone(own) : alert ? planFromActions(alert.actions, f.id) : { trucks: 0, trips: 0, shutIns: [] });
-  }
-  const plan = state.plans.get(key);
-  if (plan.trucks > fleet) { plan.trucks = fleet; delete plan.groups; } // the select can only show what is free
-  const built = inputFor({ network: state.network, ops: state.ops, facilityId: f.id, ...readers(), horizonMin, plan: { ...plan, fleet } });
-  if (built.error) { box.innerHTML = `<p class="ds-hint">${esc(built.error)}</p>`; return box; }
-  // A hypothetical failure: the pump stops now, so the tank fills from its current level.
-  const r = replay(built.input);
-  const base = doNothing(built.input);
-  const fo = built.opsFacility || {};
-  const lim = state.network.defaults.tank_limits_pct;
-  const maxTrips = fo.cycle_min ? Math.max(0, Math.floor((horizonMin - fo.response_min) / fo.cycle_min) + 1) : 0;
-
-  const title = !alert ? "Practice: if this pump failed now" : alert.synthetic ? `Plan by hand: ${alert.asset} failed ${fmtTime(alert.onset, true)}` : "Plan for this failure";
-  const backendCost = alert?.estCost;
-  box.innerHTML = `<div class="ds-sec-head"><span class="kicker">${esc(title)}</span>
-      <span class="ds-count">repair done ${esc(fmtTime(state.at + horizonMin * 60))} UTC · ${esc(durationText(horizonMin / 60))} left</span></div>
-    <div class="ds-wi-grid">
-      <div class="ds-wi-controls">
-        <label>Trucks <select data-k="trucks">${Array.from({ length: fleet + 1 }, (_, i) => `<option ${i === plan.trucks ? "selected" : ""}>${i}</option>`).join("")}</select>
-          <span class="ds-hint">${esc(fleet)} of ${esc(fleetTotal)} free in ${esc(s.id)}${used ? ` (${used} on other alerts)` : ""}</span></label>
-        <label>Trips each <select data-k="trips">${Array.from({ length: Math.max(maxTrips, plan.trips) + 1 }, (_, i) => `<option ${i === plan.trips ? "selected" : ""}>${i}</option>`).join("")}</select>
-          <span class="ds-hint">${esc(fo.response_min ?? "?")} min out, ${esc(fo.cycle_min ?? "?")} min round trip, ${esc(state.ops.emergency_trucking.truck_capacity_bbl)} bbl and ${money(state.ops.emergency_trucking.cost_per_trip)} a trip</span></label>
-        <div class="ds-wells"><span class="kicker">Shut in wells early</span>
-          ${f.wells.map((w) => {
-            const si = plan.shutIns.find((x) => x.well === w.id);
-            const rph = revenuePerHour(w, state.ops.prices);
-            const wi = built.input.wells.find((x) => x.id === w.id);
-            return `<label class="ds-well"><input type="checkbox" data-well="${esc(w.id)}" ${si ? "checked" : ""} ${wi && !wi.producing ? "disabled" : ""}>
-              <b>${esc(w.id)}</b><span>${Math.round(wi?.waterBpd ?? 0)} bbl/d water · ${money(rph)}/h</span>
-              <input type="number" min="0" max="${horizonMin}" step="5" value="${si ? Math.round(si.startMin) : 0}" data-start="${esc(w.id)}" ${si ? "" : "disabled"} aria-label="${esc(w.id)}: minutes from now"><em>min from now</em></label>`;
-          }).join("")}
-        </div>
-        <div class="ds-wi-buttons">
-          <button type="button" data-act="cheapest">Cheapest plan</button>
-          ${alert && !alert.synthetic ? `<button type="button" data-act="backend">Backend plan</button>` : ""}
-          <button type="button" data-act="clear">Do nothing</button>
-        </div>
-      </div>
-      <div class="ds-wi-result">
-        <div class="ds-wi-verdict ${r.safe ? "ok" : "alarm"}">${r.safe
-          ? `<b>Stays under shutdown</b><span>peaks at ${peak1(r.peakPct)}%</span>`
-          : r.tripped ? `<b>Tank already at shutdown</b><span>its wells stay shut in until the repair; no plan changes that now</span>`
-          : `<b>Reaches shutdown at ${esc(fmtTime(state.at + r.tripsAtMin * 60))} UTC</b><span>wells shut in until the repair</span>`}</div>
-        <table class="ds-costs"><tbody>
-          <tr><th>Trucks</th><td>${money(r.cost.trucks)}</td><td class="ds-hint">${r.tripsMade} trip${r.tripsMade === 1 ? "" : "s"}, ${Math.round(r.removedBbl)} bbl</td></tr>
-          <tr><th>Wells shut in early</th><td>${money(r.cost.shutIn)}</td><td></td></tr>
-          <tr><th>Automatic shut-in</th><td>${money(r.cost.auto)}</td><td></td></tr>
-          <tr class="total"><th>This plan</th><td>${money(r.cost.total)}</td><td></td></tr>
-          <tr><th>Doing nothing</th><td>${money(base.cost.total)}</td><td class="ds-hint">${base.safe ? "never trips" : `trips ${esc(fmtTime(state.at + base.tripsAtMin * 60))}`}</td></tr>
-          ${backendCost !== null && backendCost !== undefined ? `<tr><th>Backend's plan</th><td>${money(backendCost)}</td><td></td></tr>` : ""}
-        </tbody></table>
-        ${r.problems.length ? `<ul class="ds-problems">${r.problems.map((p) => `<li>${esc(p)}</li>`).join("")}</ul>` : ""}
-        <div class="ds-wi-chart"></div>
-        ${alert ? fleetHtml(s.id) : ""}
-      </div>
-    </div>`;
-
-  const rerender = () => renderDetail();
-  for (const sel of box.querySelectorAll("select[data-k]")) sel.onchange = () => { plan[sel.dataset.k] = Number(sel.value); if (plan.trucks && !plan.trips) plan.trips = 1; rerender(); };
-  for (const cb of box.querySelectorAll("input[data-well]")) cb.onchange = () => {
-    const id = cb.dataset.well;
-    plan.shutIns = plan.shutIns.filter((x) => x.well !== id);
-    if (cb.checked) plan.shutIns.push({ well: id, startMin: 0 });
-    rerender();
-  };
-  for (const inp of box.querySelectorAll("input[data-start]")) inp.onchange = () => {
-    const si = plan.shutIns.find((x) => x.well === inp.dataset.start);
-    if (si) si.startMin = Math.max(0, Math.min(horizonMin, Number(inp.value) || 0));
-    rerender();
-  };
-  const b = box.querySelector("[data-act=backend]");
-  if (b) b.onclick = () => { state.plans.set(key, planFromActions(alert.actions, f.id)); rerender(); };
-  box.querySelector("[data-act=cheapest]").onclick = () => {
-    // For a failure in progress, the joint search (shared trucks); for practice, this tank
-    // alone with the trucks that are free.
-    let p = alert ? ownPlans().get(f.id)?.plan : null;
-    if (!p && fo.response_min !== undefined) {
-      const best = cheapestJoint([{ id: f.id, input: { ...built.input, trucks: null, shutIns: [] }, truckSpec: {
-        responseMin: fo.response_min, cycleMin: fo.cycle_min,
-        capacityBbl: state.ops.emergency_trucking.truck_capacity_bbl, costPerTrip: state.ops.emergency_trucking.cost_per_trip } }], fleet);
-      p = best?.picks[0]?.plan;
-    }
-    if (p) { state.plans.set(key, structuredClone(p)); rerender(); }
-  };
-  box.querySelector("[data-act=clear]").onclick = () => { state.plans.set(key, { trucks: 0, trips: 0, shutIns: [] }); rerender(); };
-
+  // Last Call: the cost of this failure if nobody acts until each 5-minute start.
+  const curve = (item.wait_curve || []).filter((r) => Number.isFinite(r.cost));
   requestAnimationFrame(() => {
-    const t = (m) => state.at + m * 60;
-    const marks = [];
-    if (plan.trucks && plan.trips && fo.response_min !== undefined)
-      for (let k = 0; k < plan.trips; k++) marks.push({ t: t(fo.response_min + k * fo.cycle_min), label: k ? "" : `${plan.trucks} truck${plan.trucks > 1 ? "s" : ""}` });
-    for (const si of plan.shutIns) marks.push({ t: t(si.startMin), label: "shut-in" });
-    lineChart(box.querySelector(".ds-wi-chart"), {
-      title: "Tank level from now to the repair", unit: "% full", from: state.at, to: t(horizonMin), height: 150, gapS: 600,
-      // Zoom to the band that matters: from a little under the lowest level to 100%.
-      yMin: Math.max(0, Math.floor((Math.min(built.input.levelPct, ...r.points.map((p) => p[1])) - 10) / 10) * 10), yMax: 100,
-      series: [
-        { name: "this plan", points: r.points.filter((_, i) => i % 5 === 0 || i === r.points.length - 1).map(([m, v]) => [t(m), v]) },
-        { name: "doing nothing", points: base.points.filter((_, i) => i % 5 === 0 || i === base.points.length - 1).map(([m, v]) => [t(m), v]) },
-      ],
-      refs: [{ y: lim.warning, label: `warning ${lim.warning}%`, tone: "warning" }, { y: lim.shutdown, label: `shutdown ${lim.shutdown}%`, tone: "alarm" }],
-      marks, format: (v) => v.toFixed(1) + "%",
+    const host = box.querySelector(".ds-lastcall");
+    if (!curve.length || !host) return;
+    const exp = p.expires_at;
+    const head = document.createElement("p");
+    head.className = "ds-outage-sum";
+    const jump = exp ? curve.find((r) => r.start_ts > exp) : null;
+    head.innerHTML = exp
+      ? `Last call <b>${esc(fmtTime(exp))} UTC</b> (${esc(durationText(Math.max(0, exp - at) / 3600))} from now). Start later and it costs ${jump ? `<b>${money(jump.cost)}</b>, not ${money(p.cost)}` : "more"}.`
+      : `No start time keeps this plan: waiting costs what the chart shows.`;
+    host.appendChild(head);
+    const chart = document.createElement("div");
+    host.appendChild(chart);
+    lineChart(chart, {
+      title: "Price of waiting", unit: "$, if the plan starts at this time", from: curve[0].start_ts, to: curve[curve.length - 1].start_ts, height: 120, yMin: 0,
+      series: [{ name: alert.facility, points: curve.map((r) => [r.start_ts, r.cost]) }],
+      marks: exp ? [{ t: exp, label: "last call", tone: "alarm" }] : [], step: true, format: (v) => money(v),
     });
   });
+
+  const ab = box.querySelector("[data-act=approve]");
+  if (ab) ab.onclick = async () => {
+    ab.disabled = true;
+    ab.textContent = "Approving…";
+    try {
+      const r = await state.eog.approve(alert.id, at);
+      state.approved.set(`${alert.id}@${at}`, r); // the steps and script stay on screen through the refresh
+      box.querySelector(".ds-steps").innerHTML = stepsHtml(r);
+      ab.replaceWith(Object.assign(document.createElement("p"), { className: "ds-check ok", textContent: `Approved by ${r.approval?.by || "operator"}. Nothing moves by itself: call the field with the script below.` }));
+      refreshAlerts();
+    } catch (e) {
+      ab.disabled = false;
+      ab.textContent = "Approve this plan";
+      box.querySelector(".ds-steps").innerHTML = `<p class="ds-problems">Not approved: ${esc(e.message)}</p>`;
+    }
+  };
+
+  const det = box.querySelector(".ds-wi-edit");
+  det.open = state.plans.has(`${alert.id}@${at}`);
+  det.ontoggle = () => { if (det.open) whatIfEditor(det.querySelector(".ds-wi-body"), f, s, alert, item, at); };
+  if (det.open) whatIfEditor(det.querySelector(".ds-wi-body"), f, s, alert, item, at);
   return box;
+}
+
+const toEdit = (actions) => {
+  const t = (actions || []).find((a) => a.type === "dispatch_truck");
+  return { trucks: t?.trucks | 0, trips: t?.trips_per_truck | 0,
+    shutIns: (actions || []).filter((a) => a.type === "shut_in_wells").flatMap((a) => (a.wells || []).map((w) => ({ well: w, startMin: Number(a.start_after_min) || 0 }))) };
+};
+const toActions = (e) => {
+  const out = [];
+  if (e.trucks > 0 && e.trips > 0) out.push({ type: "dispatch_truck", trucks: e.trucks, trips_per_truck: e.trips });
+  const byStart = new Map();
+  for (const x of e.shutIns) byStart.set(x.startMin, [...(byStart.get(x.startMin) || []), x.well]);
+  for (const [m, wells] of byStart) out.push({ type: "shut_in_wells", wells, start_after_min: m });
+  return out.length ? out : [{ type: "none" }];
+};
+
+let whatIfSeq = 0;
+// `at` is the moment the panel was built for: the plan, free trucks and repair time are its.
+function whatIfEditor(host, f, s, alert, item, at) {
+  const key = `${alert.id}@${at}`;
+  if (!state.plans.has(key)) state.plans.set(key, toEdit(item.plan?.actions));
+  const e = state.plans.get(key);
+  const free = Math.max(0, item.trucks_free ?? 0);
+  const fo = state.ops?.systems?.[s.id]?.facilities?.[f.id] || {};
+  const horizonMin = alert.repairEnd !== null ? Math.round((alert.repairEnd - at) / 60) : 0;
+  const maxTrips = fo.cycle_min ? Math.max(0, Math.floor((horizonMin - fo.response_min) / fo.cycle_min) + 1) : 6;
+  e.trucks = Math.min(e.trucks, free);
+  host.innerHTML = `<div class="ds-wi-grid"><div class="ds-wi-controls">
+      <label>Trucks <select data-k="trucks">${Array.from({ length: free + 1 }, (_, i) => `<option ${i === e.trucks ? "selected" : ""}>${i}</option>`).join("")}</select>
+        <span class="ds-hint">${free} free in ${esc(s.id)} after its other failures' plans</span></label>
+      <label>Trips each <select data-k="trips">${Array.from({ length: Math.max(maxTrips, e.trips) + 1 }, (_, i) => `<option ${i === e.trips ? "selected" : ""}>${i}</option>`).join("")}</select>
+        <span class="ds-hint">${esc(fo.response_min ?? "?")} min out, ${esc(fo.cycle_min ?? "?")} min round trip</span></label>
+      <div class="ds-wells"><span class="kicker">Shut in wells early</span>${f.wells.map((w) => {
+        const si = e.shutIns.find((x) => x.well === w.id);
+        const water = state.store.latest(w.id, "water_bpd", at);
+        return `<label class="ds-well"><input type="checkbox" data-well="${esc(w.id)}" ${si ? "checked" : ""}>
+          <b>${esc(w.id)}</b><span>${water === null ? "no reading" : Math.round(water) + " bbl/d water"}</span>
+          <input type="number" min="0" max="${horizonMin}" step="5" value="${si ? Math.round(si.startMin) : 0}" data-start="${esc(w.id)}" ${si ? "" : "disabled"} aria-label="${esc(w.id)}: minutes from now"><em>min from now</em></label>`;
+      }).join("")}</div>
+      <div class="ds-wi-buttons"><button type="button" data-act="rec">Recommended plan</button><button type="button" data-act="none">Do nothing</button></div>
+    </div><div class="ds-wi-result"><p class="ds-hint">Replaying…</p></div></div>`;
+  const redo = () => whatIfEditor(host, f, s, alert, item, at);
+  for (const sel of host.querySelectorAll("select[data-k]")) sel.onchange = () => { e[sel.dataset.k] = Number(sel.value); if (e.trucks && !e.trips) e.trips = 1; redo(); };
+  for (const cb of host.querySelectorAll("input[data-well]")) cb.onchange = () => {
+    e.shutIns = e.shutIns.filter((x) => x.well !== cb.dataset.well);
+    if (cb.checked) e.shutIns.push({ well: cb.dataset.well, startMin: 0 });
+    redo();
+  };
+  for (const inp of host.querySelectorAll("input[data-start]")) inp.onchange = () => {
+    const si = e.shutIns.find((x) => x.well === inp.dataset.start);
+    if (si) si.startMin = Math.max(0, Math.min(horizonMin, Math.round(Number(inp.value) || 0)));
+    redo();
+  };
+  host.querySelector("[data-act=rec]").onclick = () => { state.plans.set(key, toEdit(item.plan?.actions)); redo(); };
+  host.querySelector("[data-act=none]").onclick = () => { state.plans.set(key, { trucks: 0, trips: 0, shutIns: [] }); redo(); };
+
+  const seq = ++whatIfSeq;
+  const out = host.querySelector(".ds-wi-result");
+  state.eog.whatif({ facility_id: f.id, actions: toActions(e), at }).then((w) => {
+    if (seq !== whatIfSeq || !out.isConnected || at !== state.at) return;
+    const r = w.result, b = w.baseline;
+    const lim = state.network.defaults.tank_limits_pct;
+    out.innerHTML = `<div class="ds-wi-verdict ${r.trip_at ? "alarm" : "ok"}">${r.trip_at
+        ? `<b>Reaches shutdown at ${esc(fmtTime(r.trip_at))} UTC</b><span>wells shut in until the repair</span>`
+        : `<b>Stays under shutdown</b><span>peaks at ${r.peak_level_pct.toFixed(1)}%</span>`}</div>
+      <table class="ds-costs"><tbody>
+        <tr><th>Trucks</th><td>${money(r.truck_cost)}</td><td class="ds-hint">${Math.round(r.removed_bbl)} bbl hauled</td></tr>
+        <tr><th>Wells shut in early</th><td>${money(r.shut_in_cost)}</td><td></td></tr>
+        <tr><th>Automatic shut-in</th><td>${money(r.auto_shut_in_cost)}</td><td></td></tr>
+        <tr class="total"><th>This plan</th><td>${money(r.cost)}</td><td></td></tr>
+        <tr><th>Doing nothing</th><td>${money(b.cost)}</td><td class="ds-hint">${b.trip_at ? `trips ${esc(fmtTime(b.trip_at))}` : "never trips"}</td></tr>
+        <tr><th>Recommended</th><td>${money(item.plan?.cost)}</td><td></td></tr>
+      </tbody></table>
+      ${(r.errors || []).length ? `<ul class="ds-problems">${r.errors.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>` : ""}
+      <div class="ds-wi-chart"></div>`;
+    const thin = (pts) => pts.filter((_, i) => i % 3 === 0 || i === pts.length - 1);
+    lineChart(out.querySelector(".ds-wi-chart"), {
+      title: "Tank level from now to the repair", unit: "% full", from: w.start, to: w.repair_end, height: 150, gapS: 900,
+      yMin: Math.max(0, Math.floor((Math.min(w.level_pct, ...r.points.map((x) => x[1])) - 10) / 10) * 10), yMax: 100,
+      series: [{ name: "this plan", points: thin(r.points) }, { name: "doing nothing", points: thin(b.points) }],
+      refs: [{ y: lim.warning, label: `warning ${lim.warning}%`, tone: "warning" }, { y: lim.shutdown, label: `shutdown ${lim.shutdown}%`, tone: "alarm" }],
+      marks: (r.arrivals || []).map((t, i) => ({ t, label: i ? "" : "first load" })), format: (v) => v.toFixed(1) + "%",
+    });
+  }).catch((err) => {
+    if (seq !== whatIfSeq || !out.isConnected) return;
+    out.innerHTML = `<p class="ds-problems">The backend did not replay it: ${esc(err.message)}</p>`;
+  });
 }
 
 // ---------- handoff, export, footer ----------
@@ -1254,41 +890,18 @@ function openDialog(title, text) {
   $("dsDialog").showModal();
 }
 
-$("dsHandoff").onclick = () => {
+$("dsHandoff").onclick = async () => {
   if (!state.store) return;
-  const screened = usesScreen();
-  const alerts = screened ? [...faultRows().map((r) => r.a), ...pool()] : state.alerts;
-  let text = handoffText({
-    folder: state.folder, at: state.at, now: state.store.now, alerts,
-    resolved: alerts.filter((a) => a.status === "resolved"), detection: screened ? "screen" : state.detection, ops: state.ops,
-  });
-  if (screened) {
-    const gaps = unscreened();
-    if (gaps.off.length) text += `\nStopped, so their lines could not be checked: ${gaps.off.join(", ")}.`;
-    if (gaps.blind.length) text += `\nNot checked, no fresh reading: ${gaps.blind.join(", ")}.`;
+  if (state.detection !== "ok") { openDialog("Shift handoff", `Detection did not run, so this is not an all-clear. ${state.detectionNote}`); return; }
+  try {
+    await ensureActive(state.folder);
+    const h = await state.eog.handoff(state.at);
+    if (h.dataset !== state.folder) throw new Error(`the backend has ${h.dataset} active, not ${state.folder}`);
+    openDialog("Shift handoff", h.text);
+  } catch (e) {
+    openDialog("Shift handoff", `The handoff did not load (${e.message}). This is not an all-clear.`);
   }
-  openDialog("Shift handoff", text);
 };
-
-// events.json in the SPEC shape, from the page's own screen (file mode). Every event says
-// in its evidence that it came from this page, not the backend.
-function screenEventsJson() {
-  const iso = (t) => (t === null ? null : new Date(t * 1000).toISOString().replace(".000Z", "Z"));
-  const list = [...faultRows().map((r) => r.a), ...pool()].sort((a, b) => a.onset - b.onset);
-  return list.map((a, i) => ({
-    event_id: `GAIA-${String(i + 1).padStart(3, "0")}`,
-    system_id: a.system, facility_id: a.facility, asset_id: a.asset, category: a.category, status: a.status,
-    onset_ts: iso(a.onset), onset_unix: a.onset, end_ts: a.status === "resolved" ? iso(a.end) : null, end_unix: a.status === "resolved" ? a.end : null,
-    confidence: a.confidence === null ? null : Math.round(a.confidence * 100) / 100,
-    evidence: [...a.evidence, "Screened from the readings by gaia's dataset page; the backend's detection did not run."],
-    ...(a.category === "pump_failure" && a.status === "ongoing" ? {
-      level_pct: a.levelPct === null ? null : Math.round(a.levelPct * 10) / 10,
-      hours_to_limit: a.hours === null ? null : { p50: Math.round(a.hours * 100) / 100 },
-      recommended_actions: a.actions.length ? a.actions : [{ type: "none" }],
-      est_cost: a.estCost === null ? null : Math.round(a.estCost),
-    } : { hours_to_limit: null, recommended_actions: a.status === "ongoing" ? a.actions : [] }),
-  }));
-}
 
 function download(name, text) {
   const blob = new Blob([text], { type: "application/json" });
@@ -1301,16 +914,16 @@ function download(name, text) {
 
 $("dsExport").onclick = async () => {
   if (!state.store) return;
-  if (usesScreen()) { download("events.json", JSON.stringify(screenEventsJson(), null, 2)); return; }
-  const url = state.source?.eventsUrl(travelling() ? state.at : null);
-  if (!url || state.detection !== "ok") {
-    openDialog("events.json", "No events to export yet: detection is still loading.");
+  if (state.detection !== "ok") {
+    openDialog("events.json", state.detection === "loading" ? "No events to export yet: detection is still loading." : `No events to export: ${state.detectionNote}`);
     return;
   }
   try {
-    const r = await fetch(url, { cache: "no-store" });
-    if (!r.ok) throw new Error(`${r.status}`);
-    download("events.json", await r.text());
+    // The view (not ?download=1) names its dataset, so the file is never another folder's.
+    await ensureActive(state.folder);
+    const v = await state.eog.events(state.at);
+    if (v.dataset !== state.folder) throw new Error(`the backend has ${v.dataset} active, not ${state.folder}`);
+    download("events.json", JSON.stringify(v.events, null, 2));
   } catch (e) {
     openDialog("events.json", `The export did not load (${e.message}).`);
   }
@@ -1318,9 +931,9 @@ $("dsExport").onclick = async () => {
 
 function renderFoot() {
   const n = state.store?.times.length ?? 0;
-  const src = state.source?.kind === "api" ? "backend dataset mode" : "files from the dev server";
+  const src = state.detection === "ok" ? "alerts and plans: the backend's dataset mode (/api/eog)" : "alerts and plans: off";
   $("dsFoot").textContent = state.store
-    ? `${state.folder} · network.json, ops.json, telemetry.csv · ${n.toLocaleString("en-US")} readings per sensor, every 5 min · ${state.store.series.size} sensors · source: ${src}`
+    ? `${state.folder} · network.json, ops.json, telemetry.csv · ${n.toLocaleString("en-US")} readings per sensor, every 5 min · ${state.store.series.size} sensors · ${src}`
     : "";
 }
 
