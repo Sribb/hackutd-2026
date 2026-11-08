@@ -10,7 +10,11 @@
   "layout.py": "6c51e75f31b396d5",
   "build_field.py": "567377ae74df5f49",
   "equipment_parts.py": "d8acc611f9830214",
-  "iot_parts.py": "ea301bb6fe72b033"
+  "iot_parts.py": "ea301bb6fe72b033",
+  "well_parts.py": "b9c70325470b4c74",
+  "swd_parts.py": "311f929a16889b00",
+  "truck_parts.py": "69741ea931d3f345",
+  "terrain.py": "a0be6efb1e73daa7"
  },
  "token": "KIT",
  "axes": "anchors and bounds are in the type's own frame with Blender axes: x east, y north, z up",
@@ -53,6 +57,7 @@
   },
   "budget_triangles": 300000,
   "budget_mb": 30.0,
+  "budget_draw_calls": 1600,
   "full_detail_max_tanks": 12
  },
  "layout": {
@@ -375,6 +380,7 @@
      0.0
     ]
    },
+   "actuation": "manual",
    "root": ""
   },
   "valve_crossover": {
@@ -437,6 +443,145 @@
      0.0
     ]
    },
+   "actuation": "manual",
+   "root": ""
+  },
+  "valve_discharge_remote": {
+   "kind": "valve",
+   "token": "KIT",
+   "name": "{id}",
+   "levels": {
+    "full": "valve_discharge_remote.glb",
+    "lite": "valve_discharge_remote_lite.glb",
+    "bare": "valve_discharge_remote_lite.glb"
+   },
+   "triangles": {
+    "full": 1316,
+    "lite": 780,
+    "bare": 780
+   },
+   "parts": [
+    {
+     "name": "_detail_steel",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_glass",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_steel",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_steel_dark",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_wheel",
+     "role": "moving",
+     "type": "mesh",
+     "parent": ""
+    }
+   ],
+   "bounds": [
+    -0.268,
+    0.455,
+    -0.26,
+    0.313,
+    -0.21,
+    1.36
+   ],
+   "anchors": {
+    "north": [
+     0.0,
+     0.27,
+     0.0
+    ],
+    "south": [
+     0.0,
+     -0.27,
+     0.0
+    ]
+   },
+   "actuation": "remote",
+   "root": ""
+  },
+  "valve_crossover_remote": {
+   "kind": "valve",
+   "token": "KIT",
+   "name": "{id}",
+   "levels": {
+    "full": "valve_crossover_remote.glb",
+    "lite": "valve_crossover_remote_lite.glb",
+    "bare": "valve_crossover_remote_lite.glb"
+   },
+   "triangles": {
+    "full": 1316,
+    "lite": 780,
+    "bare": 780
+   },
+   "parts": [
+    {
+     "name": "_detail_steel",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_glass",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_steel",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_steel_dark",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_wheel",
+     "role": "moving",
+     "type": "mesh",
+     "parent": ""
+    }
+   ],
+   "bounds": [
+    -0.268,
+    0.455,
+    -0.26,
+    0.313,
+    -0.21,
+    1.36
+   ],
+   "anchors": {
+    "north": [
+     0.0,
+     0.27,
+     0.0
+    ],
+    "south": [
+     0.0,
+     -0.27,
+     0.0
+    ]
+   },
+   "actuation": "remote",
    "root": ""
   },
   "well": {
@@ -1083,17 +1228,11 @@
     "bare": "pad_lite.glb"
    },
    "triangles": {
-    "full": 1398,
-    "lite": 966,
-    "bare": 966
+    "full": 1198,
+    "lite": 766,
+    "bare": 766
    },
    "parts": [
-    {
-     "name": "_berm",
-     "role": "static",
-     "type": "mesh",
-     "parent": ""
-    },
     {
      "name": "_detail_liner",
      "role": "static",
@@ -1126,10 +1265,10 @@
     }
    ],
    "bounds": [
-    -15.1,
-    15.1,
+    -13.4,
+    13.4,
     27.45,
-    64.1,
+    59.4,
     -0.45,
     2.172
    ],
@@ -1565,27 +1704,21 @@
    ],
    "root": ""
   },
-  "sensor_surface": {
+  "sensor_radar_level_surface": {
    "kind": "sensor",
    "token": "SENSOR_KIT",
    "name": "SENSOR_{id}",
    "levels": {
-    "full": "sensor_surface.glb",
-    "lite": "sensor_surface_lite.glb",
-    "bare": "sensor_surface_lite.glb"
+    "full": "sensor_radar_level_surface.glb",
+    "lite": "sensor_radar_level_surface_lite.glb",
+    "bare": "sensor_radar_level_surface_lite.glb"
    },
    "triangles": {
-    "full": 388,
-    "lite": 292,
-    "bare": 292
+    "full": 332,
+    "lite": 272,
+    "bare": 272
    },
    "parts": [
-    {
-     "name": "_glass",
-     "role": "static",
-     "type": "mesh",
-     "parent": ""
-    },
     {
      "name": "_light",
      "role": "light",
@@ -1606,67 +1739,25 @@
     }
    ],
    "bounds": [
-    -0.112,
-    0.135,
-    -0.1,
-    0.09,
+    -0.13,
+    0.185,
+    -0.16,
+    0.13,
     0.0,
-    0.61
+    0.63
    ],
-   "mounts": {
-    "tank": [
-     -2.390867233276367,
-     0.209173783659935,
-     5.108181818181818,
-     "surface"
-    ],
-    "pump": [
-     0.35,
-     -0.42,
-     0.95,
-     "bracket"
-    ],
-    "valve": [
-     -0.38,
-     0.0,
-     0.25,
-     "bracket"
-    ],
-    "well": [
-     -0.9,
-     -3.0,
-     0.12,
-     "post"
-    ],
-    "disposal_well": [
-     0.9,
-     6.7,
-     0.15,
-     "post"
-    ],
-    "truck": [
-     3.1,
-     0.75,
-     3.15,
-     "surface"
-    ],
-    "yard": [
-     -14.5,
-     -6.0,
-     3.44,
-     "surface"
-    ]
-   },
+   "device": "radar_level",
+   "mount": "surface",
    "root": ""
   },
-  "sensor_bracket": {
+  "sensor_pressure_bracket": {
    "kind": "sensor",
    "token": "SENSOR_KIT",
    "name": "SENSOR_{id}",
    "levels": {
-    "full": "sensor_bracket.glb",
-    "lite": "sensor_bracket_lite.glb",
-    "bare": "sensor_bracket_lite.glb"
+    "full": "sensor_pressure_bracket.glb",
+    "lite": "sensor_pressure_bracket_lite.glb",
+    "bare": "sensor_pressure_bracket_lite.glb"
    },
    "triangles": {
     "full": 400,
@@ -1707,60 +1798,64 @@
     0.0,
     0.65
    ],
-   "mounts": {
-    "tank": [
-     -2.390867233276367,
-     0.209173783659935,
-     5.108181818181818,
-     "surface"
-    ],
-    "pump": [
-     0.35,
-     -0.42,
-     0.95,
-     "bracket"
-    ],
-    "valve": [
-     -0.38,
-     0.0,
-     0.25,
-     "bracket"
-    ],
-    "well": [
-     -0.9,
-     -3.0,
-     0.12,
-     "post"
-    ],
-    "disposal_well": [
-     0.9,
-     6.7,
-     0.15,
-     "post"
-    ],
-    "truck": [
-     3.1,
-     0.75,
-     3.15,
-     "surface"
-    ],
-    "yard": [
-     -14.5,
-     -6.0,
-     3.44,
-     "surface"
-    ]
-   },
+   "device": "pressure",
+   "mount": "bracket",
    "root": ""
   },
-  "sensor_post": {
+  "sensor_position_bracket": {
    "kind": "sensor",
    "token": "SENSOR_KIT",
    "name": "SENSOR_{id}",
    "levels": {
-    "full": "sensor_post.glb",
-    "lite": "sensor_post_lite.glb",
-    "bare": "sensor_post_lite.glb"
+    "full": "sensor_position_bracket.glb",
+    "lite": "sensor_position_bracket_lite.glb",
+    "bare": "sensor_position_bracket_lite.glb"
+   },
+   "triangles": {
+    "full": 264,
+    "lite": 208,
+    "bare": 208
+   },
+   "parts": [
+    {
+     "name": "_light",
+     "role": "light",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_steel",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_steel_dark",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    }
+   ],
+   "bounds": [
+    -0.102,
+    0.135,
+    -0.06,
+    0.18,
+    0.0,
+    0.47
+   ],
+   "device": "position",
+   "mount": "bracket",
+   "root": ""
+  },
+  "sensor_pressure_post": {
+   "kind": "sensor",
+   "token": "SENSOR_KIT",
+   "name": "SENSOR_{id}",
+   "levels": {
+    "full": "sensor_pressure_post.glb",
+    "lite": "sensor_pressure_post_lite.glb",
+    "bare": "sensor_pressure_post_lite.glb"
    },
    "triangles": {
     "full": 424,
@@ -1801,50 +1896,88 @@
     0.0,
     1.625
    ],
-   "mounts": {
-    "tank": [
-     -2.390867233276367,
-     0.209173783659935,
-     5.108181818181818,
-     "surface"
-    ],
-    "pump": [
-     0.35,
-     -0.42,
-     0.95,
-     "bracket"
-    ],
-    "valve": [
-     -0.38,
-     0.0,
-     0.25,
-     "bracket"
-    ],
-    "well": [
-     -0.9,
-     -3.0,
-     0.12,
-     "post"
-    ],
-    "disposal_well": [
-     0.9,
-     6.7,
-     0.15,
-     "post"
-    ],
-    "truck": [
-     3.1,
-     0.75,
-     3.15,
-     "surface"
-    ],
-    "yard": [
-     -14.5,
-     -6.0,
-     3.44,
-     "surface"
-    ]
+   "device": "pressure",
+   "mount": "post",
+   "root": ""
+  },
+  "sensor_telematics_surface": {
+   "kind": "sensor",
+   "token": "SENSOR_KIT",
+   "name": "SENSOR_{id}",
+   "levels": {
+    "full": "sensor_telematics_surface.glb",
+    "lite": "sensor_telematics_surface_lite.glb",
+    "bare": "sensor_telematics_surface_lite.glb"
    },
+   "triangles": {
+    "full": 216,
+    "lite": 192,
+    "bare": 192
+   },
+   "parts": [
+    {
+     "name": "_light",
+     "role": "light",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_steel_dark",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    }
+   ],
+   "bounds": [
+    -0.112,
+    0.11,
+    -0.11,
+    0.11,
+    -0.01,
+    0.32
+   ],
+   "device": "telematics",
+   "mount": "surface",
+   "root": ""
+  },
+  "sensor_gateway_surface": {
+   "kind": "sensor",
+   "token": "SENSOR_KIT",
+   "name": "SENSOR_{id}",
+   "levels": {
+    "full": "sensor_gateway_surface.glb",
+    "lite": "sensor_gateway_surface_lite.glb",
+    "bare": "sensor_gateway_surface_lite.glb"
+   },
+   "triangles": {
+    "full": 260,
+    "lite": 204,
+    "bare": 204
+   },
+   "parts": [
+    {
+     "name": "_light",
+     "role": "light",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_steel_dark",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    }
+   ],
+   "bounds": [
+    -0.12,
+    0.12,
+    -0.11,
+    0.11,
+    0.0,
+    0.84
+   ],
+   "device": "gateway",
+   "mount": "surface",
    "root": ""
   },
   "rtu": {
@@ -1913,6 +2046,72 @@
     0.15
    ],
    "root": ""
+  }
+ },
+ "iot": {
+  "mounts": {
+   "tank": [
+    -2.390867233276367,
+    0.209173783659935,
+    5.108181818181818,
+    "surface"
+   ],
+   "pump": [
+    0.35,
+    -0.42,
+    0.95,
+    "bracket"
+   ],
+   "valve": [
+    -0.38,
+    0.0,
+    0.25,
+    "bracket"
+   ],
+   "well": [
+    -0.9,
+    -3.0,
+    0.12,
+    "post"
+   ],
+   "disposal_well": [
+    0.9,
+    6.7,
+    0.15,
+    "post"
+   ],
+   "truck": [
+    3.1,
+    0.75,
+    3.15,
+    "surface"
+   ],
+   "yard": [
+    -14.5,
+    -6.0,
+    3.44,
+    "surface"
+   ]
+  },
+  "devices": {
+   "tank": "radar_level",
+   "pump": "pressure",
+   "valve": "position",
+   "well": "pressure",
+   "disposal_well": "pressure",
+   "truck": "telematics",
+   "yard": "gateway",
+   "equipment": "pressure"
+  },
+  "types": {
+   "tank": "sensor_radar_level_surface",
+   "pump": "sensor_pressure_bracket",
+   "valve": "sensor_position_bracket",
+   "well": "sensor_pressure_post",
+   "disposal_well": "sensor_pressure_post",
+   "truck": "sensor_telematics_surface",
+   "yard": "sensor_gateway_surface",
+   "equipment": "sensor_pressure_post"
   }
  },
  "glyphs": {
@@ -2046,19 +2245,25 @@
   "equipment_separator.glb": 35740,
   "glyphs.glb": 152960,
   "loadout.glb": 22752,
-  "pad.glb": 62804,
-  "pad_lite.glb": 38520,
+  "pad.glb": 55748,
+  "pad_lite.glb": 31464,
   "palette.glb": 35608,
   "pump.glb": 110260,
   "pump_lite.glb": 74036,
   "rtu.glb": 30544,
   "rtu_lite.glb": 26272,
-  "sensor_bracket.glb": 16984,
-  "sensor_bracket_lite.glb": 15732,
-  "sensor_post.glb": 18264,
-  "sensor_post_lite.glb": 17012,
-  "sensor_surface.glb": 16332,
-  "sensor_surface_lite.glb": 15080,
+  "sensor_gateway_surface.glb": 10204,
+  "sensor_gateway_surface_lite.glb": 9580,
+  "sensor_position_bracket.glb": 11524,
+  "sensor_position_bracket_lite.glb": 11184,
+  "sensor_pressure_bracket.glb": 16984,
+  "sensor_pressure_bracket_lite.glb": 15732,
+  "sensor_pressure_post.glb": 18264,
+  "sensor_pressure_post_lite.glb": 17012,
+  "sensor_radar_level_surface.glb": 14260,
+  "sensor_radar_level_surface_lite.glb": 13032,
+  "sensor_telematics_surface.glb": 9388,
+  "sensor_telematics_surface_lite.glb": 8956,
   "tank.glb": 202792,
   "tank_lite.glb": 167468,
   "tower.glb": 13660,
@@ -2066,13 +2271,17 @@
   "truck_lite.glb": 169980,
   "valve_crossover.glb": 46216,
   "valve_crossover_lite.glb": 24360,
+  "valve_crossover_remote.glb": 54832,
+  "valve_crossover_remote_lite.glb": 32588,
   "valve_discharge.glb": 46216,
   "valve_discharge_lite.glb": 24360,
+  "valve_discharge_remote.glb": 54832,
+  "valve_discharge_remote_lite.glb": 32588,
   "well.glb": 161640,
   "well_bare.glb": 60028,
   "well_lite.glb": 74252,
   "yard.glb": 32548
  },
- "kit_mb": 3.07,
- "seconds": 3.2
+ "kit_mb": 3.28,
+ "seconds": 1.7
 }
