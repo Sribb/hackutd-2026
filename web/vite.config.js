@@ -50,6 +50,31 @@ function mediapipeWasm() {
   };
 }
 
+// three.js's Draco decoder, for a Draco-compressed field.glb (build_field.py --compress, #97).
+// Served from /draco/ out of node_modules and copied into dist/ on build, like MediaPipe's.
+// The loader only fetches it when a model actually uses Draco.
+const DRACO = path.resolve(__dirname, "node_modules/three/examples/jsm/libs/draco/gltf");
+const DRACO_FILES = ["draco_decoder.wasm", "draco_wasm_wrapper.js", "draco_decoder.js"];
+
+function dracoDecoder() {
+  return {
+    name: "draco-decoder",
+    configureServer(server) {
+      server.middlewares.use("/draco", (req, res, next) => {
+        const name = path.basename(req.url.split("?")[0]);
+        if (!DRACO_FILES.includes(name)) return next();
+        res.setHeader("Content-Type", name.endsWith(".wasm") ? "application/wasm" : "text/javascript");
+        fs.createReadStream(path.join(DRACO, name)).pipe(res);
+      });
+    },
+    writeBundle(options) {
+      const out = path.join(options.dir, "draco");
+      fs.mkdirSync(out, { recursive: true });
+      for (const f of DRACO_FILES) if (fs.existsSync(path.join(DRACO, f))) fs.copyFileSync(path.join(DRACO, f), path.join(out, f));
+    },
+  };
+}
+
 // The phone view (#55) lives at /phone.
 function phoneRoute() {
   return {
@@ -67,7 +92,7 @@ const SECRET_FILES = [".env", ".env.*", "*.{pem,key,crt,p12}", "**/.git/**", "**
 
 export default defineConfig({
   preview: { cors: false },
-  plugins: [fieldGlb(), mediapipeWasm(), phoneRoute()],
+  plugins: [fieldGlb(), mediapipeWasm(), dracoDecoder(), phoneRoute()],
   server: {
     host: "127.0.0.1",
     port: 5173,

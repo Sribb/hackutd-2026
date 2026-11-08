@@ -4,6 +4,7 @@ import "@fontsource/azeret-mono/600.css";
 import * as THREE from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { MeshoptDecoder } from "three/addons/libs/meshopt_decoder.module.js";
+import { DRACOLoader } from "three/addons/loaders/DRACOLoader.js";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { mountSky, DEFAULT_SITE } from "./sky.js";
 import { startSeismic, onQuakes, seismicSummary } from "./seismic.js";
@@ -28,7 +29,13 @@ import { mountSecurity, securityLines } from "./security.js";
 
 const $ = (id) => document.getElementById(id);
 // Meshopt-compressed glb (#112/#117) loads with no extra files; a plain glb is unaffected.
-const gltfLoader = () => new GLTFLoader().setMeshoptDecoder(MeshoptDecoder);
+// Draco (#97, build_field.py --compress): one decoder for every load, fetched from /draco/ only
+// when a model uses it. An uncompressed model never touches it.
+let draco = null;
+const gltfLoader = () => {
+  if (!draco) draco = new DRACOLoader().setDecoderPath("/draco/");
+  return new GLTFLoader().setMeshoptDecoder(MeshoptDecoder).setDRACOLoader(draco);
+};
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
 const usd = (n) => "$" + Math.round(n).toLocaleString("en-US");
 
@@ -137,6 +144,8 @@ function indexModel(root) {
   root.traverse((o) => {
     if (!o.isMesh) return;
     o.castShadow = o.receiveShadow = true;
+    // Small scenery (grass, rocks, fence, terrain) is marked cast_shadow: false (#97): cheaper shadows.
+    for (let n = o; n; n = n.parent) if (n.userData && n.userData.cast_shadow !== undefined) { o.castShadow = n.userData.cast_shadow !== false; break; }
     // Night look: the site itself (ground, roads, pads, scenery) sinks into the dark so
     // the equipment, lamps and status colors carry the scene.
     for (let n = o; n; n = n.parent) {
@@ -167,7 +176,7 @@ function indexModel(root) {
     if (/^(STOP|ROAD)_/.test(o.name)) waypoints.set(o.name, o.getWorldPosition(new THREE.Vector3()));
     if (assets.has(o.name)) assets.get(o.name).root = o;
     // Moving parts from CONTRACT.md "What's in field.glb".
-    const m = o.name.match(/^(PUMP_\d+)_rotor$|^(VALVE_[A-Z0-9_]+?)_wheel$|^(WELL_\d+)_(beam|crank)$/);
+    const m = o.name.match(/^(PUMP_\d+)_rotor$|^(VALVE_[A-Z0-9_]+?)_wheel$|^(WELL_\d+)_(beam|crank|pitman|bridle)$/);
     if (m) movers.push({ node: o, id: m[1] || m[2] || m[3], kind: m[1] ? "rotor" : m[2] ? "wheel" : m[4], rest: o.rotation.clone() });
     const g = o.name.match(/^(TANK_\d+)_gauge$/);
     if (g) movers.push({ node: o, id: g[1], kind: "gauge", rest: o.rotation.clone() });
@@ -175,6 +184,7 @@ function indexModel(root) {
     if (ax) movers.push({ node: o, id: ax[1], kind: "axle", rest: o.rotation.clone() });
   });
   for (const a of assets.values()) if (!a.root) a.root = a.meshes[0] || a.levelMesh;
+  buildJacks();
   for (const a of assets.values()) {
     if (!/^TRUCK_/.test(a.id) || !a.root) continue;
     a.home = { pos: a.root.position.clone(), quat: a.root.quaternion.clone() };
@@ -265,8 +275,58 @@ function placeTrucks(view) {
 // Animated parts: pumps spin while running, pumpjacks rock while producing,
 // a valve's handwheel turns while a what-if changes it.
 const movers = [];
+
+// Pumpjack linkage (CONTRACT.md, #121): with <well>_pitman in the model, the crank drives the
+// beam through the pitman, a four-bar linkage, so the arms stay on the crank pins and the
+// horse head moves the way a real one does (fast down, slow up). Well frame, Blender axes
+// (y along the beam toward the motor, z up), in which three.js rotation.x turns the same way:
+//   beam pivot O (0, 4.1); equalizer E = O + R(beam) (3.55, -0.24);
+//   crank pin P = (2.7 + 0.85 cos c, 1.6 + 0.85 sin c), c = crank rotation.x.
+// The pitman's length is |E - P| at the model's rest pose. Without a pitman node (older
+// models) the beam keeps its plain rocking.
+const JACK = { oy: 0, oz: 4.1, ey: 3.55, ez: -0.24, py: 2.7, pz: 1.6, r: 0.85 };
+const jacks = new Map(); // well id -> { beam, crank, pitman, bridle, L }
+const rot = (y, z, a) => [y * Math.cos(a) - z * Math.sin(a), y * Math.sin(a) + z * Math.cos(a)];
+const equalizer = (a) => { const [y, z] = rot(JACK.ey, JACK.ez, a); return [JACK.oy + y, JACK.oz + z]; };
+const crankPin = (c) => [JACK.py + JACK.r * Math.cos(c), JACK.pz + JACK.r * Math.sin(c)];
+function buildJacks() {
+  jacks.clear();
+  const by = new Map();
+  for (const mv of movers) if (/^(beam|crank|pitman|bridle)$/.test(mv.kind)) by.set(mv.id, { ...(by.get(mv.id) || {}), [mv.kind]: mv.node });
+  for (const [id, j] of by) {
+    if (!j.beam || !j.crank || !j.pitman) continue;
+    const e = equalizer(j.beam.rotation.x), p = crankPin(j.crank.rotation.x);
+    jacks.set(id, { ...j, L: Math.hypot(e[0] - p[0], e[1] - p[1]) });
+    // Real pumpjacks on a lease don't move in step: start each crank at its own angle.
+    const n = Number((id.match(/\d+/) || [0])[0]);
+    j.crank.rotation.x += (n * 2.399) % (2 * Math.PI); // golden angle: spread evenly
+  }
+}
+// The beam angle that puts the equalizer at the pitman's length from the crank pin: the
+// intersection of two circles, the one above the pin (the pitman hangs from the beam).
+function solveBeam(j) {
+  const P = crankPin(j.crank.rotation.x), rE = Math.hypot(JACK.ey, JACK.ez);
+  const dy = P[0] - JACK.oy, dz = P[1] - JACK.oz, d = Math.hypot(dy, dz);
+  const a = (rE * rE - j.L * j.L + d * d) / (2 * d), h2 = rE * rE - a * a;
+  if (!(d > 0) || h2 < 0) return null;
+  const h = Math.sqrt(h2), by = JACK.oy + (a * dy) / d, bz = JACK.oz + (a * dz) / d;
+  const c1 = [by - (h * dz) / d, bz + (h * dy) / d], c2 = [by + (h * dz) / d, bz - (h * dy) / d];
+  const pick = c1[1] >= c2[1] ? c1 : c2;
+  return Math.atan2(pick[1] - JACK.oz, pick[0] - JACK.oy) - Math.atan2(JACK.ez, JACK.ey);
+}
+function animateJack(j) {
+  const b = solveBeam(j);
+  if (b == null) return;
+  j.beam.rotation.x = b;
+  const E = equalizer(b), P = crankPin(j.crank.rotation.x);
+  j.pitman.rotation.x = Math.atan2(P[0] - E[0], -(P[1] - E[1])) - b; // CONTRACT.md: atan2(dy, -dz) - beam
+  if (j.bridle) j.bridle.rotation.x = -b; // hangs plumb over the wellhead
+}
+
 function animateMovers(dt, t) {
   for (const mv of movers) {
+    if (mv.kind === "pitman" || mv.kind === "bridle") continue;
+    if (mv.kind === "beam" && jacks.has(mv.id)) continue; // driven by its crank below
     const s = (lastView[mv.id] || {}).status;
     const running = s !== "ALARM" && s !== "OFFLINE" && s !== "NO_DATA" && s !== "UNKNOWN";
     if (mv.kind === "rotor" && running) mv.node.rotation.x += dt * 12;
@@ -277,6 +337,7 @@ function animateMovers(dt, t) {
     if (mv.kind === "gauge") { const p = (lastView[mv.id] || {}).level_pct; if (p != null) mv.node.position.y = 0.3 + 4.3 * Math.min(1, p / 100); }
     if (mv.kind === "axle" && (lastView[mv.id] || {}).driving) mv.node.rotation.z += dt * 8;
   }
+  for (const j of jacks.values()) animateJack(j);
 }
 
 function boxOf(id) {
@@ -1542,7 +1603,9 @@ async function boot() {
       renderPlans(); // the approved plan's card shows how far the run got
     },
   });
-  window.__freeboard = { assets, select, viewAt: (t) => viewAt(t), missing, setActions, get actions() { return actions; }, handoff: () => handoffText() };
+  window.__freeboard = { assets, select, viewAt: (t) => viewAt(t), missing, setActions, get actions() { return actions; }, handoff: () => handoffText(),
+    // Pumpjack linkage, for checks: per well, beam angle and how far the pitman's foot is from its crank pin (m).
+    jacks: () => [...jacks].map(([id, j]) => { const E = equalizer(j.beam.rotation.x), P = crankPin(j.crank.rotation.x); return { id, beam: +j.beam.rotation.x.toFixed(3), gap: +Math.abs(Math.hypot(E[0] - P[0], E[1] - P[1]) - j.L).toFixed(4) }; }) };
 }
 
 const clock = new THREE.Clock();
