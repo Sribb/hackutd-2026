@@ -122,7 +122,7 @@ function windowOf(t) {
 export function chartIntent(t, ctx) {
   const raw = String(t || "").trim();
   if (!raw) return null;
-  const sponsor = sponsorNamed(raw);
+  let sponsor = sponsorNamed(raw);
   let live = liveNamed(raw);
   const named = live.length || sponsor.length;
   const verb = VERB.test(raw);
@@ -133,7 +133,10 @@ export function chartIntent(t, ctx) {
   if (!verb && !show && !bare) return null;
   // "Compare the plans" and other compares without an asset are questions for the backend.
   if (!named && /\bcompare\b/.test(raw)) return null;
-  if (!named && /\b(it|its|this|that|this one|that one|the selection|selected)\b/.test(raw) && ctx.selected && ctx.selected()) live = [ctx.selected()];
+  if (!named && /\b(it|its|this|that|this one|that one|the selection|selected)\b/.test(raw) && ctx.selected && ctx.selected()) {
+    const sel = ctx.selected();
+    if (/^S\d+_[A-Z]+_[A-Z0-9]+$/.test(sel)) sponsor = [sel]; else live = [sel]; // dataset mode: the selection is a sponsor id
+  }
   if (!live.length && !sponsor.length) {
     if (/\b(valve|crossover|xo|truck|yard)\b/.test(raw)) return { error: `Valves and trucks report a position or a trip, not a number over time, so there's no line to draw. ${canPlot(ctx)}` };
     return { error: `Name what to plot. ${canPlot(ctx)}` };

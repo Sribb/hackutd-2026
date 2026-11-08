@@ -776,6 +776,10 @@ export function mountConsole(H) {
       const sc = note && note.querySelector(".scenery-btn");
       const row = document.querySelector(".timebar-row");
       if (sc && row) row.insertBefore(sc, row.querySelector(".cs-skybtn"));
+      const f = H.data() && H.data().field;
+      // The "show tank 3" pill names this field's first tank in dataset mode, or wherever tank 3 isn't.
+      const tank0 = f && (f.mode === "dataset" || !H.hasId("TANK_3")) && (f.tanks || []).map((t) => t.id).find((id) => H.hasId(id));
+      if (tank0) side.suggestAsset(`show ${tank0.replace(/_/g, " ").toLowerCase()}`);
       agentsTick();
       renderStatus();
       intro.ready();
