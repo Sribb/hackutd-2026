@@ -14,6 +14,7 @@ let ws = null, tries = 0, pollTimer = 0, lostTimer = 0;
 let heard = false;       // this socket delivered a message
 let queryToken = false;  // fall back to /ws?token= (a backend without first-message auth)
 let authed = false, authTimer = 0;
+let sentAuth = "", rejected = "";
 const subs = new Map(); // type -> Set(fn)
 
 export const live = {
@@ -106,8 +107,8 @@ function connect() {
   ws.onopen = () => {
     tries = 0;
     const t = token();
-    if (t && !queryToken) {
-      try { ws.send(JSON.stringify({ type: "auth", token: t })); } catch { /* closing */ }
+    if (t && !queryToken && t !== rejected) {
+      try { ws.send(JSON.stringify({ type: "auth", token: t })); sentAuth = t; } catch { /* closing */ }
       // No {type: "auth", ok: true} within 1.5 s: this backend ignores first-message auth and
       // treats us as read-only. Reconnect with ?token= for the rest of the visit.
       const me = ws;
@@ -135,7 +136,11 @@ function connect() {
   };
   ws.onclose = (ev) => {
     ws = null;
-    if (!heard && !queryToken && token() && [1008, 4001, 4003, 4401, 4403].includes(ev && ev.code)) queryToken = true;
+    // A token the server refused (1008 after our auth message): reconnect read-only rather
+    // than knock with it forever. A new token (the PIN prompt) is tried again.
+    if (ev && ev.code === 1008 && sentAuth) rejected = sentAuth;
+    else if (!heard && !queryToken && token() && [1008, 4001, 4003, 4401, 4403].includes(ev && ev.code)) queryToken = true;
+    sentAuth = "";
     const was = live.connected;
     live.connected = false;
     // A brief blip is normal. After 4 s without the socket, say the feed is lost.
