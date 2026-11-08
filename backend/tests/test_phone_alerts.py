@@ -108,3 +108,14 @@ def test_text_is_cleaned_and_capped(client, twilio):
     a = client.post("/api/phone/alert", json={"alert_id": "EV2", "text": "x\x00y\n" + "z" * 900, "call": False}, headers=H).json()
     assert a["text"].startswith("gaia: x y") and len(a["text"]) <= phone_alerts.MAX_TEXT
     assert [h["path"] for h in wait_hits(1)] == ["/2010-04-01/Accounts/ACtest/Messages.json"]
+
+
+def test_call_reads_the_alert_in_words():
+    """The call says the alert itself, in words a voice reads well, with the same numbers."""
+    s = phone_alerts.spoken("gaia: S1 Pump C failed at 00:20 UTC; S1 Tank C reaches shutdown at 04:49 UTC, in 4 h 24 min, "
+                            "taking 3 wells down; the cheapest fix costs $905 vs $5,023 if nobody acts: 1 truck, 1 trip (~$905).")
+    assert s.startswith("S1 Pump C failed at 00:20 UTC. S1 Tank C reaches shutdown at 4:49 UTC, in 4 hours 24 minutes")
+    assert "$905 versus $5,023" in s and "1 trip (about $905)" in s
+    import re
+    assert not re.search(r";|~|gaia:|\bh\b|\bmin\b", s)
+    assert phone_alerts.spoken("gaia: in 1 h 1 min") == "In 1 hour 1 minute"
