@@ -288,9 +288,26 @@ def _activate(rec: dict) -> None:
 
 async def _read_upload(request: Request) -> tuple[object, bool, str]:
     """(blueprint, activate, source name) from a JSON body or a multipart "file"."""
-    ctype = request.headers.get("content-type", "")
-    if int(request.headers.get("content-length") or 0) > MAX_BYTES:
+    ctype = request.headers.get("content-type", "").lower()
+    if not (ctype.startswith("application/json") or ctype.startswith("multipart/form-data")):
+        # text/plain and form-urlencoded are what a page on another site can send without a
+        # CORS preflight, so they never reach validation, let alone activation.
+        raise HTTPException(415, "Send the blueprint as application/json, or as a .json file in multipart "
+                                 "field \"file\". Drawings and CSV files go to /api/ingest first.")
+    try:
+        declared = int(request.headers.get("content-length") or 0)
+    except ValueError:
+        raise HTTPException(400, "Bad Content-Length header.") from None
+    if declared > MAX_BYTES:
         raise HTTPException(413, "A blueprint must be under 5 MB.")
+    # Enforce the cap while reading, so a body that lies about (or omits) its length
+    # can't fill memory. Starlette's form() and json() then read the cached copy.
+    buf = bytearray()
+    async for chunk in request.stream():
+        buf.extend(chunk)
+        if len(buf) > MAX_BYTES:
+            raise HTTPException(413, "A blueprint must be under 5 MB.")
+    request._body = bytes(buf)  # noqa: SLF001 - Starlette's own cache for body()/json()/form()
     if ctype.startswith("multipart/form-data"):
         try:
             form = await request.form()

@@ -154,10 +154,13 @@ def _plan(plant, field, timed: list[dict], run, robust: bool, horizon: int) -> d
     unknown = sorted(t for t, lv in plant.levels.items() if lv is None)
     summary = describe(timed)
     if not cannot:
+        until = clock_at(plant.start_clock, horizon)
         which = "Every tank" if not unknown else "Every tank with a reading"
-        summary += f" {which} stays below shutdown through {clock_at(plant.start_clock, horizon)}."
-        if not robust:
-            summary += f" Not enough if inflow runs {int(RANGE * 100)}% high."
+        if robust:
+            summary += f" {which} stays below shutdown through {until}."
+        else:
+            summary += (f" Holds through {until} at the expected inflow, but not if inflow runs "
+                        f"{int(RANGE * 100)}% high.")
     else:
         summary += " Can't save " + ", ".join(
             f"{nice(t)} (shutdown at {clock_at(plant.start_clock, run.shutdowns[t])})" for t in cannot) + "."
@@ -176,6 +179,25 @@ def _plan(plant, field, timed: list[dict], run, robust: bool, horizon: int) -> d
 
 
 # ---------- approve ----------
+
+def radio_outcome(plan: dict) -> str:
+    """The last line of the radio script. It only says every tank is safe when that's
+    true at +15% inflow and every tank has a reading. Never falsely safe."""
+    if not plan.get("keeps_running"):
+        return "This plan can't save " + ", ".join(nice(t) for t in plan.get("cannot_save", [])) + "."
+    unknown = plan.get("unknown_tanks") or []
+    if unknown:
+        names = ", ".join(nice(t) for t in unknown)
+        line = (f"With this plan the tanks we can read stay below shutdown. We have no reading for {names}, "
+                "so someone needs to check it in person.")
+    elif plan.get("robust"):
+        return "With this plan every tank stays below shutdown, even if inflow runs 15% high."
+    else:
+        line = "With this plan the tanks hold at the expected inflow."
+    if not plan.get("robust"):
+        line += f" If inflow runs {int(RANGE * 100)}% high it isn't enough, so watch the levels."
+    return line
+
 
 def approve(scenario: dict, plan: dict) -> dict:
     """POST /api/plans/{id}/approve: numbered steps with asset IDs, and a radio script."""
@@ -221,9 +243,7 @@ def approve(scenario: dict, plan: dict) -> dict:
     if first:
         state_line += f"Without action, {nice(first['asset_id'])} reaches shutdown at {clock_at(clock, first['t_min'])}. "
     numbered = " ".join(f"Step {s['n']}: {s['text']}" for s in steps) or "No steps."
-    outcome = ("With this plan every tank stays below shutdown."
-               if plan.get("keeps_running") else
-               "This plan can't save " + ", ".join(nice(t) for t in plan.get("cannot_save", [])) + ".")
+    outcome = radio_outcome(plan)
     radio = (f"Field, this is control. {state_line}We're running this plan. {numbered} {outcome} "
              "Call back when each step is done. Control out.")
     return {"plan_id": plan["id"], "steps": steps, "radio_script": radio}

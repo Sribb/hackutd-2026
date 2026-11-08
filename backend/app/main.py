@@ -16,7 +16,7 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from . import spacetime_sync
+from . import auth, spacetime_sync
 from .forecast import build_plant, forecast
 from .planner import approve, make_plans
 from .scenario import field_payload, load_scenario, state_payload
@@ -42,6 +42,11 @@ async def unhandled(_request: Request, exc: Exception) -> JSONResponse:
     """Any bug comes back as JSON the console can show, never a bare crash page."""
     log.exception("Unhandled error: %s", exc)
     return JSONResponse(status_code=500, content={"detail": f"Internal error: {type(exc).__name__}: {exc}"})
+
+# Writes need X-Freeboard-Token once FREEBOARD_TOKEN / OPERATOR_PIN / FREEBOARD_PHONE_TOKEN is set,
+# and cross-site writes are always refused (backend/app/auth.py). Installed before CORS so
+# CORS stays outermost and the browser can read a 401.
+auth.install(app)
 
 # The web console runs on a local dev server (Vite defaults to 5173).
 app.add_middleware(
