@@ -61,6 +61,9 @@ input[type=range] { width: 100%; accent-color: var(--ink-2); height: 26px; margi
 .marks span:first-child { transform: none; }
 .marks span:nth-child(7) { transform: translateX(-100%); }
 .marks .event { color: var(--alarm); }
+.marks .tick { position: absolute; top: -26px; width: 2px; height: 16px; margin-left: -1px; pointer-events: auto; }
+.marks .tick.lc { background: var(--warning); }
+.marks .tick.sd { background: var(--alarm); }
 .marks .range { position: absolute; top: -20px; height: 4px; background: rgba(239,90,80,.35); border-radius: 2px; }
 
 #side { border-left: 1px solid var(--line); background: var(--surface); padding: 16px; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; }
@@ -497,3 +500,9 @@ body.two-nights .sky-ctl { display: none; }
 .wx .wx-pick { margin-top: 6px; color: var(--warning); font-weight: 600; }
 .stamp.who { color: var(--muted); }
 .stamp.who.safe { color: var(--good); }
+
+/* Sky box stays one line until hovered or focused, so it doesn't compete with the failed pump. */
+.sky-ctl:not(:hover):not(:focus-within) .sky-sub,
+.sky-ctl:not(:hover):not(:focus-within) .sky-modes,
+.sky-ctl:not(:hover):not(:focus-within) .sky-pick { display: none; }
+.sky-ctl:not(:hover):not(:focus-within) { width: auto; }

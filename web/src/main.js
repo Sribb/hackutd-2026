@@ -685,7 +685,7 @@ function renderPlans() {
   const safe = hz.length ? remoteOnly(list, field) : null;
   // Nothing flagged: one line, details on hover. A hazard (or weather not checked) gets the full block.
   const quiet = !hz.length && weather().status === "ok" && !/not checked|last checked/.test(wxSummary());
-  const wx = quiet ? `<div class="wx quiet" title="${esc(wxSummary())}"><span class="wx-k">Storm check</span> ${weather().drill ? "DRILL · " : ""}no NWS flags, next 4 h</div>`
+  const wx = quiet ? `<div class="wx quiet" title="${esc(wxSummary())}"><span class="wx-k">Storm check</span> ${weather().drill ? "DRILL · " : ""}no NWS flags, 4 h</div>`
     : `<div class="wx ${hz.length ? "hot" : ""}" title="${esc(hz.map((h) => h.why).join(" "))}"><span class="wx-k">Storm check</span> ${esc(wxSummary())}
     ${hz.length ? `<div class="wx-pick">${safe ? `Keeps everyone inside: plan ${safe.i + 1} (${usd(safe.p.cost.total_usd)}), remote only.`
       : storm && storm.plan ? `Keeps everyone inside: ${esc(storm.plan.summary)} ${usd(storm.plan.cost.total_usd)}, checked with the forecast${data.baseline && data.baseline.cost ? ` (doing nothing: ${usd(data.baseline.cost.total_usd)})` : ""}. <button class="link" data-storm>Try it</button>`
@@ -850,6 +850,13 @@ function renderMarks() {
       marks.push(`<div class="range" style="left:${(100 * e.t_min_low) / max}%;width:${(100 * (hi - e.t_min_low)) / max}%"></div>`);
     }
   }
+  // The two times the operator plans around, as ticks on the slider: Last Call (start the
+  // cheapest plan by then) and the shutdown if nobody acts.
+  const tick = (m, cls, label) => (m != null && m >= 0 && m <= max ? `<i class="tick ${cls}" style="left:${(100 * m) / max}%" title="${esc(label)}"></i>` : "");
+  const lcBest = data.lc && data.lc.status === "INCIDENT" && data.lc.options && data.lc.options[0];
+  if (lcBest && typeof lcBest.expires_min === "number") marks.push(tick(lcBest.expires_min, "lc", `Last Call ${lcBest.expires_clock}: start the cheapest plan by then`));
+  const sd = shutdownOf(data.baseline);
+  if (sd) marks.push(tick(sd.t_min, "sd", `${nice(sd.asset_id)} reaches shutdown at ${clockAt(sd.t_min)} if nobody acts`));
   $("marks").innerHTML = marks.join("");
 }
 

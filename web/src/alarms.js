@@ -362,7 +362,7 @@ function draw() {
 
   box.innerHTML = `<div class="kicker">Alarms <span class="al-count">${[live.length ? `${live.length} active` : "", shelf.length ? `${shelf.length} shelved` : ""].filter(Boolean).join(" · ")}</span></div>
     <div class="al-meter ${flood ? "flood" : ""}">${flood ? "Alarm flood: " : ""}alarms in the last 10 min: ${n}${flood ? ". Showing root causes only." : ""}</div>
-    ${derived ? `<div class="al-note">No alerts feed from the backend. Derived from the forecast; ack and shelve stay on this screen.</div>` : ""}
+    ${derived ? `<div class="al-note">From the forecast (no alerts feed). Ack and shelve stay on this screen.</div>` : ""}
     ${down ? `<div class="al-note warn">Live feed lost. These may be out of date.</div>` : loadedOnce && loadError ? `<div class="al-note warn">Alarm list not refreshed (${esc(loadError)}). These may be out of date.</div>` : ""}
     ${formMsg ? `<div class="al-note warn" role="alert">${esc(formMsg)}</div>` : ""}
     <ol class="al-list">${rows}${empty}</ol>
