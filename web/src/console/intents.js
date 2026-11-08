@@ -31,6 +31,8 @@ export function assetIn(t, ctx) {
   }
   if ((m = /\bvalve ([a-z]{1,2}) ?(\d+)\b/.exec(t))) tries.push(`VALVE_${m[1].toUpperCase()}_${m[2]}`);
   if ((m = /\b(?:disposal well|swd) ?(\d+)\b/.exec(t))) tries.push(`SWD_${m[1]}`);
+  // Sponsor ids (dataset mode): "s2 tank b", "S4_PUMP_C", "s1 well a1", "s2 disposal".
+  if ((m = /\b(s\d+)[ _]?(tank|pump|well|pipeline|facility|disposal)[ _]?([a-z]\d?)?\b/.exec(t))) tries.push([m[1], m[2], m[3]].filter(Boolean).join("_").toUpperCase());
   if ((m = /\b(tank|pump|well|truck|yard)s? ?(\d+)\b/.exec(t))) tries.push(`${m[1].toUpperCase()}_${m[2]}`);
   const hit = tries.find(has);
   if (hit) return hit;
