@@ -105,7 +105,9 @@ function eogData() {
     configureServer(server) {
       server.middlewares.use("/eog", (req, res) => {
         const root = eogDir();
-        const url = decodeURIComponent(req.url.split("?")[0]).replace(/^\/+/, "");
+        let url;
+        try { url = decodeURIComponent(req.url.split("?")[0]).replace(/^\/+/, ""); }
+        catch { url = ""; } // a malformed % escape: answer 404 below, never a stack trace
         const send = (code, body, type = "application/json") => {
           res.statusCode = code;
           res.setHeader("Content-Type", type);

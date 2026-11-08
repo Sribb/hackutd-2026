@@ -60,7 +60,7 @@ export function normAlerts(resp) {
 // (it will not reach shutdown) sorts after the ones that will.
 export function sortAlerts(list) {
   const pf = (a) => a.category === "pump_failure";
-  const h = (a) => (a.hours === null ? Infinity : a.hours);
+  const h = (a) => (a.tripped ? 0 : a.hours === null ? Infinity : a.hours);
   return [...list].sort((a, b) => {
     if (pf(a) !== pf(b)) return pf(a) ? -1 : 1;
     if (!pf(a)) return (a.onset ?? 0) - (b.onset ?? 0);
@@ -96,11 +96,14 @@ export function actionLines(alert, ctx = {}) {
     } else if (a.type === "field_inspection") {
       out.push(`Send an inspector to ${a.asset_id || alert.asset}`);
     } else if (a.type === "none") {
-      out.push(alert.category === "pump_failure" && alert.hours !== null ? "Accept the automatic shut-in: it is the cheapest option" : "No action needed");
+      out.push(alert.category === "pump_failure" && alert.tripped ? "The tank is at shutdown: its wells stay shut in until the repair. Get the pump fixed"
+        : alert.category === "pump_failure" && alert.hours !== null ? "Accept the automatic shut-in: it is the cheapest option" : "No action needed");
     }
   }
   if (!out.length) {
-    if (alert.category === "pump_failure") {
+    if (alert.category === "pump_failure" && alert.tripped) {
+      out.push("The tank is at shutdown: its wells stay shut in until the repair. Get the pump fixed");
+    } else if (alert.category === "pump_failure") {
       out.push(alert.hours === null ? "No action needed: the tank stays under shutdown until the repair" : "No plan from the backend yet");
     } else {
       out.push(`Send an inspector to ${alert.asset || alert.facility || "the site"}`);
@@ -132,7 +135,8 @@ export function handoffText({ folder, at, now, alerts, resolved = [], detection,
       const since = a.onset !== null ? ` since ${fmtTime(a.onset, true)}` : "";
       let line = `${i + 1}. ${c.label} at ${a.facility || a.asset}${since}.`;
       if (a.category === "pump_failure") {
-        if (a.hours !== null) line += ` Tank ${a.levelPct !== null ? Math.round(a.levelPct) + "%, " : ""}shuts in at ${fmtTime(at + a.hours * 3600)} UTC (in ${durationText(a.hours)}) if nobody acts.`;
+        if (a.tripped) line += " The tank is at shutdown and its wells are shut in until the repair.";
+        else if (a.hours !== null) line += ` Tank ${a.levelPct !== null ? Math.round(a.levelPct) + "%, " : ""}shuts in at ${fmtTime(at + a.hours * 3600)} UTC (in ${durationText(a.hours)}) if nobody acts.`;
         else line += " The tank will not reach shutdown before the repair.";
       }
       lines.push(line);

@@ -97,6 +97,7 @@ async function boot() {
 
 async function loadFolder(folder) {
   const seq = ++state.loadSeq;
+  state.alertSeq++; // an alerts request for the previous folder must not land on this one
   state.folder = folder;
   state.selected = null;
   state.plans.clear();
@@ -146,8 +147,13 @@ function setupSlider() {
   let timer = null;
   s.oninput = () => {
     state.at = Number(s.value);
+    // The alerts on screen belong to the old moment: never show them as current.
+    state.alertSeq++;
+    state.alerts = [];
+    state.detection = "loading";
     renderNow();
     renderMap();
+    renderAlerts();
     clearTimeout(timer);
     timer = setTimeout(() => { syncAtToUrl(); refreshAlerts(); }, 250);
   };
@@ -188,8 +194,12 @@ async function refreshAlerts() {
     return;
   }
   try {
-    const resp = await state.source.alerts(travelling() ? at : null);
-    if (seq !== state.alertSeq || at !== state.at) return;
+    const folder = state.folder;
+    const resp = await state.source.alerts(travelling() ? at : null, folder);
+    if (seq !== state.alertSeq || at !== state.at || folder !== state.folder) return;
+    // The backend answers for the folder it has loaded, which another tab can change.
+    if (resp && !Array.isArray(resp) && resp.folder && resp.folder !== folder)
+      throw Object.assign(new Error(`the backend has ${resp.folder} loaded, not ${folder}`), { status: 409 });
     state.alerts = normAlerts(resp);
     state.detection = "ok";
     state.detectionNote = "";
@@ -236,7 +246,7 @@ function pumpFaults(at = state.at) {
     if (state.store.latest(f.pump.id, "status", at) !== 2) continue;
     const col = series.get(f.pump.id + "|status");
     let i = Math.min(times.length - 1, Math.floor((at - times[0]) / STEP_S));
-    while (i > 0 && (col[i - 1] === 2 || Number.isNaN(col[i - 1]))) i--;
+    while (i > 0 && col[i - 1] === 2) i--; // a gap ends the run: never stretch the onset across missing data
     out.push({ system: s.id, facility: f.id, pump: f.pump.id, onset: times[i] });
   }
   return out;
@@ -338,7 +348,7 @@ function renderAlerts() {
       }).sort((p, q) => (p.r?.tripsAtMin ?? Infinity) - (q.r?.tripsAtMin ?? Infinity) || q.loss - p.loss);
       for (const { x, r } of rows) {
         const a = faultAlert(x);
-        const when = !r ? "" : r.safe ? "will not reach shutdown before the repair" : `shuts in at ${fmtTime(state.at + r.tripsAtMin * 60)} UTC (in ${durationText(r.tripsAtMin / 60)}) if nobody acts`;
+        const when = !r ? "" : r.tripped ? "tank at shutdown: its wells are shut in until the repair" : r.safe ? "will not reach shutdown before the repair" : `shuts in at ${fmtTime(state.at + r.tripsAtMin * 60)} UTC (in ${durationText(r.tripsAtMin / 60)}) if nobody acts`;
         const b = document.createElement("button");
         b.type = "button";
         b.className = `ds-fault${state.selected?.id === a.id ? " on" : ""}`;
@@ -418,6 +428,7 @@ function replayCheck(a) {
     ...readers(), horizonMin, plan });
   if (built.error) return { tone: "warning", text: `Replay not possible: ${built.error}` };
   const r = replay(built.input);
+  if (r.tripped) return { tone: "alarm", text: "Replayed: the tank is already at shutdown, so its wells stay shut in until the repair." };
   if (!r.safe && a.actions.some((x) => x.type === "dispatch_truck" || x.type === "shut_in_wells"))
     return { tone: "alarm", text: `Replay disagrees: with this plan the tank still reaches shutdown at ${fmtTime(state.at + r.tripsAtMin * 60)} UTC.` };
   if (a.estCost !== null && Math.abs(r.cost.total - a.estCost) > Math.max(10, a.estCost * 0.03))
@@ -425,7 +436,7 @@ function replayCheck(a) {
   const own = ownPlans().get(a.facility);
   if (own && own.result.cost.total < r.cost.total - Math.max(10, r.cost.total * 0.03))
     return { tone: "warning", text: `Gaia's own planner finds ${money(own.result.cost.total)} here (the backend's plan replays at ${money(r.cost.total)}). Open the plan to compare.` };
-  return { tone: "ok", text: r.safe ? `Replayed: peaks at ${peak1(r.peakPct)}%, never reaches shutdown.` : "Replayed: matches the backend." };
+  return { tone: r.safe ? "ok" : "warning", text: r.safe ? `Replayed: peaks at ${peak1(r.peakPct)}%, never reaches shutdown.` : `Replayed: the tank reaches shutdown at ${fmtTime(state.at + r.tripsAtMin * 60)} UTC, as the backend says.` };
 }
 
 // ---------- map ----------
@@ -471,7 +482,7 @@ function renderMap() {
       const ex = inside ? yx : dx + Math.cos(ang) * Math.min(Math.abs((W / 2 - 14) / (Math.cos(ang) || 1e-6)), Math.abs((H / 2 - 14) / (Math.sin(ang) || 1e-6)));
       const ey = inside ? yy : dy + Math.sin(ang) * Math.min(Math.abs((W / 2 - 14) / (Math.cos(ang) || 1e-6)), Math.abs((H / 2 - 14) / (Math.sin(ang) || 1e-6)));
       const bx = Math.max(10, Math.min(W - 10, ex)), by = Math.max(10, Math.min(H - 10, ey));
-      svg += `<g class="yard"><rect x="${bx - 5}" y="${by - 5}" width="10" height="10"/><text x="${bx + (bx > W / 2 ? -9 : 9)}" y="${by + 3}" text-anchor="${bx > W / 2 ? "end" : "start"}">yard · ${fleet ?? "?"} trucks</text></g>`;
+      svg += `<g class="yard"><rect x="${bx - 5}" y="${by - 5}" width="10" height="10"/><text x="${bx + (bx > W / 2 ? -9 : 9)}" y="${by + 3}" text-anchor="${bx > W / 2 ? "end" : "start"}">yard · ${esc(fleet ?? "?")} trucks</text></g>`;
     }
     for (const f of s.facilities) {
       const [fx, fy] = P(f.lat, f.lon);
@@ -518,7 +529,7 @@ function renderMap() {
     }
     svg += `</svg>`;
     const live = s.facilities.flatMap((f) => alertsFor(f.id));
-    card.innerHTML = `<div class="ds-sys-head"><b>${esc(s.id)}</b><span>${s.facilities.length} facilities · ${fleet ?? "?"} trucks · disposal ${esc(s.disposal_site.pressure_psi)} psi</span>${live.length ? `<span class="ds-tag ${live.some((a) => a.category === "pump_failure") ? "alarm" : "warning"}">${live.length} alert${live.length === 1 ? "" : "s"}</span>` : ""}<button type="button" class="ds-compare" data-sys="${esc(s.id)}" title="Compare ${esc(s.id)}'s facilities side by side">Compare</button></div>${svg}`;
+    card.innerHTML = `<div class="ds-sys-head"><b>${esc(s.id)}</b><span>${s.facilities.length} facilities · ${esc(fleet ?? "?")} trucks · disposal ${esc(s.disposal_site.pressure_psi)} psi</span>${live.length ? `<span class="ds-tag ${live.some((a) => a.category === "pump_failure") ? "alarm" : "warning"}">${live.length} alert${live.length === 1 ? "" : "s"}</span>` : ""}<button type="button" class="ds-compare" data-sys="${esc(s.id)}" title="Compare ${esc(s.id)}'s facilities side by side">Compare</button></div>${svg}`;
     card.querySelector(".ds-compare").onclick = () => select({ kind: "system", id: s.id });
     for (const g of card.querySelectorAll(".fac")) {
       const go = () => select({ kind: "facility", id: g.dataset.fac });
@@ -549,8 +560,14 @@ for (const b of $("dsView").querySelectorAll("button")) b.onclick = () => setVie
 async function open3d() {
   if (!f3d && !f3dLoading) {
     f3dLoading = import("./field3d.js").then(({ mountField3d }) => {
-      f3d = mountField3d($("ds3dHost"), { onPick: (fac) => fac && select({ kind: "facility", id: fac }) });
+      // The generated field (#131) comes from the backend's dataset mode; in file mode
+      // the view is built from network.json only.
+      const glbUrl = (sys) => state.source?.kind === "api"
+        ? { glb: `${API}/api/dataset/field.glb?system=${encodeURIComponent(sys)}`, ids: `${API}/api/dataset/field_ids?system=${encodeURIComponent(sys)}` }
+        : null;
+      f3d = mountField3d($("ds3dHost"), { onPick: (fac) => fac && select({ kind: "facility", id: fac }), glbUrl });
       f3d.setTip(tipFor);
+      window.__dataset.f3d = f3d;
     }).catch((e) => { $("ds3dHost").textContent = `3D did not load: ${e.message}`; });
   }
   await f3dLoading;
@@ -766,7 +783,7 @@ function whatIf(f, s, alert) {
     // Pump faults planned by hand share the system's fleet the same way.
     for (const x of pumpFaults()) {
       if (x.system !== s.id || x.facility === f.id) continue;
-      used += state.plans.get(`alert:fault:${x.facility}@${state.at}`)?.trucks || 0;
+      used += (state.plans.get(`alert:fault:${x.facility}@${state.at}`) ?? ownPlans().get(x.facility)?.plan)?.trucks || 0;
     }
   }
   const fleet = Math.max(0, fleetTotal - used);
@@ -775,6 +792,7 @@ function whatIf(f, s, alert) {
     state.plans.set(key, own ? structuredClone(own) : alert ? planFromActions(alert.actions, f.id) : { trucks: 0, trips: 0, shutIns: [] });
   }
   const plan = state.plans.get(key);
+  if (plan.trucks > fleet) { plan.trucks = fleet; delete plan.groups; } // the select can only show what is free
   const built = inputFor({ network: state.network, ops: state.ops, facilityId: f.id, ...readers(), horizonMin, plan: { ...plan, fleet } });
   if (built.error) { box.innerHTML = `<p class="ds-hint">${esc(built.error)}</p>`; return box; }
   // A hypothetical failure: the pump stops now, so the tank fills from its current level.
@@ -791,9 +809,9 @@ function whatIf(f, s, alert) {
     <div class="ds-wi-grid">
       <div class="ds-wi-controls">
         <label>Trucks <select data-k="trucks">${Array.from({ length: fleet + 1 }, (_, i) => `<option ${i === plan.trucks ? "selected" : ""}>${i}</option>`).join("")}</select>
-          <span class="ds-hint">${fleet} of ${fleetTotal} free in ${esc(s.id)}${used ? ` (${used} on other alerts)` : ""}</span></label>
+          <span class="ds-hint">${esc(fleet)} of ${esc(fleetTotal)} free in ${esc(s.id)}${used ? ` (${used} on other alerts)` : ""}</span></label>
         <label>Trips each <select data-k="trips">${Array.from({ length: Math.max(maxTrips, plan.trips) + 1 }, (_, i) => `<option ${i === plan.trips ? "selected" : ""}>${i}</option>`).join("")}</select>
-          <span class="ds-hint">${fo.response_min ?? "?"} min out, ${fo.cycle_min ?? "?"} min round trip, ${state.ops.emergency_trucking.truck_capacity_bbl} bbl and ${money(state.ops.emergency_trucking.cost_per_trip)} a trip</span></label>
+          <span class="ds-hint">${esc(fo.response_min ?? "?")} min out, ${esc(fo.cycle_min ?? "?")} min round trip, ${esc(state.ops.emergency_trucking.truck_capacity_bbl)} bbl and ${money(state.ops.emergency_trucking.cost_per_trip)} a trip</span></label>
         <div class="ds-wells"><span class="kicker">Shut in wells early</span>
           ${f.wells.map((w) => {
             const si = plan.shutIns.find((x) => x.well === w.id);
@@ -813,6 +831,7 @@ function whatIf(f, s, alert) {
       <div class="ds-wi-result">
         <div class="ds-wi-verdict ${r.safe ? "ok" : "alarm"}">${r.safe
           ? `<b>Stays under shutdown</b><span>peaks at ${peak1(r.peakPct)}%</span>`
+          : r.tripped ? `<b>Tank already at shutdown</b><span>its wells stay shut in until the repair; no plan changes that now</span>`
           : `<b>Reaches shutdown at ${esc(fmtTime(state.at + r.tripsAtMin * 60))} UTC</b><span>wells shut in until the repair</span>`}</div>
         <table class="ds-costs"><tbody>
           <tr><th>Trucks</th><td>${money(r.cost.trucks)}</td><td class="ds-hint">${r.tripsMade} trip${r.tripsMade === 1 ? "" : "s"}, ${Math.round(r.removedBbl)} bbl</td></tr>

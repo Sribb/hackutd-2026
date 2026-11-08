@@ -12,6 +12,8 @@
 
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+import { MeshoptDecoder } from "three/addons/libs/meshopt_decoder.module.js";
 
 const C = {
   ground: 0x0b0b0a, pad: 0x1a1916, steel: 0x6d6a64, shell: 0x8a867d, ink: 0xe8e2d6,
@@ -19,6 +21,7 @@ const C = {
 };
 const KM = 10; // scene units per km
 
+// glbUrl(systemId) -> { glb, ids } URLs, or null. ids is Sriyan's ids.json (#131).
 export function mountField3d(host, { onPick, glbUrl } = {}) {
   host.innerHTML = "";
   const canvas = document.createElement("canvas");
@@ -59,6 +62,9 @@ export function mountField3d(host, { onPick, glbUrl } = {}) {
   let pickables = [];
   let flows = [];
   let systemId = null;
+  let mode = "built"; // built | glb
+  let lastView = {};
+  let buildSeq = 0;
   let raf = 0;
   let disposed = false;
 
@@ -75,8 +81,116 @@ export function mountField3d(host, { onPick, glbUrl } = {}) {
   }
 
   // Builds one system. `limits` = { warning, shutdown } in percent.
+  // Shows the built view at once, then swaps in the generated field if one loads.
   function build(system, limits) {
+    const seq = ++buildSeq;
+    buildFromJson(system, limits);
+    const urls = glbUrl ? glbUrl(system.id) : null;
+    if (!urls) return;
+    loadGlb(urls).then((m) => {
+      if (!m || seq !== buildSeq) return;
+      useGlb(m, system);
+      update(lastView);
+    }).catch((e) => console.warn("field.glb for", system.id, "not used:", e.message));
+  }
+
+  async function loadGlb({ glb, ids }) {
+    const r = await fetch(ids, { cache: "no-store" });
+    if (!r.ok) throw new Error(`ids ${r.status}`);
+    const idMap = await r.json();
+    const gltf = await new GLTFLoader().setMeshoptDecoder(MeshoptDecoder).loadAsync(glb);
+    return { scene: gltf.scene, ids: idMap };
+  }
+
+  // The generated field: assets found by ids.json, each mesh gets its own material so a
+  // state tint never spreads to a shared one.
+  function useGlb({ scene: model, ids }, system) {
     clear();
+    mode = "glb";
+    systemId = system.id;
+    root = model;
+    root.traverse((o) => {
+      if (o.isMesh) {
+        o.castShadow = o.receiveShadow = true;
+        o.material = [].concat(o.material).map((m) => m.clone());
+        if (o.material.length === 1) o.material = o.material[0];
+        for (const m of [].concat(o.material)) m.userData.base = { color: m.color?.clone(), emissive: m.emissive?.clone() };
+      }
+    });
+    const node = (name) => (name ? root.getObjectByName(name) : null);
+    const meshes = (o) => { const out = []; o?.traverse((x) => x.isMesh && out.push(x)); return out; };
+    for (const [assetId, name] of Object.entries(ids.assets || {})) {
+      const n = node(name);
+      if (!n) continue;
+      const kind = /_TANK_/.test(assetId) ? "tank" : /_PUMP_/.test(assetId) ? "pump" : /_WELL_/.test(assetId) ? "well"
+        : /_PIPELINE_/.test(assetId) ? "pipeline" : /_FACILITY_/.test(assetId) ? "facility" : "other";
+      const facility = (system.facilities.find((f) => [f.id, f.tank.id, f.pump.id, f.pipeline.id, ...f.wells.map((w) => w.id)].includes(assetId)) || {}).id || null;
+      const it = { kind, facility, glb: true, meshes: meshes(n) };
+      if (kind === "tank") {
+        it.level = node(`${name}_LEVEL`);
+        // A name and level tag over the tank, as in the built view.
+        const tb = new THREE.Box3().setFromObject(n);
+        it.label = makeLabel();
+        it.label.scale.set(16, 4, 1);
+        it.label.position.set((tb.min.x + tb.max.x) / 2, tb.max.y + 6, (tb.min.z + tb.max.z) / 2);
+        it.name = assetId.replace(/^.*TANK_/, "");
+        root.add(it.label);
+      }
+      if (kind === "pump") it.light = node(`${name}_light`);
+      if (kind === "pipeline") it.meshes = (ids.pipes?.[assetId] || []).flatMap((p) => meshes(node(p))).concat(it.meshes);
+      if (kind === "facility") continue;
+      items.set(assetId, it);
+      for (const m of it.meshes) { m.userData.id = assetId; m.userData.kind = kind; m.userData.facility = facility; pickables.push(m); }
+    }
+    scene.add(root);
+    // Frame the equipment (pads and the disposal site), not the whole ground slab.
+    const box = new THREE.Box3();
+    for (const name of new Set([...Object.values(ids.assets || {}), ...Object.values(ids.pads || {})])) {
+      const n = node(name);
+      if (n) box.expandByObject(n);
+    }
+    if (box.isEmpty()) box.setFromObject(root);
+    const c = box.getCenter(new THREE.Vector3()), size = box.getSize(new THREE.Vector3());
+    const d = Math.max(size.x, size.z) * 1.05 + 12;
+    for (const it of items.values()) if (it.label) { it.label.scale.set(d * 0.11, d * 0.0275, 1); it.label.position.y += d * 0.02; }
+    camera.position.set(c.x - d * 0.3, d * 0.75, c.z + d * 0.85);
+    controls.target.set(c.x, 0, c.z);
+    controls.maxDistance = d * 4;
+    camera.far = d * 10;
+    camera.updateProjectionMatrix();
+    scene.fog.near = d * 1.5;
+    scene.fog.far = d * 4;
+    // The generated field brings its own ground: hide ours so the two never z-fight, and
+    // fit the moon's shadow box to the model (acne comes from a box that does not fit).
+    ground.visible = false;
+    const half = Math.max(size.x, size.z) * 0.6 + 5;
+    Object.assign(moon.shadow.camera, { left: -half, right: half, top: half, bottom: -half, near: 1, far: half * 6 });
+    moon.position.set(c.x - half * 0.5, half * 1.5, c.z + half * 0.4);
+    moon.target.position.copy(c);
+    scene.add(moon.target);
+    moon.shadow.camera.updateProjectionMatrix();
+    moon.shadow.normalBias = 0.04 * Math.max(1, half / 60);
+  }
+
+  function tint(meshes, tone) {
+    for (const o of meshes) for (const m of [].concat(o.material)) {
+      const b = m.userData.base || {};
+      if (b.color) m.color.copy(b.color);
+      if (b.emissive) m.emissive.copy(b.emissive);
+      if (tone && m.emissive) { m.emissive.setHex(tone); m.emissiveIntensity = 0.45; }
+      else if (m.emissive) m.emissiveIntensity = 1;
+    }
+  }
+
+  function buildFromJson(system, limits) {
+    clear();
+    mode = "built";
+    ground.visible = true;
+    Object.assign(moon.shadow.camera, { left: -80, right: 80, top: 80, bottom: -80, near: 0.5, far: 300 });
+    moon.position.set(-40, 80, 30);
+    moon.target.position.set(0, 0, 0);
+    moon.shadow.camera.updateProjectionMatrix();
+    moon.shadow.normalBias = 0.04;
     systemId = system.id;
     root = new THREE.Group();
     root.name = system.id;
@@ -240,9 +354,29 @@ export function mountField3d(host, { onPick, glbUrl } = {}) {
   // view: { [assetId]: { level, pump, flow, recv, well, tone } } at the moment on screen.
   // tone per asset: "" | "warning" | "alarm". null readings show as unknown (dim, no fill).
   function update(view) {
+    lastView = view;
     for (const [id, it] of items) {
       const v = view[id] || {};
       const tone = v.tone ? (v.tone === "alarm" ? C.alarm : C.warning) : null;
+      if (it.glb) {
+        if (it.kind === "tank") {
+          if (it.level) { const lvl = v.level; it.level.visible = lvl !== null && lvl !== undefined; if (it.level.visible) it.level.scale.y = Math.max(0.001, Math.min(1, lvl / 100)); }
+          setLabel(it.label, `${it.name}  ${v.level === null || v.level === undefined ? "no level" : Math.round(v.level) + "%"}`, v.tone);
+          tint(it.meshes, tone);
+        } else if (it.kind === "pump") {
+          tint(it.meshes, tone ?? (v.pump === 2 ? C.alarm : null));
+          for (const m of it.light ? [].concat(it.light.material || []) : []) if (m.emissive) {
+            m.emissive.setHex(v.pump === 2 ? C.alarm : v.pump === 1 ? C.ink : C.off);
+            m.emissiveIntensity = v.pump === null || v.pump === undefined ? 0 : v.pump === 0 ? 0.3 : 1.6;
+          }
+        } else if (it.kind === "well") {
+          tint(it.meshes, null);
+          if (v.well === 0) for (const o of it.meshes) for (const m of [].concat(o.material)) m.color?.multiplyScalar(0.35);
+        } else if (it.kind === "pipeline") {
+          tint(it.meshes, tone);
+        }
+        continue;
+      }
       if (it.kind === "tank") {
         const lvl = v.level;
         it.water.visible = lvl !== null && lvl !== undefined;
@@ -323,6 +457,8 @@ export function mountField3d(host, { onPick, glbUrl } = {}) {
 
   return {
     build,
+    get mode() { return mode; },
+    debug: () => ({ scene, camera, controls, root }),
     update,
     setTip(fn) { tipText = fn; },
     get system() { return systemId; },

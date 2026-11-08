@@ -45,24 +45,24 @@ assert.match(busy, /replaying/);
 // Parser: shared grid, a missing cell stays NaN, stale readings are not carried forward.
 const csv = [
   "timestamp,ts_unix,asset_id,metric,value",
-  "x,1000,T,level_pct,10", "x,1000,P,status,1",
-  "x,1300,T,level_pct,11",
-  "x,1600,T,level_pct,12",
-  "x,2500,T,level_pct,15", "x,2500,P,status,2",
+  "x,1200,T,level_pct,10", "x,1200,P,status,1",
+  "x,1500,T,level_pct,11",
+  "x,1800,T,level_pct,12",
+  "x,2700,T,level_pct,15", "x,2700,P,status,2",
 ].join("\r\n");
 const st = parseTelemetry(csv);
-assert.equal(st.start, 1000);
-assert.equal(st.now, 2500);
+assert.equal(st.start, 1200);
+assert.equal(st.now, 2700);
 assert.equal(st.times.length, 6);
-assert.equal(st.latest("T", "level_pct", 1600), 12);
-assert.equal(st.latest("T", "level_pct", 1900), 12); // one step old: fine
-assert.equal(st.latest("T", "level_pct", 2200), 12); // two steps old: the default limit
-assert.equal(st.latest("T", "level_pct", 2200, 300), null); // past the limit: unknown, not 12
-assert.equal(st.latest("P", "status", 1300), 1);
-assert.equal(st.latest("P", "status", 1700), null);
+assert.equal(st.latest("T", "level_pct", 1800), 12);
+assert.equal(st.latest("T", "level_pct", 2100), 12); // one step old: fine
+assert.equal(st.latest("T", "level_pct", 2400), 12); // two steps old: the default limit
+assert.equal(st.latest("T", "level_pct", 2400, 300), null); // past the limit: unknown, not 12
+assert.equal(st.latest("P", "status", 1500), 1);
+assert.equal(st.latest("P", "status", 1900), null);
 assert.equal(st.latest("nope", "x"), null);
-assert.deepEqual(st.range("T", "level_pct", 1300, 1600), [[1300, 11], [1600, 12]]);
-assert.ok(Math.abs(st.mean("T", "level_pct", 1600, 900) - 11) < 1e-9);
+assert.deepEqual(st.range("T", "level_pct", 1500, 1800), [[1500, 11], [1800, 12]]);
+assert.ok(Math.abs(st.mean("T", "level_pct", 1800, 900) - 11) < 1e-9);
 assert.throws(() => parseTelemetry("a,b\n1,2\n"), /columns/);
 assert.deepEqual(sortFolders(["history/full_week", "test", "history/snapshot_1"]), ["test", "history/snapshot_1", "history/full_week"]);
 assert.ok(checkDataset({ systems: [] }, {}).length >= 3);
@@ -84,3 +84,19 @@ assert.equal(ev.estCost, 905);
 assert.equal(ev.doNothingCost, 5016);
 assert.equal(ev.actions.length, 1);
 console.log("dataset-alerts backend Event shape: pass");
+
+// Off-grid rows land on the step at or before them; "now" is the last ts_unix itself.
+const offGrid = parseTelemetry("timestamp,ts_unix,asset_id,metric,value\nx,1000,T,level_pct,1\nx,1150,T,level_pct,2\nx,1450,T,level_pct,3\n");
+assert.equal(offGrid.now, 1450);
+assert.equal(offGrid.start, 900);
+assert.equal(offGrid.latest("T", "level_pct", 1450), 3);
+assert.throws(() => parseTelemetry("timestamp,ts_unix,asset_id,metric,value\nx,0,T,a,1\nx,1791158400,T,a,2\n"), /bad ts_unix/);
+// A tripped pump failure sorts first and never reads as "stays under shutdown".
+const tripList = normAlerts([
+  { id: "A", category: "pump_failure", hours_to_limit: { p50: 0.5 } },
+  { id: "T", category: "pump_failure", hours_to_limit: null, tripped: true },
+]);
+assert.deepEqual(sortAlerts(tripList).map((a) => a.id), ["T", "A"]);
+assert.match(actionLines(tripList[1])[0], /at shutdown/);
+assert.match(handoffText({ folder: "f", at, now: at, alerts: tripList, detection: "ok" }), /at shutdown and its wells are shut in/);
+console.log("dataset-alerts review fixes: pass");

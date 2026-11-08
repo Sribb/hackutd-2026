@@ -45,16 +45,22 @@ export function parseTelemetry(text) {
   }
   if (!tsCol.length) throw new Error("telemetry.csv has no readings");
 
-  const n = Math.round((max - min) / STEP_S) + 1;
+  // The grid is the 5-minute clock (ts_unix multiples of 300), whatever the first row is.
+  const t0 = Math.floor(min / STEP_S) * STEP_S;
+  const n = Math.floor((max - t0) / STEP_S) + 1;
+  if (n > 60 * 24 * 12 * 2) // two months of 5-minute steps: a bad timestamp, not a week of data
+    throw new Error(`telemetry.csv runs from ${new Date(min * 1000).toISOString()} to ${new Date(max * 1000).toISOString()}: check for a bad ts_unix`);
   const times = new Float64Array(n);
-  for (let i = 0; i < n; i++) times[i] = min + i * STEP_S;
+  for (let i = 0; i < n; i++) times[i] = t0 + i * STEP_S;
   const cols = keys.map(() => new Float64Array(n).fill(NaN));
   for (let r = 0; r < tsCol.length; r++) {
-    const i = Math.round((tsCol[r] - min) / STEP_S);
+    // A row between grid steps belongs to the step at or before it, so it is never shown
+    // earlier than it was read. A later row for the same cell wins.
+    const i = Math.floor((tsCol[r] - t0) / STEP_S);
     cols[keyCol[r]][i] = valCol[r];
   }
   const series = new Map(keys.map((k, j) => [k, cols[j]]));
-  return makeStore(times, series);
+  return makeStore(times, series, max); // SPEC: "now" is the last ts_unix in the file
 }
 
 // Index of the last grid step at or before t (or -1).
@@ -64,8 +70,8 @@ export function indexAt(times, t) {
   return Math.min(i, times.length - 1);
 }
 
-export function makeStore(times, series) {
-  const start = times[0], now = times[times.length - 1];
+export function makeStore(times, series, lastTs) {
+  const start = times[0], now = lastTs ?? times[times.length - 1];
   return {
     times, series, start, now,
     has: (asset, metric) => series.has(asset + "|" + metric),
@@ -222,7 +228,12 @@ export function apiSource(apiBase, authFetch = fetch) {
       ]);
       return { network, ops, store: parseTelemetry(text) };
     },
-    async alerts(at) { return getJSON(u(`/alerts${at ? `?at=${Math.round(at)}` : ""}`)); },
+    async alerts(at, folder) {
+      const q = new URLSearchParams();
+      if (at) q.set("at", String(Math.round(at)));
+      if (folder) q.set("folder", folder);
+      return getJSON(u(`/alerts${q.toString() ? `?${q}` : ""}`));
+    },
     eventsUrl: (at) => u(`/events.json${at ? `?at=${Math.round(at)}` : ""}`),
   };
 }

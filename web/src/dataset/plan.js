@@ -43,14 +43,20 @@ export function replay(input) {
   let vol = (levelPct / 100) * capacityBbl;
   const horizon = Math.max(0, horizonMin);
 
-  const count = trucks ? Math.max(0, trucks.count | 0) : 0;
-  const trips = trucks ? Math.max(0, trucks.trips | 0) : 0;
-  const arrivals = count && trips ? tripArrivals(trucks.responseMin, trucks.cycleMin, trips) : [];
+  // Truck groups: { count, trips } each. A plan may send one truck for two trips and
+  // another for one, so `trucks.groups` keeps them apart; `count`/`trips` is one group.
+  const groups = !trucks ? [] : (Array.isArray(trucks.groups) && trucks.groups.length ? trucks.groups : [{ count: trucks.count, trips: trucks.trips }])
+    .map((g) => ({ count: Math.max(0, g.count | 0), trips: Math.max(0, g.trips | 0) })).filter((g) => g.count && g.trips);
+  const count = groups.reduce((n, g) => n + g.count, 0);
+  // Every trip, as [arrival minute, trucks arriving].
+  const arrivalsBy = groups.flatMap((g) => tripArrivals(trucks.responseMin, trucks.cycleMin, g.trips).map((a) => [a, g.count]));
+  const arrivals = arrivalsBy.map(([a]) => a);
   if (trucks && Number.isFinite(trucks.fleet) && count > trucks.fleet)
     problems.push(`Plan uses ${count} trucks but only ${trucks.fleet} are free in this system.`);
-  const late = arrivals.filter((m) => m > horizon);
-  if (late.length)
-    problems.push(`${late.length * count} truck trip${late.length * count === 1 ? "" : "s"} would arrive after the repair ends.`);
+  // SPEC: every trip must arrive before the repair ends. One at the very minute it ends is late.
+  const lateTrips = arrivalsBy.filter(([a]) => a >= horizon).reduce((n, [, c]) => n + c, 0);
+  if (lateTrips)
+    problems.push(`${lateTrips} truck trip${lateTrips === 1 ? "" : "s"} would arrive after the repair ends.`);
 
   const startOf = new Map();
   for (const s of shutIns) {
@@ -75,7 +81,14 @@ export function replay(input) {
   }, 0);
 
   const truckAt = new Map();
-  for (const a of arrivals) if (a <= horizon) truckAt.set(Math.round(a), (truckAt.get(Math.round(a)) || 0) + count);
+  for (const [a, c] of arrivalsBy) if (a < horizon) truckAt.set(Math.round(a), (truckAt.get(Math.round(a)) || 0) + c);
+
+  // A tank already at its shutdown limit has tripped: its wells stay shut until the repair
+  // ends whatever happens now (SPEC: automatic shut-in). Never report it as safe.
+  if (input.tripped || vol >= limitBbl - 1e-6) {
+    tripsAtMin = 0;
+    vol = Math.min(vol, limitBbl);
+  }
 
   for (let m = 0; m < horizon; m++) {
     // Trucks that arrive at minute m take their load first.
@@ -102,15 +115,17 @@ export function replay(input) {
   }
 
   // Trips after the tank trips still get paid for if the plan sends them.
-  const plannedTrips = arrivals.filter((a) => a <= horizon).length * count;
+  const plannedTrips = arrivalsBy.filter(([a]) => a < horizon).reduce((n, [, c]) => n + c, 0);
   const truckCost = plannedTrips * (trucks ? trucks.costPerTrip : 0);
-  if (tripsAtMin !== null && arrivals.some((a) => a > tripsAtMin && a <= horizon))
+  if (tripsAtMin !== null && arrivals.some((a) => a > tripsAtMin && a < horizon))
     problems.push("Some trips arrive after the tank has already reached shutdown, so they do not prevent it.");
 
   let shutInCost = 0;
   let autoCost = 0;
   for (const w of wells) {
-    if (w.producing === false) continue; // already off at plan start, not this plan's cost
+    // Already off at plan start: not this plan's cost. A tripped tank's wells are off too,
+    // but they count, because staying shut until the repair is what doing nothing costs.
+    if (w.producing === false && !input.tripped) continue;
     const early = startOf.get(w.id);
     const autoFrom = tripsAtMin;
     const from = early !== undefined && (autoFrom === null || early <= autoFrom) ? early : autoFrom;
@@ -129,6 +144,7 @@ export function replay(input) {
     cost: { trucks: truckCost, shutIn: shutInCost, auto: autoCost, total: truckCost + shutInCost + autoCost },
     problems,
     safe: tripsAtMin === null,
+    tripped: tripsAtMin === 0,
   };
 }
 
@@ -149,6 +165,9 @@ export function inputFor({ network, ops, facilityId, latest, rate, level: levelO
   if (level === null) return { error: `No ${fac.tank.id} level reading at this time.` };
   const shutdownPct = network.defaults?.tank_limits_pct?.shutdown;
   if (!Number.isFinite(shutdownPct)) return { error: "network.json has no shutdown limit." };
+  const statuses = fac.wells.map((w) => latest(w.id, "status"));
+  // Tripped: at the limit with every well shut in (SPEC: the level holds, wells stay off).
+  const tripped = level >= shutdownPct - 0.5 && statuses.length > 0 && statuses.every((v) => v === 0);
   const wells = fac.wells.map((w) => {
     const status = latest(w.id, "status");
     // `rate` (optional) smooths the noisy rate, for example the last hour's mean.
@@ -158,12 +177,13 @@ export function inputFor({ network, ops, facilityId, latest, rate, level: levelO
       id: w.id,
       // A well that is shut in right now reads 0; it would come back at its baseline.
       waterBpd: producing ? (water ?? w.baseline_water_bpd) : 0,
+      // For a tripped tank this is the revenue lost until the repair either way.
       revPerHour: revenuePerHour(w, ops.prices),
       producing,
     };
   });
-  const trucks = plan?.trucks && fOps ? {
-    count: plan.trucks, trips: plan.trips,
+  const trucks = (plan?.trucks || plan?.groups?.length) && fOps ? {
+    count: plan.trucks, trips: plan.trips, groups: plan.groups,
     responseMin: fOps.response_min, cycleMin: fOps.cycle_min,
     capacityBbl: ops.emergency_trucking.truck_capacity_bbl,
     costPerTrip: ops.emergency_trucking.cost_per_trip,
@@ -172,7 +192,7 @@ export function inputFor({ network, ops, facilityId, latest, rate, level: levelO
   return {
     input: {
       capacityBbl: fac.tank.capacity_bbl, levelPct: level, shutdownPct, horizonMin,
-      wells, trucks, shutIns: plan?.shutIns || [],
+      wells, trucks, shutIns: plan?.shutIns || [], tripped,
     },
     system: sys, facility: fac, opsFacility: fOps, fleet: sOps?.emergency_fleet_size ?? null,
   };
@@ -181,14 +201,19 @@ export function inputFor({ network, ops, facilityId, latest, rate, level: levelO
 // Reads a SPEC events.json `recommended_actions` list into the plan shape above.
 export function planFromActions(actions = [], facilityId) {
   const plan = { trucks: 0, trips: 0, shutIns: [] };
+  const groups = [];
   for (const a of actions) {
     if (a.type === "dispatch_truck" && (!facilityId || a.facility_id === facilityId)) {
+      groups.push({ count: a.trucks | 0, trips: a.trips_per_truck | 0 });
       plan.trucks += a.trucks | 0;
       plan.trips = Math.max(plan.trips, a.trips_per_truck | 0);
     } else if (a.type === "shut_in_wells") {
       for (const w of a.wells || []) plan.shutIns.push({ well: w, startMin: a.start_after_min || 0 });
     }
   }
+  // Two dispatches with different trip counts (1 truck x 2 trips + 1 truck x 1 trip) stay
+  // apart; trucks x max trips would overprice them.
+  if (groups.length > 1) plan.groups = groups;
   return plan;
 }
 
@@ -201,6 +226,10 @@ export const money = (n) => (Number.isFinite(n) ? "$" + Math.round(n).toLocaleSt
 // that still keeps the tank under shutdown (or, when nothing keeps it under, the
 // cheapest start on a 5-minute grid). Doing nothing is always a candidate.
 // truckSpec = { responseMin, cycleMin, capacityBbl, costPerTrip }.
+// Planned peak margin under shutdown. 0 matches the sponsor reference plans (README EVENT_9
+// shuts S1_WELL_C2 at 02:25 with the peak 0.3 bbl under the limit).
+const MARGIN_PCT = 0;
+
 export function bestForTrucks(input, truckSpec, count) {
   const horizon = input.horizonMin;
   const wells = input.wells.filter((w) => w.producing !== false);
@@ -223,9 +252,25 @@ export function bestForTrucks(input, truckSpec, count) {
       if (!set.length) { consider({ trucks: t ? count : 0, trips: t, shutIns: [] }, at(0)); continue; }
       const r0 = at(0);
       if (r0.safe) {
-        let lo = 0, hi = horizon; // latest safe start
-        while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (at(mid).safe) lo = mid; else hi = mid - 1; }
-        consider({ trucks: t ? count : 0, trips: t, shutIns: set.map((well) => ({ well, startMin: lo })) }, at(lo));
+        // Latest common start that stays safe with a small margin under the limit (sensor
+        // noise), then push each well later on its own, the costliest per hour first.
+        const ok = (r) => r.safe && r.peakPct <= input.shutdownPct - MARGIN_PCT + 1e-9;
+        const latest = (fn) => { let lo = 0, hi = horizon; if (!ok(fn(0))) return null; while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (ok(fn(mid))) lo = mid; else hi = mid - 1; } return lo; };
+        const common = latest((m) => at(m)) ?? 0;
+        // Staggered: every well starts at 0 (safe), then the costliest per barrel it holds
+        // back moves to its latest safe start first, so cheap barrels are given up early
+        // and dear ones late. Two passes settle it.
+        const costPerBbl = (id) => { const w = wells.find((x) => x.id === id); return w.waterBpd > 0 ? w.revPerHour / w.waterBpd : Infinity; };
+        const starts = new Map(set.map((w) => [w, 0]));
+        const order = [...set].sort((a, b) => costPerBbl(b) - costPerBbl(a));
+        const runStarts = () => run(t, [...starts].map(([well, startMin]) => ({ well, startMin })));
+        for (let pass = 0; pass < 2; pass++) for (const w of order) {
+          const keep = starts.get(w);
+          const m = latest((x) => { starts.set(w, x); return runStarts(); });
+          starts.set(w, m === null ? keep : m);
+        }
+        consider({ trucks: t ? count : 0, trips: t, shutIns: [...starts].map(([well, startMin]) => ({ well, startMin })) }, runStarts());
+        consider({ trucks: t ? count : 0, trips: t, shutIns: set.map((well) => ({ well, startMin: common })) }, at(common));
       } else {
         for (let s = 0; s < horizon; s += 5) consider({ trucks: t ? count : 0, trips: t, shutIns: set.map((well) => ({ well, startMin: s })) }, at(s));
       }

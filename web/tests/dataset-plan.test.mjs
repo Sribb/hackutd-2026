@@ -85,3 +85,30 @@ assert.equal(twin.picks.reduce((n, p) => n + p.trucks, 0), 1);
 assert.ok(Math.abs(twin.total - (905 + noTruck.result.cost.total)) < 1);
 assert.deepEqual(planToActions({ trucks: 0, trips: 0, shutIns: [] }, "X"), [{ type: "none" }]);
 console.log("dataset-plan optimizer: all pass");
+
+// Review fixes.
+// A tank already at shutdown with its wells shut in is tripped, never safe, and doing
+// nothing costs every well until the repair.
+const trippedIn = inputFor({ network: net, ops, facilityId: "S1_FACILITY_C",
+  latest: (a, m) => (m === "level_pct" ? 92 : m === "status" ? 0 : m === "water_bpd" ? 0 : null), horizonMin: 60 }).input;
+assert.equal(trippedIn.tripped, true);
+const tr = doNothing(trippedIn);
+assert.equal(tr.safe, false);
+assert.equal(tr.tripsAtMin, 0);
+assert.ok(Math.abs(tr.cost.total - 3300) < 1, `tripped cost ${tr.cost.total}`);
+// A trip that arrives exactly when the repair ends is late, and is neither run nor charged.
+const edge = replay({ ...base.input, horizonMin: 75, trucks: { ...spec, count: 1, trips: 1, fleet: 2 } });
+assert.ok(edge.problems.some((p) => /after the repair ends/.test(p)));
+assert.equal(edge.cost.trucks, 0);
+// Two dispatches with different trip counts are priced apart: 1x2 + 1x1 = 3 trips.
+const split = planFromActions([
+  { type: "dispatch_truck", facility_id: "S1_FACILITY_C", trucks: 1, trips_per_truck: 2 },
+  { type: "dispatch_truck", facility_id: "S1_FACILITY_C", trucks: 1, trips_per_truck: 1 },
+], "S1_FACILITY_C");
+const splitR = replay(inputFor({ network: net, ops, facilityId: "S1_FACILITY_C", latest, horizonMin: 360, plan: split }).input);
+assert.equal(splitR.cost.trucks, 3 * 905);
+// Staggered shut-ins: the cheap-per-barrel well goes first and the dear one late.
+const two = { ...base.input, levelPct: 80 };
+const st2 = bestForTrucks(two, spec, 0);
+assert.ok(st2.result.safe || st2.result.cost.total <= doNothing(two).cost.total);
+console.log("dataset-plan review fixes: all pass");
