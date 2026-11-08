@@ -216,181 +216,9 @@ The backend sends the status. The web console picks the color.
 | `ALARM` | Failed or at risk now | Red |
 | `OFFLINE` | Stopped or shut in | Dark |
 
-## API
-
-The default server address is `http://127.0.0.1:8000`. All numbers below are examples. Times are minutes from now.
-
-### `GET /api/field`
-
-Everything that doesn't change during the night.
-
-```json
-{
-  "tanks": [{ "id": "TANK_3", "capacity_bbl": 1000, "shutdown_pct": 90 }],
-  "pumps": [{ "id": "PUMP_3", "tank_id": "TANK_3", "rate_bbl_hr": 150 }],
-  "valves": [{ "id": "VALVE_XO_34", "connects": ["TANK_3", "TANK_4"], "max_bbl_hr": 90, "manual": true }],
-  "wells": [{ "id": "WELL_9", "tank_id": "TANK_3", "water_bbl_hr": 20, "lost_usd_hr": 300 }],
-  "disposal_wells": [{ "id": "SWD_1", "max_bbl_hr": 600 }],
-  "trucks": [{ "id": "TRUCK_1", "capacity_bbl": 130, "minutes_to": { "TANK_3": 35 } }],
-  "lead_min": { "SET_VALVE_manual": 20, "SET_VALVE_remote": 1, "CHOKE_WELL": 2, "SEND_TRUCK": 5, "SET_PUMP": 1 }
-}
-```
-
-### `GET /api/state`
-
-The current readings and any active incident.
-
-```json
-{
-  "clock": "01:47",
-  "assets": {
-    "TANK_3": { "status": "ALARM", "level_pct": 71.2 },
-    "PUMP_3": { "status": "ALARM", "reason": "Pump tripped. No flow since 1:47 AM." },
-    "VALVE_XO_34": { "status": "OK", "position": "CLOSED" }
-  },
-  "incident": { "root_asset_id": "PUMP_3", "summary": "Pump 3 failed. Tank 3 is filling." }
-}
-```
-
-### `POST /api/forecast`
-
-**This is the most important endpoint.** Send a list of actions and get back the future. An empty list means "do nothing." It must be fast enough to feel instant when clicking.
-
-Request:
-
-```json
-{
-  "horizon_minutes": 360,
-  "step_minutes": 5,
-  "actions": [
-    { "type": "SET_VALVE", "asset_id": "VALVE_XO_34", "value": "OPEN", "at_min": 5 },
-    { "type": "CHOKE_WELL", "asset_id": "WELL_9", "value": 0.5, "at_min": 10 },
-    { "type": "SEND_TRUCK", "asset_id": "TRUCK_1", "target_id": "TANK_3", "at_min": 0 }
-  ]
-}
-```
-
-Action types: `SET_VALVE`, `SET_PUMP`, `CHOKE_WELL`, `SEND_TRUCK`.
-
-`at_min` is when the action takes effect. For `SEND_TRUCK` it's the dispatch time, and the forecast adds the drive. For `CHOKE_WELL`, `value` is the fraction of normal flow the well keeps: `1.0` is untouched and `0.0` is shut in.
-
-`lead_min` in `/api/field` is how long an action takes to start working after the operator decides, such as the rover's drive to a manual valve. Last Call uses it. The forecast doesn't.
-
-Response:
-
-```json
-{
-  "timeline": [
-    { "t_min": 0, "tanks": { "TANK_3": 71.2 }, "wells_online": 24 },
-    { "t_min": 5, "tanks": { "TANK_3": 72.8 }, "wells_online": 24 }
-  ],
-  "events": [
-    {
-      "type": "SHUTDOWN_LEVEL",
-      "asset_id": "TANK_3",
-      "t_min": 60,
-      "t_min_low": 45,
-      "t_min_high": 75,
-      "text": "Tank 3 reaches shutdown at 2:47 AM"
-    }
-  ],
-  "cost": { "total_usd": 4200, "trucking_usd": 1500, "disposal_usd": 700, "lost_production_usd": 2000 },
-  "warnings": []
-}
-```
-
-If data is missing or stale, say so in `warnings`. **Never report a tank as safe because there's no data.**
-
-### `POST /api/plans`
-
-Returns the best plans, cheapest first. It must always return something, even if not every tank can be saved.
-
-```json
-{
-  "plans": [
-    {
-      "id": "plan_1",
-      "summary": "Open the Tank 3 to 4 crossover and send one truck.",
-      "actions": [{ "type": "SET_VALVE", "asset_id": "VALVE_XO_34", "value": "OPEN", "at_min": 5 }],
-      "cost": { "total_usd": 4200 },
-      "keeps_running": true,
-      "cannot_save": []
-    }
-  ]
-}
-```
-
-### `POST /api/lastcall`
-
-How long each fix stays possible, and what waiting costs. See [lastcall/README.md](../lastcall/README.md). Run it when an incident opens and after a plan is approved, not on every click. It takes about a second.
-
-Request: `{ "horizon_minutes": 360, "step_minutes": 5, "top_n": 3 }`, all optional.
-
-```json
-{
-  "status": "INCIDENT",
-  "headline": "Your cheapest plan expires at 2:20 AM. Wait past it and the bill goes from $1,408 to $1,962.",
-  "shutdown": { "asset_id": "TANK_3", "t_min": 62.7, "clock": "2:50 AM" },
-  "point_of_no_return": { "t_min": 57.8, "clock": "2:45 AM" },
-  "do_nothing_usd": 8834,
-  "options": [
-    {
-      "plan_id": "lc_36",
-      "summary": "Open the Tank 3 to 4 crossover and send one truck to Tank 3.",
-      "cost": { "total_usd": 1408 },
-      "expires_min": 33.3, "expires_clock": "2:20 AM",
-      "expires_min_hot": null, "robust": false,
-      "steps": [{ "n": 1, "asset_id": "VALVE_XO_34", "do_by_clock": "2:20 AM", "text": "Send the rover to open the Tank 3 to 4 crossover by 2:20 AM." }]
-    }
-  ],
-  "ladder": [{ "plan_id": "lc_36", "from_min": 0, "expires_min": 33.3, "usd_at_start": 1408, "asset_ids": ["VALVE_XO_34", "TRUCK_1"] }],
-  "cliffs": [{ "t_min": 33.3, "clock": "2:20 AM", "from_usd": 1324, "to_usd": 1962, "text": "..." }],
-  "curve": [{ "start_min": 0, "total_usd": 1408, "plan_id": "lc_36", "keeps_running": true }],
-  "assets": { "VALVE_XO_34": { "useful_until_min": 57.8, "in_cheapest_from_min": 0, "in_cheapest_until_min": 54.9 } }
-}
-```
-
-`expires_min_hot` is the same expiry with inflow 15% higher. `null` means the plan already fails at that inflow. When no tank reaches shutdown, `status` is `CALM`.
-
-### `POST /api/plans/{id}/approve`
-
-Turns a plan into the steps the 3D scene walks through.
-
-```json
-{
-  "steps": [
-    { "n": 1, "asset_id": "VALVE_XO_34", "text": "Open the Tank 3 to 4 crossover." },
-    { "n": 2, "asset_id": "TRUCK_1", "text": "Send Truck 1 to Tank 3. Arrives in 35 minutes." }
-  ],
-  "radio_script": "Field, this is control. Pump 3 is down..."
-}
-```
-
-### `POST /api/ingest`
-
-Upload a blueprint as multipart form field `file`. That can be a PNG, JPEG, WebP, GIF, or PDF site plan, a CSV equipment list, or a blueprint JSON. The response is the parsed blueprint plus what a human must confirm before the field is built. Code: `ingest/`. Mount it with `app.include_router(ingest.router.router)`.
-
-```json
-{
-  "ok": true,
-  "errors": [],
-  "review": [
-    { "id": "TANK_3", "label": "Tank 3", "issue": "Missing shutdown_pct. The backend won't forecast it until these are set." },
-    { "id": "WELL_10", "label": "unlabeled pumpjack", "issue": "Claude is only 60% sure about this one. Check it." }
-  ],
-  "counts": { "tanks": 2, "pumps": 1, "valves": 1, "wells": 2, "disposal_wells": 1, "trucks": 0, "yards": 0 },
-  "source": { "file": "plan.png", "read_by": "claude", "model": "claude-opus-5-5" },
-  "blueprint": { "name": "North Lease", "tanks": [{ "id": "TANK_3", "capacity_bbl": 500, "x": -40.0, "y": 0.0 }] }
-}
-```
-
-- `blueprint` has the same shape as `scenario/field.json`, plus `x` and `y` in meters where the plan shows a position. Each asset also carries `_ingest` with its original label, Claude's confidence, and the evidence.
-- `errors` block a build: duplicate IDs, bad IDs, or references to missing IDs. `review` items don't block a build, but the console should show them for a human to confirm or fill in.
-- Error statuses: 400 for a bad file, 413 for a file too large, 415 for an unsupported type, 422 when Claude declines or can't read it, 429 when rate limited, and 502 or 503 for server and API problems. The `detail` says what to do.
-
 ## Dataset mode (EOG sponsor data)
 
-Everything under `/api/eog` serves the EOG track's sponsor datasets: the real network, its week of telemetry, and the events, plans and alerts built from them. Code: `backend/app/eog/`, where `api.py` is a thin layer over `service.py`, and detection, plans and the 3D layout come from `detect.py`, `plan.py` and `blueprint.py`. The routes above are unchanged.
+Everything under `/api/eog` serves the EOG track's sponsor datasets: the real network, its week of telemetry, and the events, plans and alerts built from them. Code: `backend/app/eog/`, where `api.py` is a thin layer over `service.py`, and detection, plans and the 3D layout come from `detect.py`, `plan.py` and `blueprint.py`. The other routes in this file are unchanged.
 
 **Turning it on.** Start the backend with `FREEBOARD_EOG_DIR` set to a folder of datasets, such as a checkout of the sponsor repo. Every folder under it that holds `network.json`, `ops.json` and `telemetry.csv` is a dataset, and its id is its path under that folder, like `history/full_week`. `FREEBOARD_EOG_DATASET` picks the dataset shown at startup (an id, or a folder name such as `full_week`). Without it the backend picks `test`, then `history/full_week`, then the first dataset it finds. With `FREEBOARD_EOG_DIR` unset, every route answers 503 with one sentence that says how to turn it on.
 
@@ -790,3 +618,175 @@ A read-only push, so it needs no token.
 - A tick comes on connect and whenever something changes: a new data row while playing, any cursor move while paused, play, pause or speed, a dataset switch, a change to the dataset's files, or an approval. The server checks four times a second.
 - When the alerts can't be built, the tick still carries the clock, with `"alerts": null` and `"error": { "status": 503, "detail": "..." }`. A problem with the dataset itself arrives once as `{ "type": "error", "status": 503, "detail": "..." }` (500 for an internal error), and ticks resume when it clears. With dataset mode off, the socket sends that error and closes with code 1013.
 - Messages from the client are ignored.
+
+## API
+
+The default server address is `http://127.0.0.1:8000`. All numbers below are examples. Times are minutes from now.
+
+### `GET /api/field`
+
+Everything that doesn't change during the night.
+
+```json
+{
+  "tanks": [{ "id": "TANK_3", "capacity_bbl": 1000, "shutdown_pct": 90 }],
+  "pumps": [{ "id": "PUMP_3", "tank_id": "TANK_3", "rate_bbl_hr": 150 }],
+  "valves": [{ "id": "VALVE_XO_34", "connects": ["TANK_3", "TANK_4"], "max_bbl_hr": 90, "manual": true }],
+  "wells": [{ "id": "WELL_9", "tank_id": "TANK_3", "water_bbl_hr": 20, "lost_usd_hr": 300 }],
+  "disposal_wells": [{ "id": "SWD_1", "max_bbl_hr": 600 }],
+  "trucks": [{ "id": "TRUCK_1", "capacity_bbl": 130, "minutes_to": { "TANK_3": 35 } }],
+  "lead_min": { "SET_VALVE_manual": 20, "SET_VALVE_remote": 1, "CHOKE_WELL": 2, "SEND_TRUCK": 5, "SET_PUMP": 1 }
+}
+```
+
+### `GET /api/state`
+
+The current readings and any active incident.
+
+```json
+{
+  "clock": "01:47",
+  "assets": {
+    "TANK_3": { "status": "ALARM", "level_pct": 71.2 },
+    "PUMP_3": { "status": "ALARM", "reason": "Pump tripped. No flow since 1:47 AM." },
+    "VALVE_XO_34": { "status": "OK", "position": "CLOSED" }
+  },
+  "incident": { "root_asset_id": "PUMP_3", "summary": "Pump 3 failed. Tank 3 is filling." }
+}
+```
+
+### `POST /api/forecast`
+
+**This is the most important endpoint.** Send a list of actions and get back the future. An empty list means "do nothing." It must be fast enough to feel instant when clicking.
+
+Request:
+
+```json
+{
+  "horizon_minutes": 360,
+  "step_minutes": 5,
+  "actions": [
+    { "type": "SET_VALVE", "asset_id": "VALVE_XO_34", "value": "OPEN", "at_min": 5 },
+    { "type": "CHOKE_WELL", "asset_id": "WELL_9", "value": 0.5, "at_min": 10 },
+    { "type": "SEND_TRUCK", "asset_id": "TRUCK_1", "target_id": "TANK_3", "at_min": 0 }
+  ]
+}
+```
+
+Action types: `SET_VALVE`, `SET_PUMP`, `CHOKE_WELL`, `SEND_TRUCK`.
+
+`at_min` is when the action takes effect. For `SEND_TRUCK` it's the dispatch time, and the forecast adds the drive. For `CHOKE_WELL`, `value` is the fraction of normal flow the well keeps: `1.0` is untouched and `0.0` is shut in.
+
+`lead_min` in `/api/field` is how long an action takes to start working after the operator decides, such as the rover's drive to a manual valve. Last Call uses it. The forecast doesn't.
+
+Response:
+
+```json
+{
+  "timeline": [
+    { "t_min": 0, "tanks": { "TANK_3": 71.2 }, "wells_online": 24 },
+    { "t_min": 5, "tanks": { "TANK_3": 72.8 }, "wells_online": 24 }
+  ],
+  "events": [
+    {
+      "type": "SHUTDOWN_LEVEL",
+      "asset_id": "TANK_3",
+      "t_min": 60,
+      "t_min_low": 45,
+      "t_min_high": 75,
+      "text": "Tank 3 reaches shutdown at 2:47 AM"
+    }
+  ],
+  "cost": { "total_usd": 4200, "trucking_usd": 1500, "disposal_usd": 700, "lost_production_usd": 2000 },
+  "warnings": []
+}
+```
+
+If data is missing or stale, say so in `warnings`. **Never report a tank as safe because there's no data.**
+
+### `POST /api/plans`
+
+Returns the best plans, cheapest first. It must always return something, even if not every tank can be saved.
+
+```json
+{
+  "plans": [
+    {
+      "id": "plan_1",
+      "summary": "Open the Tank 3 to 4 crossover and send one truck.",
+      "actions": [{ "type": "SET_VALVE", "asset_id": "VALVE_XO_34", "value": "OPEN", "at_min": 5 }],
+      "cost": { "total_usd": 4200 },
+      "keeps_running": true,
+      "cannot_save": []
+    }
+  ]
+}
+```
+
+### `POST /api/lastcall`
+
+How long each fix stays possible, and what waiting costs. See [lastcall/README.md](../lastcall/README.md). Run it when an incident opens and after a plan is approved, not on every click. It takes about a second.
+
+Request: `{ "horizon_minutes": 360, "step_minutes": 5, "top_n": 3 }`, all optional.
+
+```json
+{
+  "status": "INCIDENT",
+  "headline": "Your cheapest plan expires at 2:20 AM. Wait past it and the bill goes from $1,408 to $1,962.",
+  "shutdown": { "asset_id": "TANK_3", "t_min": 62.7, "clock": "2:50 AM" },
+  "point_of_no_return": { "t_min": 57.8, "clock": "2:45 AM" },
+  "do_nothing_usd": 8834,
+  "options": [
+    {
+      "plan_id": "lc_36",
+      "summary": "Open the Tank 3 to 4 crossover and send one truck to Tank 3.",
+      "cost": { "total_usd": 1408 },
+      "expires_min": 33.3, "expires_clock": "2:20 AM",
+      "expires_min_hot": null, "robust": false,
+      "steps": [{ "n": 1, "asset_id": "VALVE_XO_34", "do_by_clock": "2:20 AM", "text": "Send the rover to open the Tank 3 to 4 crossover by 2:20 AM." }]
+    }
+  ],
+  "ladder": [{ "plan_id": "lc_36", "from_min": 0, "expires_min": 33.3, "usd_at_start": 1408, "asset_ids": ["VALVE_XO_34", "TRUCK_1"] }],
+  "cliffs": [{ "t_min": 33.3, "clock": "2:20 AM", "from_usd": 1324, "to_usd": 1962, "text": "..." }],
+  "curve": [{ "start_min": 0, "total_usd": 1408, "plan_id": "lc_36", "keeps_running": true }],
+  "assets": { "VALVE_XO_34": { "useful_until_min": 57.8, "in_cheapest_from_min": 0, "in_cheapest_until_min": 54.9 } }
+}
+```
+
+`expires_min_hot` is the same expiry with inflow 15% higher. `null` means the plan already fails at that inflow. When no tank reaches shutdown, `status` is `CALM`.
+
+### `POST /api/plans/{id}/approve`
+
+Turns a plan into the steps the 3D scene walks through.
+
+```json
+{
+  "steps": [
+    { "n": 1, "asset_id": "VALVE_XO_34", "text": "Open the Tank 3 to 4 crossover." },
+    { "n": 2, "asset_id": "TRUCK_1", "text": "Send Truck 1 to Tank 3. Arrives in 35 minutes." }
+  ],
+  "radio_script": "Field, this is control. Pump 3 is down..."
+}
+```
+
+### `POST /api/ingest`
+
+Upload a blueprint as multipart form field `file`. That can be a PNG, JPEG, WebP, GIF, or PDF site plan, a CSV equipment list, or a blueprint JSON. The response is the parsed blueprint plus what a human must confirm before the field is built. Code: `ingest/`. Mount it with `app.include_router(ingest.router.router)`.
+
+```json
+{
+  "ok": true,
+  "errors": [],
+  "review": [
+    { "id": "TANK_3", "label": "Tank 3", "issue": "Missing shutdown_pct. The backend won't forecast it until these are set." },
+    { "id": "WELL_10", "label": "unlabeled pumpjack", "issue": "Claude is only 60% sure about this one. Check it." }
+  ],
+  "counts": { "tanks": 2, "pumps": 1, "valves": 1, "wells": 2, "disposal_wells": 1, "trucks": 0, "yards": 0 },
+  "source": { "file": "plan.png", "read_by": "claude", "model": "claude-opus-5-5" },
+  "blueprint": { "name": "North Lease", "tanks": [{ "id": "TANK_3", "capacity_bbl": 500, "x": -40.0, "y": 0.0 }] }
+}
+```
+
+- `blueprint` has the same shape as `scenario/field.json`, plus `x` and `y` in meters where the plan shows a position. Each asset also carries `_ingest` with its original label, Claude's confidence, and the evidence.
+- `errors` block a build: duplicate IDs, bad IDs, or references to missing IDs. `review` items don't block a build, but the console should show them for a human to confirm or fill in.
+- Error statuses: 400 for a bad file, 413 for a file too large, 415 for an unsupported type, 422 when Claude declines or can't read it, 429 when rate limited, and 502 or 503 for server and API problems. The `detail` says what to do.
