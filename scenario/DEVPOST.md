@@ -53,7 +53,7 @@ Upload a site plan, review what was read, and get a 3D night-shift console for t
 
 ## How we compare
 
-Same text as [PITCH.md](PITCH.md). Every tag resolves in `docs/COMPETITIVE.md` (PR #110): letter tags in its Sources list, `[F]` and `[N]` tags in its feature matrix. Before submitting, re-check the Freeboard rows against what is merged, and paste the source links below with the paragraph.
+Same text as [PITCH.md](PITCH.md). Every tag resolves in `docs/COMPETITIVE.md` (#110): letter tags in its Sources list, `[F]` and `[N]` tags in its feature matrix. Before submitting, re-check the Freeboard rows against what is merged, and paste the source links below with the paragraph.
 
 At 1:47 AM, Ignition [I1], AVEVA [A2], Experion [H1], and eLynx [L2] tell you a pump tripped. Freeboard tells you when Tank 3 shuts in, the cheapest fix, and when that fix expires. Its forecast runs six hours ahead with a plus or minus 15% band [F1]. The closest commercial feature we found, Honeywell's Experion Operations Assistant, warns 5 to 10 minutes before an alarm [H3]. The planner ranks fixes by dollars and flags the one that still holds if inflow runs 15% high [F2], and Last Call says when each fix stops being possible [F3]. We found no public equivalent of the planner at Ignition, AVEVA, Honeywell, eLynx, or WellAware [N1], and no fix expiry at any of the six we compared [N2]. Where they lead is alarm management: Ignition and Experion shelve alarms on a timer [I7] [H1], and Honeywell's DynAMo suite claims up to 80% fewer alarms, by the vendor's own count [H2]. EOG already sends real-time alerts to a control center [E1], so Freeboard is built to sit on top of SCADA and turn an alert into a decision.
 

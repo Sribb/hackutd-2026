@@ -1,6 +1,6 @@
 # Pitch: the competitive slide (CF-12)
 
-**Rule:** every claim carries a source tag. Letter-and-number tags like `[H3]` are in the Sources list of [docs/COMPETITIVE.md](../docs/COMPETITIVE.md) (PR #110). `[F1]` to `[F3]` and `[N1]` to `[N2]` point at rows of its feature matrix (section 2), listed under the slide. "Not found" means we found nothing public, not that the product lacks the feature. Freeboard cells were checked against `origin/main` at `a71a481`, so re-check them before the pitch.
+**Rule:** every claim carries a source tag. Letter-and-number tags like `[H3]` are in the Sources list of [docs/COMPETITIVE.md](../docs/COMPETITIVE.md) (#110). `scenario/tests/test_pitch.py` checks every tag and link against it. `[F1]` to `[F3]` and `[N1]` to `[N2]` point at rows of its feature matrix (section 2), listed under the slide. "Not found" means we found nothing public, not that the product lacks the feature. Freeboard cells were checked against `origin/main` at `a71a481`, so re-check them before the pitch.
 
 ---
 
