@@ -125,11 +125,22 @@ def test_d2_05_all_quiet_says_when():
     assert ask(live, "What's failing?")["reply"] == f"All quiet at {clock(live)}. No active alerts."
 
 
-def test_d2_06_a_shelved_root_is_counted_not_read_out():
+def test_d2_06_a_shelved_root_is_named_not_read_out_and_never_hides_its_p1():
     live = tripped()
     run(live.shelve(trip_alert(live)["id"], 30, "crew on the way", by="eval"))
     reply = ask(live, "What's failing?")["reply"]
-    assert "Pump 3 tripped" not in reply, reply
+    assert "Pump 3 tripped" not in reply, reply   # the shelved trip's message isn't read out
+    # ...but Tank 3's high-high, folded under it and not shelved, still leads as the P1.
+    assert reply.startswith("Pump 3 trip is shelved (crew on the way)"), reply
+    assert "Tank 3 high-high is still active. P1 since " in reply, reply
+
+
+def test_d2_06b_a_fully_shelved_group_is_counted_not_read_out():
+    live = tripped()
+    for a in list(live.detector.active.values()):
+        run(live.shelve(a["id"], 30, "crew on the way", by="eval"))
+    reply = ask(live, "What's failing?")["reply"]
+    assert "Pump 3" not in reply and "P1" not in reply, reply
     assert "1 shelved alert not shown." in reply, reply
 
 

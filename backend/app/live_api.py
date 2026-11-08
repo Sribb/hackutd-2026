@@ -415,6 +415,30 @@ def make_reload(live: LiveField, jarvis: Jarvis, timeout_s: float = RELOAD_TIMEO
     return reload
 
 
+def one_now_for(app, live: LiveField) -> Callable[[], Optional[tuple]]:
+    """Jarvis's "now": Mounish's one clock (#42/#123, `now.get(app)`) when it is there, so
+    Jarvis forecasts and plans from the same moment as /api/forecast and /api/plans (live
+    wells, pumps that read off, trucks already on the road). It is looked up on every call
+    (app.state.now, else the backend.app.now module), so this works before and after #123
+    merges. None when there is no one clock, or it isn't on this live field: Jarvis then
+    uses live.live_scenario() with nothing under way, as before."""
+    def get() -> Optional[tuple]:
+        mod = getattr(app.state, "now", None)
+        if mod is None:
+            try:
+                from . import now as mod  # type: ignore[no-redef]  # #123
+            except ImportError:
+                return None
+        fn = getattr(mod, "get", None)
+        if not callable(fn):
+            return None
+        n = fn(app)
+        if getattr(n, "source", None) != "live" or getattr(app.state, "live", None) is not live:
+            return None  # a static clock, or another field: not what Jarvis is looking at
+        return n.scenario, list(n.actions)
+    return get
+
+
 def install(app: FastAPI, scenario: dict) -> LiveField:
     """Mount the live layer. main.py's lifespan starts and stops app.state.live.
 
@@ -424,7 +448,8 @@ def install(app: FastAPI, scenario: dict) -> LiveField:
     auth.warn_short_pin()
     live = LiveField(scenario, _raw(scenario))
     jarvis = Jarvis(live, forecast_fn=lambda sc, actions: forecast(sc, actions),
-                    plans_fn=lambda sc: make_plans(sc))
+                    plans_fn=lambda sc, base=None: make_plans(sc, 360, 3, list(base)) if base else make_plans(sc),
+                    now_fn=one_now_for(app, live))
     app.state.live_reload = make_reload(live, jarvis)
     app.include_router(build_router(live, jarvis))
     extra = [o.strip() for o in os.environ.get("CORS_ORIGINS", "").split(",") if o.strip()]

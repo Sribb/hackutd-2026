@@ -51,6 +51,8 @@ ASKS_FIX = re.compile(r"\bplans?\b|cheapest|\bfix(es)?\b|what should|what do (we
 HELP = ("I can show and explain assets, report what's failing, give the time to shutdown, find the "
         "cheapest plan, and propose fixes like 'open the crossover' or 'send truck 1 to tank 3'.")
 PRIORITY_RANK = {"P1": 0, "P2": 1, "P3": 2}
+KIND_WORDS = {"PUMP_TRIP": "trip", "TANK_HIGH": "high level", "TANK_HIGH_HIGH": "high-high",
+              "VALVE_MISMATCH": "position mismatch", "SENSOR_STALE": "stale reading"}
 
 
 def age_text(age_min: Optional[float]) -> str:
@@ -130,8 +132,9 @@ TOOLS = [
         "name": "list_alerts",
         "description": "Open alerts grouped under their root cause, most urgent first: each group's root alert "
                        "with its priority (P1 = shutdown within 60 min), the clock it was raised, the forecast "
-                       "consequence and when, and how many related alarms fold under it. Also the tanks with no "
-                       "current reading. Changes nothing.",
+                       "consequence and when, and how many related alarms fold under it. When a group's root is "
+                       "shelved, its most urgent unshelved alarm heads the group and `shelved_root` names the "
+                       "shelved one. Also the tanks with no current reading. Changes nothing.",
         "strict": True,
         "input_schema": {"type": "object", "additionalProperties": False, "properties": {}, "required": []},
     },
@@ -159,10 +162,16 @@ TOOLS = [
 
 class Jarvis:
     def __init__(self, live: LiveField, forecast_fn: Callable[[dict, list], dict],
-                 plans_fn: Callable[[dict], dict]) -> None:
+                 plans_fn: Callable[..., dict],
+                 now_fn: Optional[Callable[[], Optional[tuple]]] = None) -> None:
+        """`now_fn()` -> (scenario, actions already under way) or None: the one clock the rest
+        of the backend plans from (live_api.one_now_for). With it, forecasts run the under-way
+        actions first and plans are called `plans_fn(scenario, under_way)`; without it (or when
+        it returns None), live.live_scenario() with nothing under way."""
         self.live = live
         self.forecast_fn = forecast_fn
         self.plans_fn = plans_fn
+        self.now_fn = now_fn
         self.model = os.environ.get("JARVIS_MODEL", DEFAULT_MODEL)
         self.effort = os.environ.get("JARVIS_EFFORT", "low")
         self._client = None
@@ -231,8 +240,8 @@ class Jarvis:
             return self._alert_groups()
         if tool == "get_forecast":
             actions = [self._forecast_action(a) for a in args.get("actions") or []]
-            sc = live.live_scenario()
-            fc = await asyncio.to_thread(self.forecast_fn, sc, actions)
+            sc, base = self._now()   # on the loop, so it never reads half a tick
+            fc = await asyncio.to_thread(self.forecast_fn, sc, base + actions)
             # Tanks with no fresh level: the forecast can't say they're safe, so neither can Jarvis.
             unknown = fc.get("unknown_tanks")
             if unknown is None:
@@ -243,7 +252,9 @@ class Jarvis:
                                for e in fc.get("events", [])][:12],
                     "cost": fc.get("cost"), "warnings": fc.get("warnings", []), "unknown_tanks": list(unknown)}
         if tool == "get_plans":
-            res = await asyncio.to_thread(self.plans_fn, live.live_scenario())
+            sc, base = self._now()
+            res = await (asyncio.to_thread(self.plans_fn, sc, base) if base else
+                         asyncio.to_thread(self.plans_fn, sc))
             return {"as_of": live.fmap.clock_text(live.t),
                     "source": f"planner run at {live.fmap.clock_text(live.t)} on the live readings",
                     "unknown_tanks": self._blind_tanks(),
@@ -262,6 +273,19 @@ class Jarvis:
             return {"proposal_id": p["id"], "status": p["status"], "text": p["text"],
                     "note": "Waiting for a person to confirm on the console." if p["status"] == "PENDING" else p.get("result")}
         return {"error": f"Unknown tool {tool}."}
+
+    def _now(self) -> tuple[dict, list]:
+        """(scenario, actions under way) from the one clock, else the live field as is."""
+        if self.now_fn is not None:
+            try:
+                got = self.now_fn()
+            except Exception:  # noqa: BLE001 - a clock problem falls back, never breaks Jarvis
+                log.exception("one-clock now failed; using the live field")
+                got = None
+            if got is not None:
+                sc, base = got
+                return sc, [dict(a) for a in base]
+        return self.live.live_scenario(), []
 
     def _note_ui(self, aid: str, ctx: dict) -> None:
         d = {"type": "ui", "action": "focus", "asset_id": aid}
@@ -364,6 +388,26 @@ class Jarvis:
             groups.setdefault(top(a)["id"], []).append(a)
         prio_t = getattr(live, "_prio_t", None)
 
+        def shelved(a: dict) -> bool:
+            return a.get("shelved_until_t") is not None
+
+        def urgency(a: dict) -> tuple:
+            mins = a.get("consequence_t")
+            return (PRIORITY_RANK.get(a.get("priority") or "P3", 2),
+                    float("inf") if mins is None else mins, a["severity"] != "ALARM", a["id"])
+
+        # A shelve hides only the alert that was shelved. When a group's root is shelved, its
+        # most urgent unshelved member heads the group instead, so a P1 that came after the
+        # shelve is never folded out of sight under it.
+        heads: dict[str, tuple[dict, Optional[dict]]] = {}
+        for rid, members in groups.items():
+            root = by_id[rid]
+            open_ = [m for m in members if not shelved(m)]
+            if shelved(root) and open_:
+                heads[rid] = (min(open_, key=urgency), root)
+            else:
+                heads[rid] = (root, None)
+
         def row(a: dict) -> dict:
             at = a.get("consequence_t")
             return {"id": a["id"], "asset_id": a["asset_id"], "name": name(a["asset_id"]), "kind": a["kind"],
@@ -379,14 +423,16 @@ class Jarvis:
                     "shelved_until": a.get("shelved_until"), "shelve_reason": a.get("shelve_reason")}
 
         def rank(rid: str) -> tuple:
-            a = by_id[rid]
-            mins = a.get("consequence_t")
-            return (a.get("shelved_until_t") is not None, PRIORITY_RANK.get(a.get("priority") or "P3", 2),
-                    float("inf") if mins is None else mins, a["severity"] != "ALARM", a["id"])
+            head = heads[rid][0]
+            return (shelved(head), *urgency(head))
 
-        out = [{"root": row(by_id[rid]), "related": len(members) - 1, "related_count": len(members) - 1,
-                "related_ids": [m["id"] for m in members if m["id"] != rid]}
-               for rid, members in sorted(groups.items(), key=lambda kv: rank(kv[0]))]
+        out = []
+        for rid, members in sorted(groups.items(), key=lambda kv: rank(kv[0])):
+            head, shelved_root = heads[rid]
+            skip = {head["id"]} | ({shelved_root["id"]} if shelved_root else set())
+            related = [m["id"] for m in members if m["id"] not in skip]
+            out.append({"root": row(head), "related": len(related), "related_count": len(related),
+                        "related_ids": related, "shelved_root": row(shelved_root) if shelved_root else None})
         return {"as_of": live.fmap.clock_text(live.t), "open": len(active), "groups": out,
                 "unknown_tanks": self._blind_tanks()}
 
@@ -402,9 +448,17 @@ class Jarvis:
                 msg = msg[:-1]
             line = f"{r['priority']}{' since ' + r['raised_at'] if r['raised_at'] else ''}: " \
                    f"{msg}{self._age_note(r['asset_id'])}."
-            if r["consequence"]:
+            if r["consequence"] and r.get("consequence_clock") is None:
+                line += " " + r["consequence"]  # no forecast time behind it (an unknown tank)
+            elif r["consequence"]:
                 at_t = getattr(self.live, "_prio_t", None)
                 line += " " + self._forecast_says(r["consequence"], r["minutes_from_now"], at_t)
+        sr = g.get("shelved_root")
+        if sr:
+            why = f" ({sr['shelve_reason']})" if sr.get("shelve_reason") else ""
+            until = f" until {sr['shelved_until']}" if sr.get("shelved_until") else ""
+            line = (f"{sr['name'][0].upper() + sr['name'][1:]} {KIND_WORDS.get(sr['kind'], 'alert')} is shelved"
+                    f"{why}{until}; {r['name']} {KIND_WORDS.get(r['kind'], 'alert')} is still active. {line}")
         if g["related"]:
             line += f" {n_of(g['related'], 'related alarm')}."
         return line
@@ -430,7 +484,8 @@ class Jarvis:
             "with status UNKNOWN, or a tank in `unknown_tanks`, say exactly 'I have no current reading for Tank 5, "
             "so I can't say it's safe.' (the tool's `say` field) and never state a level for it.\n"
             "- For what's failing, call list_alerts: lead with the first group's root cause, its priority and its "
-            "consequence clock, then say how many related alarms fold under it. Don't list every alarm.\n"
+            "consequence clock, then say how many related alarms fold under it. Don't list every alarm. If a "
+            "group has a `shelved_root`, say it is shelved and why, then the active alarm that heads the group.\n"
             "- Look up an asset with explain_asset before describing it, and call focus_camera on the asset you "
             "are talking about.\n"
             "- For 'what if' use get_forecast; for the cheapest fix use get_plans.\n"
@@ -537,15 +592,46 @@ class Jarvis:
             return float("-inf")
         return (float(tank["shutdown_pct"]) - float(lvl)) / 100.0 * float(tank["capacity_bbl"])
 
-    def _crossover_next_to(self, tid: str, closing: bool = False) -> Optional[str]:
-        """The crossover on `tid` whose other tank has the most room (open ones first when closing)."""
-        xos = [xo for xo in self.live.fmap.crossovers if tid in (xo.get("connects") or [])[:2]]
-        if closing:
-            xos = [xo for xo in xos if self.live.value(xo["id"], "position") == "OPEN"] or xos
-        if not xos:
+    def _level_now(self, tid: str) -> Optional[float]:
+        """A tank's current level, or None when it has no fresh reading."""
+        lvl = self.live.value(tid, "level_pct")
+        if lvl is None or self.live.detector.is_stale(tid, "level_pct"):
             return None
+        return float(lvl)
+
+    def _xo_open(self, vid: str) -> bool:
+        """Reads OPEN, or last read OPEN (a stale OPEN still counts as open)."""
+        return str(self.live.value(vid, "position") or "").upper() == "OPEN"
+
+    def _crossover_next_to(self, tid: str, closing: bool = False,
+                           helps: bool = True) -> tuple[Optional[str], Optional[str]]:
+        """(crossover ID, None) or (None, why not), for a crossover on `tid`.
+
+        Opening (`helps`): only a crossover whose other tank is emptier than `tid` now, the
+        emptiest first. Water only runs to the lower tank, so opening onto a fuller one, or
+        one nobody can see, is no help. Closing: only an open one. `helps=False` (showing
+        one) takes the neighbor with the most room."""
+        xos = [xo for xo in self.live.fmap.crossovers if tid in (xo.get("connects") or [])[:2]]
+        if not xos:
+            return None, f"{name(tid)} has no crossover."
         other = lambda xo: next((e for e in xo["connects"][:2] if e != tid), tid)  # noqa: E731
-        return max(xos, key=lambda xo: self._headroom_bbl(other(xo)))["id"]
+        if closing:
+            open_ = [xo for xo in xos if self._xo_open(xo["id"])]
+            if not open_:
+                return None, f"No crossover on {name(tid)} is open."
+            return open_[0]["id"], None
+        if not helps:
+            return max(xos, key=lambda xo: self._headroom_bbl(other(xo)))["id"], None
+        here = self._level_now(tid)
+        if here is None:
+            return None, (f"I have no current reading for {name(tid)}, so I can't tell whether a crossover "
+                          f"would help it.")
+        emptier = [(lv, xo["id"]) for xo in xos
+                   if (lv := self._level_now(other(xo))) is not None and lv < here]
+        if not emptier:
+            return None, (f"No crossover helps {name(tid)}: every tank it connects to is as full or fuller, "
+                          f"or has no current reading.")
+        return min(emptier)[1], None
 
     async def _tanks_in_trouble(self) -> list[str]:
         """Tanks with an active pump trip, then by earliest forecast shutdown."""
@@ -555,16 +641,19 @@ class Jarvis:
                 tid = f.pumps[a["asset_id"]]["tank_id"]
                 if tid not in out:
                     out.append(tid)
-        if any(self._crossover_next_to(tid) for tid in out):
+        if any(self._crossover_next_to(tid)[0] for tid in out):
             return out
         fc = await self.run_tool("get_forecast", {"actions": []}, {"ui": [], "proposals": []})
         sds = sorted((e for e in fc.get("events", []) if e.get("type") == "SHUTDOWN_LEVEL" and e.get("asset_id") in f.tanks),
                      key=lambda e: e.get("t_min") if e.get("t_min") is not None else float("inf"))
         return out + [e["asset_id"] for e in sds if e["asset_id"] not in out]
 
-    async def _crossover_in(self, t: str, closing: bool = False) -> tuple[Optional[str], Optional[str]]:
-        """(crossover ID, None), or (None, why not). Named tanks first, then the tank in
-        trouble, preferring the neighbor with the most headroom, then the first crossover."""
+    async def _crossover_in(self, t: str, closing: bool = False,
+                            helps: bool = True) -> tuple[Optional[str], Optional[str]]:
+        """(crossover ID, None), or (None, why not). Named tanks first. Closing with none
+        named: an open crossover, else "No crossover is open." Opening: the tank in trouble's
+        emptier neighbor (see _crossover_next_to), else why no crossover helps; with no tank
+        in trouble, the first crossover. `helps=False` (showing one) skips the emptier rule."""
         f = self.live.fmap
         m = re.search(r"\bvalve_xo_\w+\b", t)
         if m and m.group(0).upper() in f.valves:
@@ -579,28 +668,38 @@ class Jarvis:
                 return xo["id"], None
             return None, f"There's no crossover between {name(named[0])} and {name(named[1])}."
         if named:
-            aid = self._crossover_next_to(named[0], closing)
-            return (aid, None) if aid else (None, f"{name(named[0])} has no crossover.")
+            return self._crossover_next_to(named[0], closing, helps)
         if closing:
-            open_ = [x["id"] for x in f.crossovers if self.live.value(x["id"], "position") == "OPEN"]
+            open_ = [x["id"] for x in f.crossovers if self._xo_open(x["id"])]
             if open_:
                 return open_[0], None
+            blind = [x["id"] for x in f.crossovers if self.live.detector.is_stale(x["id"], "position")
+                     or self.live.value(x["id"], "position") is None]
+            if blind:  # never "none is open" on a valve nobody can see
+                return None, ("No crossover reads open. " +
+                              no_current_reading(and_list([name(v) for v in blind]), "valve", many=len(blind) > 1))
+            return None, "No crossover is open."
+        why = None
         for tid in await self._tanks_in_trouble():
-            aid = self._crossover_next_to(tid, closing)
+            aid, why_not = self._crossover_next_to(tid, helps=helps)
             if aid:
                 return aid, None
-        return f.crossovers[0]["id"], None
+            why = why or why_not
+        return (None, why) if why and helps else (f.crossovers[0]["id"], None)
 
     async def _plans_line(self, ctx: dict) -> str:
         """The cheapest plan, and the cheapest robust one if that's a different plan.
         Focuses the camera on the cheapest plan's first step."""
         res = await self.run_tool("get_plans", {}, ctx)
         blind = self._blind_line(res.get("unknown_tanks") or [])
-        if not res["plans"]:
+        # The planner's "nothing to do" is one plan with no steps; that is not a $0 plan.
+        nothing = not res["plans"] or all(not p["actions"] and not p["cannot_save"] for p in res["plans"])
+        if nothing:
             if blind:
                 return (f"{blind} The planner at {res['as_of']} has no plan to make for the tanks with a "
                         f"current reading: none reaches shutdown in the next 6 hours.")
-            return f"No plan needed: the forecast at {res['as_of']} has nothing reaching shutdown in the next 6 hours."
+            return (f"No plan needed: nothing reaches shutdown in the next 6 hours. The planner ran at "
+                    f"{res['as_of']} on the live readings.")
         p = res["plans"][0]
         if p["actions"]:
             await self._focus(p["actions"][0]["asset_id"], ctx)
@@ -666,7 +765,7 @@ class Jarvis:
 
         # Show or check an asset ("Why is Tank 3 rising, and what's my cheapest fix?" adds the plans).
         if re.search(r"show|focus|zoom|look|go to|where|\bis\b|how's|status of|check|explain|tell me about|about", t):
-            aid = (await self._crossover_in(t))[0] if "crossover" in t else self._asset_in(t)
+            aid = (await self._crossover_in(t, helps=False))[0] if "crossover" in t else self._asset_in(t)
             if aid:
                 await self._focus(aid, ctx)
                 line = await self._describe(aid)

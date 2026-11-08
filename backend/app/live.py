@@ -221,9 +221,12 @@ class LiveField:
         restart = float(costs.get("well_restart_usd") or 0)
         moved = []
         self._told = {k: v for k, v in self._told.items() if k in {a["id"] for a in active}}
+        # A tank with no fresh level has no forecast shutdown; that must never read as safe.
+        unknown = {tid for tid in self.fmap.tanks
+                   if self.value(tid, "level_pct") is None or self.detector.is_stale(tid, "level_pct")}
         for a in active:
             new = consequence_of(self.fmap, a, shutdowns, PRIORITY_HORIZON_MIN, restart,
-                                 now_t=self.t, start_clock=sc["start_clock"])
+                                 now_t=self.t, start_clock=sc["start_clock"], unknown_tanks=unknown)
             at, told = new["consequence_t"], self._told.get(a["id"])
             # Broadcast again only when the priority or the consequence changed, or its time
             # moved MOVED_MIN from what the screens were last told. A countdown is not news,
