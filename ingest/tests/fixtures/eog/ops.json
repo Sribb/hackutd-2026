@@ -1,0 +1,48 @@
+{
+  "dataset_id": "history_v1",
+  "prices": { "oil_per_bbl": 60, "gas_per_mcf": 3.0 },
+  "expected_repair_hours": { "pump_failure": 6 },
+  "emergency_trucking": { "truck_capacity_bbl": 150, "cost_per_trip": 905 },
+  "systems": {
+    "S1": {
+      "emergency_fleet_size": 2,
+      "facilities": {
+        "S1_FACILITY_A": { "response_min": 75, "cycle_min": 240 },
+        "S1_FACILITY_B": { "response_min": 65, "cycle_min": 220 },
+        "S1_FACILITY_C": { "response_min": 75, "cycle_min": 230 }
+      }
+    },
+    "S2": {
+      "emergency_fleet_size": 2,
+      "facilities": {
+        "S2_FACILITY_A": { "response_min": 85, "cycle_min": 255 },
+        "S2_FACILITY_B": { "response_min": 70, "cycle_min": 245 },
+        "S2_FACILITY_C": { "response_min": 80, "cycle_min": 270 }
+      }
+    },
+    "S3": {
+      "emergency_fleet_size": 3,
+      "facilities": {
+        "S3_FACILITY_A": { "response_min": 90, "cycle_min": 240 },
+        "S3_FACILITY_B": { "response_min": 75, "cycle_min": 230 }
+      }
+    },
+    "S4": {
+      "emergency_fleet_size": 2,
+      "facilities": {
+        "S4_FACILITY_A": { "response_min": 85, "cycle_min": 250 },
+        "S4_FACILITY_B": { "response_min": 80, "cycle_min": 220 },
+        "S4_FACILITY_C": { "response_min": 90, "cycle_min": 230 },
+        "S4_FACILITY_D": { "response_min": 85, "cycle_min": 205 }
+      }
+    },
+    "S5": {
+      "emergency_fleet_size": 2,
+      "facilities": {
+        "S5_FACILITY_A": { "response_min": 90, "cycle_min": 265 },
+        "S5_FACILITY_B": { "response_min": 90, "cycle_min": 235 },
+        "S5_FACILITY_C": { "response_min": 100, "cycle_min": 250 }
+      }
+    }
+  }
+}

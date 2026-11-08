@@ -8,7 +8,10 @@ reaches the browser.
 import base64
 import json
 
-import anthropic
+try:
+    import anthropic
+except ImportError:      # plain python3 still runs the parsers (CSV, JSON, ingest.eog_network)
+    anthropic = None
 
 from .schema import EXTRACTION_SCHEMA
 
@@ -67,6 +70,8 @@ def _content(data, media_type, text):
 
 def read_plan(data, media_type, text=None, client=None):
     """Return the parsed extraction dict and request metadata. Raises IngestError."""
+    if anthropic is None:
+        raise IngestError("Reading images and PDFs needs the anthropic package (pip install -r ingest/requirements.txt).", 503)
     try:
         client = client or anthropic.Anthropic()
         response = client.beta.messages.create(
