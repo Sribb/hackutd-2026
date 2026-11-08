@@ -3,13 +3,13 @@
   "errors": [],
   "warnings": [],
   "timing": {
-    "plan": 0.02,
-    "field": 11.38,
-    "scenery": 23.99,
-    "checks": 0.01,
-    "optimize": 1.57,
-    "export": 4.17,
-    "blend": 0.1,
+    "plan": 0.0,
+    "field": 3.66,
+    "scenery": 13.86,
+    "checks": 0.0,
+    "optimize": 0.84,
+    "export": 1.72,
+    "blend": 0.04,
     "report": 0.01
   },
   "blueprint": "scenario/field.json",
@@ -151,14 +151,15 @@
     "images_mb": 9.43
   },
   "triangles": 263085,
-  "glb_mb": 16.49,
-  "nodes": 771,
+  "glb_mb": 16.38,
+  "nodes": 779,
   "objects": 1014,
-  "draw_calls": 661,
+  "draw_calls": 669,
+  "compressed": false,
   "optimize": {
-    "merged": 111,
-    "meshes_before": 657,
-    "meshes_after": 272,
+    "merged": 103,
+    "meshes_before": 665,
+    "meshes_after": 275,
     "unshared": 0,
     "instanced": {
       "SCENERY_boulder_1_instances": 3,
@@ -171,9 +172,10 @@
       "SCENERY_rock_2_instances": 7
     },
     "instances": 139,
-    "purged": 615,
-    "seconds": 1.57,
-    "glb_meshes": 272,
+    "no_shadow": 18,
+    "purged": 604,
+    "seconds": 0.84,
+    "glb_meshes": 275,
     "instanced_nodes": 8
   },
   "budget": {
@@ -181,6 +183,6 @@
     "mb": 30.0,
     "draw_calls": 1500
   },
-  "seconds": 41.25,
-  "cpu_seconds": 21.39
+  "seconds": 20.13,
+  "cpu_seconds": 24.97
 }
