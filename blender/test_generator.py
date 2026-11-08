@@ -216,9 +216,14 @@ def blender(args, script=os.path.join(HERE, "build_field.py")):
 def check_speed_and_budget(label, rep, glb, bp):
     """#97: the build's timing, its budget, and what optimize.py did to the glb."""
     steps = rep.get("timing", {})
-    ok(rep["seconds"] < BUILD_SECONDS and set(STEPS) - {"scenery"} <= set(steps)
-       and sum(steps.values()) <= rep["seconds"] + 0.05,
-       f"{label}: built in {rep['seconds']} s (limit {BUILD_SECONDS} s, {rep.get('cpu_seconds')} s CPU): "
+    # With the Mac oversubscribed (other agents' builds), wall time measures the machine, not the
+    # build, so the build's own CPU seconds must meet the limit instead. The message says which.
+    load, cores = os.getloadavg()[0], os.cpu_count() or 1
+    busy = load > 2 * cores
+    fast = rep["seconds"] < BUILD_SECONDS or (busy and rep.get("cpu_seconds", BUILD_SECONDS) < BUILD_SECONDS)
+    why = f", load average {load:.0f} on {cores} cores, so CPU seconds count" if busy else ""
+    ok(fast and set(STEPS) - {"scenery"} <= set(steps) and sum(steps.values()) <= rep["seconds"] + 0.05,
+       f"{label}: built in {rep['seconds']} s, {rep.get('cpu_seconds')} s CPU (limit {BUILD_SECONDS} s{why}): "
        + ", ".join(f"{k} {v}" for k, v in steps.items()))
     ok(rep.get("budget") == {k: BUDGET[k] for k in rep.get("budget", {})} and set(rep.get("budget", {})) == set(BUDGET),
        f"{label}: the report states the budget {BUDGET}")

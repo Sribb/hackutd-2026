@@ -353,8 +353,10 @@ def run(opts, src, out_dir, report):
         return 2
 
     glb, blend = os.path.join(out_dir, "field.glb"), os.path.join(out_dir, "field.blend")
+    kinds, n_objects = Counter(o["kind"] for o in objs if "asset_id" in o.keys()), len(objs)
+    del objs                             # optimize.run() removes merged objects
     clock.lap("checks")
-    opt = optimize.run(scene, want)      # last step before export: shares meshes, groups scenery copies
+    opt = optimize.run(scene, want)      # last step before export: merges, shares, groups scenery copies
     clock.lap("optimize")
     export_glb(glb)
     clock.lap("export")
@@ -371,7 +373,6 @@ def run(opts, src, out_dir, report):
         report["errors"].append("the exporter instanced nodes outside SCENERY: " + ", ".join(stray[:12]))
         return 2
     mb = os.path.getsize(glb) / 1e6
-    kinds = Counter(o["kind"] for o in objs if "asset_id" in o.keys())
     report.update({
         "ok": True,
         "outputs": {"glb": rel(glb), "blend": rel(blend), "report": rel(os.path.join(out_dir, "build_report.json"))},
@@ -383,7 +384,7 @@ def run(opts, src, out_dir, report):
         "detail": {"level": level, "dropped": DROPPED[level], "passes": passes},
         "iot": {"sensors": len(names.sensors(bp)), "rtus": len(bp["tanks"])},
         "scenery": dict(view, **({"images_mb": summary["images_mb"]} if view["on"] else {})),
-        "triangles": tris, "glb_mb": round(mb, 2), "nodes": len(nodes), "objects": len(objs),
+        "triangles": tris, "glb_mb": round(mb, 2), "nodes": len(nodes), "objects": n_objects,
         "draw_calls": summary["draw_calls"],
         "optimize": dict(opt, glb_meshes=summary["meshes"], instanced_nodes=summary["instanced_nodes"],
                          instances=summary["instances"]),

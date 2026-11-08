@@ -6,16 +6,21 @@ exports with export_gpu_instances on. Blender writes EXT_mesh_gpu_instancing, an
 0.170's GLTFLoader turns each instanced node into one InstancedMesh: one draw call for 110
 grass clumps instead of 110.
 
-1. share(): objects whose meshes hold the same geometry, attributes, and material point at
+1. merge(): outside SCENERY, static Kit parts with the same parent and material join into one
+   mesh, like WELL_1_steel and WELL_1_detail_steel. Each one was its own draw call, and the
+   console's frame time follows draw calls (#97). Only parts named the way Kit.done() names
+   them, <owner>_<material>, with no contract name and no custom properties, ever join; the
+   one with the shortest name keeps its name.
+2. share(): objects whose meshes hold the same geometry, attributes, and material point at
    one mesh, so the glb stores it once. 24 pumpjacks carry one copy of each part, not 24.
    Each object keeps its own node, name, parent, and transform.
-2. group(): under SCENERY only, leaf nodes that share a mesh and carry no contract name move
+3. group(): under SCENERY only, leaf nodes that share a mesh and carry no contract name move
    under one Empty per mesh, named SCENERY_<model>_instances. The exporter turns that Empty
    into the instanced node and drops the copies' own nodes. Nothing a console reads by name
    is ever under one of these Empties.
-3. unshare(): the exporter instances any set of leaf siblings that share a mesh. Outside the
+4. unshare(): the exporter instances any set of leaf siblings that share a mesh. Outside the
    groups made here, no two leaf siblings may share one, so they get their own copy back.
-4. purge(): meshes, materials, and images nothing uses any more are removed.
+5. purge(): meshes, materials, and images nothing uses any more are removed.
 
 Only single-material meshes are shared. three.js names the child meshes of a multi-material
 mesh after the glTF mesh, and the console resolves a click on a child by that name, so a
@@ -25,12 +30,14 @@ import hashlib
 import re
 import time
 
+import bmesh
 import bpy
 import numpy as np
 
 MIN_COPIES = 2           # leaf siblings sharing a mesh before they become one instanced node
 GROUP_SUFFIX = "_instances"
 SCENERY_ROOT = "SCENERY"
+EDITOR_ONLY = (".select_", ".uv_select_", ".hide_")   # attributes the exporter never writes
 
 # attribute data type: (foreach_get property, values per element, numpy dtype)
 ATTR = {
@@ -60,6 +67,8 @@ def mesh_key(obj):
         h.update(_grab(me.loops, "vertex_index", 1, np.int32))
         h.update(_grab(me.polygons, "loop_start", 1, np.int32))
         for attr in sorted(me.attributes, key=lambda a: a.name):
+            if attr.name.startswith(EDITOR_ONLY):
+                continue
             spec = ATTR.get(attr.data_type)
             if spec is None:
                 return None
@@ -82,6 +91,50 @@ def under(obj, root):
             return True
         p = p.parent
     return False
+
+
+def kit_part(obj, keep):
+    """A static part as Kit.done() makes it: <owner>_<material>, one material, nothing attached."""
+    if (obj.type != "MESH" or obj.name in keep or len(obj.material_slots) != 1 or obj.modifiers
+            or obj.data.shape_keys or obj.keys() or obj.data.keys() or obj.data.has_custom_normals):
+        return False
+    mat = obj.material_slots[0].material
+    return mat is not None and mat.name.startswith("M_") and obj.name.endswith("_" + mat.name[2:].lower())
+
+
+def merge(objs, root, keep):
+    """Join same-material Kit parts under one parent into one mesh. Returns how many objects went."""
+    parents = {o.parent for o in objs if o.parent is not None}
+    sets = {}
+    for obj in objs:
+        if (obj.parent is not None and obj not in parents and kit_part(obj, keep)
+                and not (root is not None and (obj.parent == root or under(obj, root)))):
+            sets.setdefault((obj.parent.name, obj.material_slots[0].material.name), []).append(obj)
+    gone = []
+    for members in sets.values():
+        if len(members) < 2:
+            continue
+        members.sort(key=lambda o: (len(o.name), o.name))
+        head = members[0]
+        to_head = (head.matrix_parent_inverse @ head.matrix_basis).inverted()
+        bm = bmesh.new()
+        bm.from_mesh(head.data)
+        for obj in members[1:]:
+            tmp = obj.data.copy()
+            tmp.transform(to_head @ obj.matrix_parent_inverse @ obj.matrix_basis)
+            bm.from_mesh(tmp)
+            bpy.data.meshes.remove(tmp)
+            gone.append(obj)
+        old = head.data
+        name, old.name = old.name, old.name + "_premerge"     # purge() drops it; the name stays dot-free
+        me = bpy.data.meshes.new(name)
+        bm.to_mesh(me)
+        bm.free()
+        me.materials.append(head.material_slots[0].material)
+        head.data = me
+    if gone:
+        bpy.data.batch_remove(gone)
+    return len(gone)
 
 
 def share(objs):
@@ -156,13 +209,14 @@ def purge():
 def run(scene, keep):
     """The whole pass on scene. keep is the set of node names that must stay real nodes."""
     t0 = time.time()
-    objs = list(scene.objects)
     root = bpy.data.objects.get(SCENERY_ROOT)
+    merged = merge(list(scene.objects), root, keep)
+    objs = list(scene.objects)
     before, after = share(objs)
     groups = group(scene.collection, objs, root, keep) if root is not None else {}
     unshared = unshare(list(scene.objects), groups)
     purged = purge()
     bpy.context.view_layer.update()
-    return {"meshes_before": before, "meshes_after": after + unshared, "unshared": unshared,
+    return {"merged": merged, "meshes_before": before, "meshes_after": after + unshared, "unshared": unshared,
             "instanced": dict(sorted(groups.items())), "instances": sum(groups.values()),
             "purged": purged, "seconds": round(time.time() - t0, 2)}
