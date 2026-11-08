@@ -17,7 +17,8 @@ and triangle count stays exactly as built.
 2. UVs: a box projection in each mesh's own frame, in meters, so a tiling texture keeps the
    same real-world size on every part, with an offset per kind of part.
 3. Weathering into the color attribute "Col" (glTF COLOR_0, which three.js multiplies into
-   the base color): dust and grime near the ground, a darker horsehead, a little paint fade
+   the base color): dust and grime near the ground, rust streaks down the tank shells from
+   their top rim, a darker horsehead, a little paint fade
    per kind of part, and in "full" mode ambient occlusion from ray casts against the field.
    Colors only ever darken and stay near gray, so the console's status colors stay clean.
 
@@ -126,7 +127,13 @@ DUST = np.array((0.72, 0.64, 0.54), dtype=np.float32)   # what ground dust multi
 DUST_HEIGHT = 1.6           # meters above grade where dust fades out
 GRIME_HEIGHT = 0.25         # the dark band right at grade
 HORSEHEAD = 0.5             # how dark the pumpjack's horsehead reads against its beam
-AO_RAYS, AO_DIST, AO_STRENGTH, AO_FLOOR = 10, 1.2, 0.45, 0.62
+# Rust and stain streaks run down a tank shell from its top rim. A shell has one row of
+# vertices at the top and one at the bottom, so darkening some top-row columns makes streaks
+# that fade out toward the ground on their own.
+STREAKED = {"M_TANK"}
+RUST = np.array((0.78, 0.66, 0.55), dtype=np.float32)
+STREAK_SHARE, STREAK_MAX = 0.35, 0.8
+AO_RAYS, AO_DIST, AO_STRENGTH, AO_FLOOR, AO_SKIP = 10, 1.2, 0.4, 0.68, 0.12
 AO_MAX_SIZE = 9.0           # meters: bigger meshes have too few vertices for vertex AO (pads, liners, trunk)
 
 
@@ -298,14 +305,31 @@ def pieces(me):
     return label, int(label.max()) + 1 if len(label) else 0
 
 
-def weather_colors(obj, dust, ground_z, fade):
-    """Per-vertex multiplier: dust and grime by height above grade, horsehead, paint fade."""
+def streaks(obj, co, key):
+    """Per-vertex streak strength: the outer rim (the top quarter of the mesh, near its widest
+    radius about local Z), in about a third of the columns around that axis, each column with
+    its own strength."""
+    r = np.hypot(co[:, 0], co[:, 1])
+    z0, z1 = co[:, 2].min(), co[:, 2].max()
+    top = (co[:, 2] > z1 - 0.25 * (z1 - z0)) & (r > 0.85 * r.max())
+    column = np.round(np.degrees(np.arctan2(co[:, 1], co[:, 0])) / 4.0).astype(np.int64)
+    roll = np.array([seed(f"{key}:{c}") for c in range(-46, 47)], dtype=np.float32)
+    r = roll[column + 46]
+    s = np.where(r < STREAK_SHARE, STREAK_MAX * (0.4 + 0.6 * r / STREAK_SHARE), 0.0)
+    return np.where(top, s, 0.0)
+
+
+def weather_colors(obj, dust, ground_z, fade, role="", key=""):
+    """Per-vertex multiplier: dust and grime by height above grade, rust streaks on tank
+    shells, the horsehead, paint fade."""
     co, wp = world_points(obj)
     h = wp[:, 2] - ground_z
     d = np.clip(1.0 - h / DUST_HEIGHT, 0.0, 1.0) ** 1.6 * dust
     col = 1.0 - d[:, None] * (1.0 - DUST)
     grime = np.clip(1.0 - h / GRIME_HEIGHT, 0.0, 1.0) * 0.25 * dust
     col *= (1.0 - grime)[:, None]
+    if role in STREAKED and len(co):
+        col *= 1.0 - streaks(obj, co, key)[:, None] * (1.0 - RUST)
     if obj.name.endswith("_beam") and asset_of(obj) is not None and asset_of(obj).get("kind") == "well":
         # the horsehead and its bridle are the separate pieces at the beam's -Y end
         # (field_parts.build_pumpjack); the beam itself is one piece that reaches past them
@@ -354,7 +378,10 @@ def ambient_occlusion(targets, bvh):
             origin = Vector(p) + n * 0.02
             hits = 0
             for dx, dy, dz in dirs:
-                if bvh.ray_cast(origin, t * dx + b * dy + n * dz, AO_DIST)[0] is not None:
+                d = t * dx + b * dy + n * dz
+                # start each ray a little way out: a vertex where two parts meet (a tank wall
+                # under its roof) would otherwise see the part it touches and read as a crevice
+                if bvh.ray_cast(origin + d * AO_SKIP, d, AO_DIST)[0] is not None:
                     hits += 1
             ao[i] = max(AO_FLOOR, 1.0 - AO_STRENGTH * hits / AO_RAYS)
         out[key] = ao
@@ -456,7 +483,8 @@ def apply(scene, mode="fast", textures=True):
     t_uv = time.time()
 
     ground_z = -0.2                     # field_build.ground_height's mean
-    colors = {key: weather_colors(m[0][0], ROLES[m[0][1]][5], ground_z, seed(key + "f")) for key, m in groups.items()}
+    colors = {key: weather_colors(m[0][0], ROLES[m[0][1]][5], ground_z, seed(key + "f"), m[0][1], key)
+              for key, m in groups.items()}
     ao_s = 0.0
     if mode == "full":
         t = time.time()
