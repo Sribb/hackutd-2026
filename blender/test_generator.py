@@ -3,18 +3,22 @@
   python3 blender/test_generator.py           validation tests, every build, and tools/check
   python3 blender/test_generator.py --quick   validation and layout tests only (no Blender)
 
-1. Validation and layout run in plain Python against blueprint.py and layout.py.
-2. Builds: small, the default (scenario/field.json into blender/), large, and three variants
-   made here (given positions, extra crossovers, a 20-tank maximum). Each glb's JSON chunk
-   is read to check names, kinds, hierarchy, positions, bounding boxes, pipes, and budget.
+1. Validation and layout run in plain Python against blueprint.py and layout.py, including
+   the blueprint format v1 rules in docs/BLUEPRINT.md.
+2. Builds: small, the default (scenario/field.json into blender/), large, the demo kit's
+   sample 1 and the ingest draft of sample 2, and three variants made here (given positions,
+   extra crossovers, a 20-tank maximum). Each glb's JSON chunk is read to check names, kinds,
+   hierarchy, positions, bounding boxes, pipes, and budget.
 3. A broken blueprint must exit 1, explain itself in build_report.json, and write no glb.
 4. tools/check must PASS its blender line on the default build.
+
+The sample 2 draft comes from ingest live (ingest_bytes on the CSV) when an interpreter with
+ingest's requirements is found: this one, $INGEST_PYTHON, or a .venv in the repo or the main
+checkout. Otherwise the test uses blender/samples/sample2_draft.json and says so.
 """
 import copy
 import json
-import math
 import os
-import struct
 import subprocess
 import sys
 import tempfile
@@ -23,10 +27,16 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 import blueprint  # noqa: E402
+from glb_read import Glb, touch  # noqa: E402
 import layout  # noqa: E402
 import names  # noqa: E402
+import test_parts  # noqa: E402
+import test_scenery  # noqa: E402
 
 BLENDER = os.environ.get("BLENDER", "/Applications/Blender.app/Contents/MacOS/Blender")
+SAMPLE1 = os.path.join(ROOT, "scenario", "samples", "sample1_pecos_8tank.json")
+SAMPLE2_CSV = os.path.join(ROOT, "scenario", "samples", "sample2_delaware_4tank.csv")
+SAMPLE2_DRAFT = os.path.join(HERE, "samples", "sample2_draft.json")
 FAILS = []
 
 
@@ -46,7 +56,97 @@ def errors_of(data):
     return blueprint.check(data)[1]
 
 
+def ingest_pythons():
+    """Interpreters that may have ingest's requirements, most specific first."""
+    cands = [sys.executable, os.environ.get("INGEST_PYTHON"), os.path.join(ROOT, ".venv", "bin", "python")]
+    try:   # in a git worktree, the main checkout holds the .venv
+        common = subprocess.run(["git", "rev-parse", "--git-common-dir"], cwd=ROOT, capture_output=True,
+                                text=True, timeout=10).stdout.strip()
+        if common:
+            main = os.path.dirname(os.path.abspath(os.path.join(ROOT, common)))
+            cands.append(os.path.join(main, ".venv", "bin", "python"))
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return [c for c in dict.fromkeys(cands) if c and os.path.exists(c)]
+
+
+def sample2_draft(tmp):
+    """The ingest draft of sample 2's CSV: (path, where it came from)."""
+    code = ("import json, sys; sys.path.insert(0, sys.argv[1]); from ingest import ingest_bytes; "
+            "r = ingest_bytes(open(sys.argv[2], 'rb').read(), 'sample2_delaware_4tank.csv'); "
+            "json.dump(r['blueprint'], sys.stdout)")
+    for py in ingest_pythons():
+        p = subprocess.run([py, "-c", code, ROOT, SAMPLE2_CSV], capture_output=True, text=True, timeout=120)
+        if p.returncode == 0:
+            try:
+                draft = json.loads(p.stdout)
+            except json.JSONDecodeError:
+                continue
+            path = os.path.join(tmp, "sample2_draft.json")
+            with open(path, "w") as f:
+                json.dump(draft, f, indent=1)
+            return path, f"live ingest ({py})"
+    return SAMPLE2_DRAFT, "blender/samples/sample2_draft.json (ingest is not importable here)"
+
+
 # ---------- 1. validation and layout ----------
+
+def test_format_v1():
+    """docs/BLUEPRINT.md format v1: optional site and connectors, _ keys, drafts with gaps."""
+    s1 = load(SAMPLE1)
+    bp, errs, warns = blueprint.check(s1)
+    ok(not errs, f"sample 1 is a valid blueprint {errs[:2]}")
+    ok(bp["site"] and bp["site"]["name"] == "Pecos Ridge lease" and [c["id"] for c in bp["connectors"]],
+       "sample 1: site and connectors are read")
+    draft = load(SAMPLE2_DRAFT)
+    bp, errs, _ = blueprint.check(draft)
+    ok(not errs and not any("shutdown_pct" in t for t in draft["tanks"]),
+       f"the sample 2 draft builds although it misses numbers {errs[:2]}")
+
+    base = load(os.path.join(ROOT, "scenario", "field.json"))
+
+    def case(change):
+        data = copy.deepcopy(base)
+        change(data)
+        return blueprint.check(data)
+
+    _, errs, warns = case(lambda d: d.update(site="Avon", connectors={"id": "CONN_1"}))
+    ok(not errs and any('"site"' in w for w in warns) and any('"connectors"' in w for w in warns),
+       "a malformed site or connectors list is a warning, not an error")
+    bad_conn = [{"id": "conn x"}, "text", {"id": "TANK_1"}, {"_note": "comment"},
+                {"id": "CONN_A", "kind": "mqtt", "signals": [{"asset_id": "TANK_99", "signal": "level_pct"},
+                                                              {"asset_id": "PUMP_3", "signal": "running"}]}]
+    bp, errs, warns = case(lambda d: d.update(connectors=bad_conn))
+    ok(not errs and [c["id"] for c in bp["connectors"]] == ["CONN_A"]
+       and bp["connectors"][0]["signals"] == [("PUMP_3", "running")],
+       f"bad connectors and signals are skipped with warnings ({len(warns)} warnings)")
+    _, errs, _ = case(lambda d: (d.update(connectors=[{"id": "CONN_A", "kind": "sim", "signals": []}],
+                                          connections=[{"from": "CONN_A", "to": "TANK_3", "kind": "SIGNAL"}])))
+    ok(not errs, f"a connection may end at a connector {errs[:1]}")
+
+    def comments(d):
+        d["_note"] = "top-level comment"
+        d["tanks"].append({"_note": "a comment entry"})
+        d["tanks"][0]["_ingest"] = {"label": "T1", "confidence": 0.5}
+        d["trucks"][0]["minutes_to"]["_source"] = "dispatcher"
+        d["initial"]["tank_pct"]["_note"] = "levels at 01:47"
+    bp, errs, warns = case(comments)
+    ok(not errs and len(bp["tanks"]) == 6 and not any("_note" in w for w in warns),
+       f"keys starting with _ are ignored everywhere {errs[:1]}")
+
+    def nulls(d):
+        d["tanks"][0].update(x=None, y=None, capacity_bbl=None)
+        d["valves"][0].update(kind=None)
+        d["pumps"][0].update(valve_id=None)
+    bp, errs, _ = case(nulls)
+    ok(not errs and bp["tanks"][0]["pos"] is None and bp["pumps"][0]["valve_id"] == "VALVE_D_1",
+       f"null numbers, positions, and kinds count as missing {errs[:1]}")
+    bp, errs, _ = case(lambda d: d["valves"][0].update(pump_id=None, connects=["SWD_1", "PUMP_1"]))
+    ok(not errs and bp["pumps"][0]["valve_id"] == "VALVE_D_1", "a discharge valve finds its pump in either end")
+    _, errs, warns = case(lambda d: d.update(version=2, extra_list=[]))
+    ok(not errs and any("version 2" in w for w in warns) and any("extra_list" in w for w in warns),
+       "another format version and unknown keys are warnings")
+
 
 def test_validation():
     base = load(os.path.join(ROOT, "scenario", "field.json"))
@@ -102,96 +202,10 @@ def test_layout():
     ok(all(abs(p["frame"].x - yard_x) > 30 for p in LB["pads"] if p["frame"].flip), "the yard has its own slot")
 
 
-# ---------- glb reading ----------
-
-def read_glb(path):
-    with open(path, "rb") as f:
-        raw = f.read()
-    n, kind = struct.unpack_from("<II", raw, 12)
-    assert raw[:4] == b"glTF" and kind == 0x4E4F534A, "not a glb"
-    return json.loads(raw[20:20 + n])
-
-
-def mat_mul(a, b):
-    return [[sum(a[i][k] * b[k][j] for k in range(4)) for j in range(4)] for i in range(4)]
-
-
-def local_matrix(node):
-    if "matrix" in node:
-        m = node["matrix"]
-        return [[m[c * 4 + r] for c in range(4)] for r in range(4)]
-    tx, ty, tz = node.get("translation", (0, 0, 0))
-    qx, qy, qz, qw = node.get("rotation", (0, 0, 0, 1))
-    sx, sy, sz = node.get("scale", (1, 1, 1))
-    r = [[1 - 2 * (qy * qy + qz * qz), 2 * (qx * qy - qz * qw), 2 * (qx * qz + qy * qw)],
-         [2 * (qx * qy + qz * qw), 1 - 2 * (qx * qx + qz * qz), 2 * (qy * qz - qx * qw)],
-         [2 * (qx * qz - qy * qw), 2 * (qy * qz + qx * qw), 1 - 2 * (qx * qx + qy * qy)]]
-    s = (sx, sy, sz)
-    return [[r[i][0] * s[0], r[i][1] * s[1], r[i][2] * s[2], (tx, ty, tz)[i]] for i in range(3)] + [[0, 0, 0, 1]]
-
-
-class Glb:
-    """Node names, world positions in plan coordinates, and world bounding boxes."""
-
-    def __init__(self, path):
-        self.g = g = read_glb(path)
-        self.nodes = g["nodes"]
-        self.by_name = {}
-        for i, nd in enumerate(self.nodes):
-            self.by_name.setdefault(nd.get("name", ""), []).append(i)
-        self.parent = {c: i for i, nd in enumerate(self.nodes) for c in nd.get("children", [])}
-        self.world = {}
-        for root in g["scenes"][g.get("scene", 0)]["nodes"]:
-            self._walk(root, [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]])
-        self.tris = self._tris()
-
-    def _tris(self):
-        acc = self.g["accessors"]
-        per_mesh = [sum(acc[p["indices"]]["count"] // 3 for p in m["primitives"]) for m in self.g["meshes"]]
-        return sum(per_mesh[nd["mesh"]] for nd in self.nodes if "mesh" in nd)
-
-    def _walk(self, i, parent):
-        self.world[i] = m = mat_mul(parent, local_matrix(self.nodes[i]))
-        for c in self.nodes[i].get("children", []):
-            self._walk(c, m)
-
-    def idx(self, name):
-        return self.by_name[name][0]
-
-    def plan_xy(self, name):
-        m = self.world[self.idx(name)]
-        return (m[0][3], -m[2][3])
-
-    def box(self, name):
-        """World AABB of a node and its children, in plan coordinates (x0, x1, y0, y1, z0, z1)."""
-        pts = []
-        stack = [self.idx(name)]
-        while stack:
-            i = stack.pop()
-            stack += self.nodes[i].get("children", [])
-            if "mesh" in self.nodes[i]:
-                m = self.world[i]
-                for p in self.g["meshes"][self.nodes[i]["mesh"]]["primitives"]:
-                    a = self.g["accessors"][p["attributes"]["POSITION"]]
-                    lo, hi = a["min"], a["max"]
-                    for c in range(8):
-                        v = [(hi if c >> k & 1 else lo)[k] for k in range(3)] + [1]
-                        w = [sum(m[r][k] * v[k] for k in range(4)) for r in range(3)]
-                        pts.append((w[0], -w[2], w[1]))
-        if not pts:
-            return None
-        return (min(p[0] for p in pts), max(p[0] for p in pts), min(p[1] for p in pts),
-                max(p[1] for p in pts), min(p[2] for p in pts), max(p[2] for p in pts))
-
-
-def touch(a, b, grow=0.0):
-    return a[0] - grow < b[1] and b[0] - grow < a[1] and a[2] - grow < b[3] and b[2] - grow < a[3]
-
-
 # ---------- 2. builds ----------
 
-def blender(args):
-    cmd = [BLENDER, "--background", "--factory-startup", "--python", os.path.join(HERE, "build_field.py"), "--"]
+def blender(args, script=os.path.join(HERE, "build_field.py")):
+    cmd = [BLENDER, "--background", "--factory-startup", "--python", script, "--"]
     return subprocess.run(cmd + args, cwd=ROOT, capture_output=True, text=True, timeout=600)
 
 
@@ -287,6 +301,8 @@ def check_build(label, bp_path, out_dir, expect_level=None, max_seconds=30):
     jct = [n for n in node_names if n.startswith("ROAD_JCT_")]
     ok(all(abs(glb.plan_xy(n)[1]) < 1e-6 and w_end < glb.plan_xy(n)[0] < e_end for n in jct),
        f"{label}: {len(jct)} road junctions sit on the road between its ends")
+    test_parts.check_iot(ok, label, glb, bp)
+    test_scenery.check_build(ok, label, rep, glb)
     return rep, glb
 
 
@@ -316,7 +332,8 @@ def variants(tmp):
         big["wells"] += [{"id": f"WELL_{n}_{j}", "tank_id": f"TANK_{n}"} for j in range(1, 4)]
     big["valves"].append({"id": "VALVE_XO_10_11", "kind": "CROSSOVER", "connects": ["TANK_10", "TANK_11"]})
     out = {}
-    for name, data in (("given", given), ("crossovers", xo), ("max20", big)):
+    for name, data in (("given", given), ("crossovers", xo), ("max20", big),
+                       ("equipment", test_parts.equipment_blueprint(small)), ("iot", test_parts.iot_blueprint(small))):
         out[name] = os.path.join(tmp, f"{name}.json")
         with open(out[name], "w") as f:
             json.dump(data, f, indent=1)
@@ -324,18 +341,39 @@ def variants(tmp):
 
 
 def test_builds(tmp):
+    draft, source = sample2_draft(tmp)
+    print(f"      sample 2 draft from {source}")
     cases = [("small", os.path.join(HERE, "samples", "small.json"), "full"),
              ("default", None, "full"),
-             ("large", os.path.join(HERE, "samples", "large.json"), "full")]
-    cases += [(k, v, None) for k, v in variants(tmp).items()]
-    reports = {}
+             ("large", os.path.join(HERE, "samples", "large.json"), "full"),
+             ("sample1", SAMPLE1, "full"),
+             ("sample2_draft", draft, "full")]
+    paths = variants(tmp)
+    cases += [(k, v, None) for k, v in paths.items()]
+    reports, glbs = {}, {}
     for label, path, level in cases:
         out = HERE if path is None else os.path.join(tmp, label)
         p = blender([] if path is None else ["--blueprint", path, "--out", out])
         if not ok(p.returncode == 0, f"{label}: Blender exited 0"):
             print("\n".join((p.stdout + p.stderr).splitlines()[-15:]))
             continue
-        reports[label], _ = check_build(label, path or os.path.join(ROOT, "scenario", "field.json"), out, level)
+        reports[label], glbs[label] = check_build(label, path or os.path.join(ROOT, "scenario", "field.json"),
+                                                  out, level)
+    if "sample1" in reports:
+        r = reports["sample1"]
+        ok(r.get("site", {}).get("name") == "Pecos Ridge lease" and r.get("connectors") == ["CONN_SIM"],
+           "sample1: the report carries the site and the connector IDs")
+    if "sample2_draft" in glbs:
+        g, data = glbs["sample2_draft"], load(draft)
+        raw = []   # three.js gets plan (x, y) as (x, height, -y): check the glb's own numbers
+        for t in data["tanks"]:
+            m = g.world[g.idx(t["id"])]
+            raw.append(abs(m[0][3] - t["x"]) < 0.01 and abs(m[2][3] + t["y"]) < 0.01 and 0 <= m[1][3] < 1)
+        ok(raw and all(raw), "sample2_draft: a tank at plan (x, y) sits at three.js (x, height, -y)")
+        given = sorted(a["id"] for k in ("tanks", "pumps", "wells", "disposal_wells", "yards")
+                       for a in data.get(k, []) if a.get("x") is not None)
+        ok(reports["sample2_draft"]["placed"]["given"] == given,
+           f"sample2_draft: every position from the CSV is used ({len(given)} assets)")
     if "max20" in reports:
         r = reports["max20"]
         ok(r["detail"]["level"] != "full" and any("dropped" in w for w in r["warnings"]),
@@ -346,6 +384,10 @@ def test_builds(tmp):
     if "crossovers" in reports:
         styles = reports["crossovers"]["layout"]["crossovers"]
         ok(list(styles.values()).count("rack") == 4, f"crossovers: far pairs route on the rack {styles}")
+    if "equipment" in reports:
+        test_parts.check_build(ok, reports["equipment"], glbs["equipment"], load(paths["equipment"]))
+    if "iot" in reports:
+        test_parts.check_iot_variant(ok, reports["iot"], glbs["iot"], load(paths["iot"]))
     return reports
 
 
@@ -382,11 +424,18 @@ def test_tools_check():
 
 
 def main():
+    test_format_v1()
     test_validation()
+    test_parts.test_validation(ok, load(os.path.join(HERE, "samples", "small.json")))
+    test_scenery.test_plan(ok, ROOT)
     test_layout()
     if "--quick" not in sys.argv:
         with tempfile.TemporaryDirectory() as tmp:
-            test_builds(tmp)
+            reports = test_builds(tmp)
+            test_parts.test_preview(ok, blender, tmp)
+            if "small" in reports:
+                test_scenery.test_plain_and_repeat(ok, blender, tmp, os.path.join(HERE, "samples", "small.json"),
+                                                   reports["small"])
             test_failure(tmp)
         test_tools_check()
     print(f"\n{'FAIL' if FAILS else 'PASS'}: {len(FAILS)} failed")

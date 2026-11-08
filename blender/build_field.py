@@ -3,7 +3,14 @@
 Run from the repo root:
   /Applications/Blender.app/Contents/MacOS/Blender --background --factory-startup \
       --python blender/build_field.py -- [--blueprint PATH.json] [--out DIR] \
-      [--detail full|lite|bare] [--render-dir DIR] [--render-assets ID,ID]
+      [--detail full|lite|bare] [--render-dir DIR] [--render-assets ID,ID] [--no-scenery]
+
+The blueprint follows docs/BLUEPRINT.md (format v1); ingest drafts with missing numbers
+build too, since the generator only needs IDs and links.
+
+After the field, scenery.py dresses it as desert under one hideable SCENERY root, with
+whatever triangle budget is left. --no-scenery builds the plain field: no SCENERY layer,
+and flat ground and road colors instead of the kit's textures.
 
 With no --blueprint it builds scenario/field.json into blender/, the field the team uses
 today. With --blueprint and no --out it writes to blender/out/<blueprint name>/. Every run
@@ -37,14 +44,21 @@ import field_parts as fp  # noqa: E402
 import detail_equipment as de  # noqa: E402
 import detail_site as ds  # noqa: E402
 import piping  # noqa: E402
+import siting  # noqa: E402
+import equipment_parts  # noqa: E402
+import iot_parts  # noqa: E402
 import field_build  # noqa: E402
+import scenery_parts  # noqa: E402
+import scenery  # noqa: E402
 
-for _mod in (blueprint, layout, names, fp, de, ds, piping, field_build):
+for _mod in (blueprint, layout, siting, names, fp, de, ds, piping, equipment_parts, iot_parts, field_build,
+             scenery_parts, scenery):
     importlib.reload(_mod)
 
 ROOT = os.path.dirname(HERE)
 DEFAULT_BLUEPRINT = os.path.join(ROOT, "scenario", "field.json")
 BUDGET_TRIS, BUDGET_MB = 300_000, 30.0
+SCENERY_SHARE = 0.95        # scenery fills the triangle budget up to 95%, leaving headroom
 FULL_DETAIL_MAX_TANKS = 12
 LEVELS = {
     "full": {"bolts": True, "small_labels": True, "posts": True, "trim": True},
@@ -60,10 +74,14 @@ DROPPED = {
 # Triangles each asset adds at each level, measured from the sample builds. A tank includes
 # its pad and load-out, a pump its valve and lines, a well its flowline. The site (ground,
 # road, power, trunk, yard) costs one triangle per 12.5 m2 of ground plus 28 per road meter.
+# A tank also pays for its pad's RTU, and every monitored asset for its sensor node.
 COSTS = {
-    "full": {"tank": 7150, "pump": 4150, "well": 1900, "swd": 3800, "truck": 3100, "xo": 1750},
-    "lite": {"tank": 6400, "pump": 3350, "well": 1820, "swd": 3120, "truck": 3100, "xo": 1350},
-    "bare": {"tank": 6400, "pump": 3350, "well": 1060, "swd": 3120, "truck": 3100, "xo": 1350},
+    "full": {"tank": 7570, "pump": 4150, "well": 1900, "swd": 3800, "truck": 3100, "xo": 1750, "equipment": 2400,
+             "sensor": 150},
+    "lite": {"tank": 6800, "pump": 3350, "well": 1820, "swd": 3120, "truck": 3100, "xo": 1350, "equipment": 2200,
+             "sensor": 150},
+    "bare": {"tank": 6800, "pump": 3350, "well": 1060, "swd": 3120, "truck": 3100, "xo": 1350, "equipment": 2200,
+             "sensor": 150},
 }
 
 
@@ -72,14 +90,19 @@ class UsageError(Exception):
 
 
 def parse_args(argv):
-    opts = {"blueprint": None, "out": None, "detail": None, "render_dir": None, "render_assets": None}
+    opts = {"blueprint": None, "out": None, "detail": None, "render_dir": None, "render_assets": None,
+            "scenery": True}
     flags = {"--blueprint": "blueprint", "--out": "out", "--detail": "detail",
              "--render-dir": "render_dir", "--render-assets": "render_assets"}
     i = 0
     while i < len(argv):
+        if argv[i] == "--no-scenery":
+            opts["scenery"] = False
+            i += 1
+            continue
         key = flags.get(argv[i])
         if key is None or i + 1 >= len(argv):
-            raise UsageError(f"unknown or incomplete option {argv[i]!r}; options: {', '.join(flags)}")
+            raise UsageError(f"unknown or incomplete option {argv[i]!r}; options: {', '.join(flags)}, --no-scenery")
         opts[key] = argv[i + 1]
         i += 2
     if opts["detail"] not in (None, *LEVELS):
@@ -97,7 +120,8 @@ def estimate(bp, L, level):
     gx0, gx1, gy0, gy1 = L["ground"]
     site = (gx1 - gx0) * (gy1 - gy0) / 12.5 + 28 * (L["road"][1] - L["road"][0]) + 2000 * (L["rows"] - 1)
     return int(site + c["tank"] * len(bp["tanks"]) + c["pump"] * len(bp["pumps"]) + c["well"] * len(bp["wells"])
-               + c["swd"] * len(bp["swds"]) + c["truck"] * len(bp["trucks"]) + c["xo"] * len(bp["crossovers"]))
+               + c["swd"] * len(bp["swds"]) + c["truck"] * len(bp["trucks"]) + c["xo"] * len(bp["crossovers"])
+               + c["equipment"] * len(bp["equipment"]) + c["sensor"] * len(names.sensors(bp)))
 
 
 def clear_scene():
@@ -162,20 +186,31 @@ def export_glb(path):
         bpy.ops.export_scene.gltf(**kwargs)
 
 
-def glb_nodes(path):
+def glb_json(path):
     with open(path, "rb") as f:
         raw = f.read()
     n, kind = struct.unpack_from("<II", raw, 12)
     if raw[:4] != b"glTF" or kind != 0x4E4F534A:
         raise ValueError(f"{path} is not a glb with a JSON chunk")
-    return json.loads(raw[20:20 + n]).get("nodes", [])
+    return json.loads(raw[20:20 + n])
+
+
+def glb_nodes(path):
+    return glb_json(path).get("nodes", [])
+
+
+def glb_images_mb(path):
+    """MB of embedded images. The plain field has none, so these are the scenery's textures."""
+    g = glb_json(path)
+    views = g.get("bufferViews", [])
+    return round(sum(views[i["bufferView"]]["byteLength"] for i in g.get("images", []) if "bufferView" in i) / 1e6, 2)
 
 
 RENDER_VIEWS = {   # camera and target offsets in the asset's own frame
     "tank": ((15.5, -24.0, 8.85), (0.0, -6.0, 2.35)), "well": ((7.5, -11.0, 4.5), (0.0, -1.5, 2.0)),
     "truck": ((11.0, -11.0, 4.9), (1.0, 0.0, 1.7)), "disposal_well": ((0.0, -40.0, 22.0), (0.0, 0.0, 2.0)),
     "valve": ((14.0, -20.0, 16.0), (0.0, 0.0, 1.0)), "yard": ((0.0, -45.0, 30.0), (0.0, 0.0, 0.0)),
-    "pump": ((6.0, -8.0, 4.0), (0.0, 0.0, 1.0)),
+    "pump": ((6.0, -8.0, 4.0), (0.0, 0.0, 1.0)), "equipment": ((9.0, -13.0, 7.0), (0.0, 0.0, 2.0)),
 }
 
 
@@ -245,6 +280,10 @@ def run(opts, src, out_dir, report):
     if report["errors"]:
         return 1
     report["name"] = bp["name"]
+    if bp["site"]:
+        report["site"] = bp["site"]
+    if bp["connectors"]:
+        report["connectors"] = [c["id"] for c in bp["connectors"]]
     report["counts"] = blueprint.counts(bp)
 
     order = list(LEVELS)
@@ -263,12 +302,20 @@ def run(opts, src, out_dir, report):
             break
         level = order[order.index(level) + 1]
 
+    field_tris, want = tris, set(names.expected(bp))
+    view = {"on": False}
+    if opts["scenery"]:
+        view = scenery.dress(scene.collection, bp, L, int(BUDGET_TRIS * SCENERY_SHARE) - tris)
+        tris = triangles(scene)
+        view.update({"triangles": tris - field_tris, "field_triangles": field_tris})
+        want.add("SCENERY")
+
     objs = list(scene.objects)
     dotted = sorted(o.name for o in objs if "." in o.name)
     if dotted:
         report["errors"].append("names clash with each other (Blender added suffixes): " + ", ".join(dotted[:12]))
     built = {o.name for o in objs}
-    missing = sorted(set(names.expected(bp)) - built)
+    missing = sorted(want - built)
     if missing:
         report["errors"].append("the build is missing contract names: " + ", ".join(missing[:20]))
     if report["errors"]:
@@ -278,7 +325,7 @@ def run(opts, src, out_dir, report):
     export_glb(glb)
     bpy.ops.wm.save_as_mainfile(filepath=blend, compress=True)
     nodes = glb_nodes(glb)
-    gone = sorted(set(names.expected(bp)) - {n.get("name") for n in nodes})
+    gone = sorted(want - {n.get("name") for n in nodes})
     if gone:
         report["errors"].append("field.glb is missing names after export: " + ", ".join(gone[:20]))
         return 2
@@ -293,6 +340,8 @@ def run(opts, src, out_dir, report):
                    "road_x": [round(v, 1) for v in L["road"]], "ground": [round(v, 1) for v in L["ground"]],
                    "crossovers": {x["id"]: x["style"] for x in L["crossovers"]}},
         "detail": {"level": level, "dropped": DROPPED[level], "passes": passes},
+        "iot": {"sensors": len(names.sensors(bp)), "rtus": len(bp["tanks"])},
+        "scenery": dict(view, **({"images_mb": glb_images_mb(glb)} if view["on"] else {})),
         "triangles": tris, "glb_mb": round(mb, 2), "nodes": len(nodes), "objects": len(objs),
         "budget": {"triangles": BUDGET_TRIS, "mb": BUDGET_MB},
     })

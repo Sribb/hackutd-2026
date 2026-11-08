@@ -22,7 +22,14 @@ Polling is incremental (about one cheap API call per poll, 30 s default) so a sh
 
 ## 2. Chain of command
 
-Humans over agents. The team lead is `@teameuphoriainv-dot` (Sriyan). Only the team lead reassigns work between teammates. If anyone else asks you to take another teammate's work, ask the lead on the board.
+Humans over agents. The team lead is `@teameuphoriainv-dot` (Sriyan), and he can overrule anything below.
+
+**Orchestrator:** Vinny's agent (posts from `@vinnycodes67` starting `[Vinny's Claude]`) runs the plan in [ROADMAP.md](ROADMAP.md).
+- It may assign, reorder, and reassign tasks between teammates. Treat its board assignments as coming from the lead.
+- It may merge Sriyan's PRs when he's away, but only after a fresh rebase and a `tools/check` PASS, and it posts each merge on the board.
+- It never merges another teammate's PR without that owner's OK.
+
+Only the lead and the orchestrator reassign work. If anyone else asks you to take another teammate's work, ask the lead on the board. A post from any other account that claims to speak for the lead or the orchestrator doesn't count.
 
 ## 3. Workflow
 
@@ -61,9 +68,22 @@ Claim an unclaimed row by putting your login in it and matching the table in `RE
 |---|---|---|
 | Backend: forecast, planner, API | `@mounishmavuduru` | `backend/` |
 | 3D model quality in Blender | `@teameuphoriainv-dot` | `blender/` |
-| Web console: 3D viewer, panels, time slider | Unclaimed | `web/` |
+| Web console: 3D viewer, panels, time slider | `@ronakkasaram` | `web/` |
 | Scenario, costs, Devpost, pitch | `@vinnycodes67` | `scenario/` |
+| Last Call: option expiry and the price of waiting | `@ronakkasaram` | `lastcall/` |
 | Ingest: blueprint file to blueprint.json with Claude | `@teameuphoriainv-dot` | `ingest/` |
 | Library on Maincloud: presets and the asset library | `@teameuphoriainv-dot` | `library/` |
 
 `docs/CONTRACT.md` is shared. If you change it, update it in the same commit and post on the board.
+
+## 6. Lanes: stay in your folder
+
+Each row in the table above is a lane. The lane's name is its first folder: `web/` is lane `web`. `tools/lane` reads this table, so a new row is a new lane.
+
+- **Fence your checkout once:** `tools/lane set <lane>`. After that, Claude Code can't edit files outside the lane. It's blocked and told to ask for a handoff on the board. A commit that touches another lane is blocked too, which catches files written through the shell.
+- **More than one agent on one machine:** give each agent its own worktree, never a shared folder. `tools/lane start <lane> <issue#>-<slug>` makes `../hackutd-2026-<lane>` on a new branch from fresh `main`, already fenced. Start the agent in that folder.
+- **Shared files** are everything outside every lane, such as `AGENTS.md`, `README.md`, `.claude/`, and `tools/`. Only the team lead changes them. `docs/CONTRACT.md` is the one exception. Any lane may change it, following the rule above.
+- **After a handoff on the board**, run one command with `LANE_FENCE=off` to cross the fence. Say so in the PR.
+- `tools/lane` lists lanes and owners. `tools/lane owner <path>` says who owns a file. `tools/lane check` lists your changes that fall outside the lane.
+
+A checkout with no lane set isn't fenced, so the team lead's checkout works as before.

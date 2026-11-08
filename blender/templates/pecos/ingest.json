@@ -1,0 +1,440 @@
+{
+ "file": "sample1_pecos_8tank.json",
+ "bytes": 17265,
+ "read_by": "parser",
+ "preview": "{\n \"_note\": \"Demo kit sample 1 (issue #39): a complete blueprint, different from Avon. 8 tanks, 24 wells, 3 disposal wells, 3 trucks. Pump 6 trips 2 minutes in; Tank 6 reaches shutdown in about an hour. Numbers are illustrative placeholders, not real lease data.\",\n \"version\": 1,\n \"name\": \"Pecos Ridge lease - night shift\",\n \"clock_start\": \"00:58\",\n \"site\": {\n  \"name\": \"Pecos Ridge lease\",\n  \"operator\": \"Demo Operating LLC (fictional)\",\n  \"lat\": 31.42,\n  \"lon\": -103.49,\n  \"width_m\": 600,\n  \"timezone\": \"America/Chicago\"\n },\n \"tanks\": [\n  {\n   \"id\": \"TANK_1\",\n   \"label\": \"T-1\",\n   \"capacity_bbl\": 500,\n   \"shutdown_pct\": 90,\n   \"warning_pct\": 80,\n   \"pump_low_pct\": 35\n  },\n  {\n   \"id\": \"TANK_2\",\n   \"label\": \"T-2\",\n   \"capacity_bbl\": 500,\n   \"shutdown_pct\": 90,\n   \"warning_pct\": 80,\n   \"pump_low_pct\": 35\n  },\n  {\n   \"id\": \"TANK_3\",\n   \"label\": \"T-3\",\n   \"capacity_bbl\": 500,\n   \"shutdown_pct\": 90,\n   \"warning_pct\": 80,\n   \"pump_low_pct\": 35\n  },\n  {\n   \"id\": \"TANK_4\",\n...",
+ "counts": {
+  "tanks": 8,
+  "pumps": 8,
+  "valves": 13,
+  "wells": 24,
+  "disposal_wells": 3,
+  "trucks": 3,
+  "yards": 1
+ },
+ "review": [],
+ "filled": [],
+ "items": [
+  {
+   "id": "TANK_1",
+   "section": "tanks",
+   "label": "TANK_1",
+   "confidence": null,
+   "evidence": null
+  },
+  {
+   "id": "TANK_2",
+   "section": "tanks",
+   "label": "TANK_2",
+   "confidence": null,
+   "evidence": null
+  },
+  {
+   "id": "TANK_3",
+   "section": "tanks",
+   "label": "TANK_3",
+   "confidence": null,
+   "evidence": null
+  },
+  {
+   "id": "TANK_4",
+   "section": "tanks",
+   "label": "TANK_4",
+   "confidence": null,
+   "evidence": null
+  },
+  {
+   "id": "TANK_5",
+   "section": "tanks",
+   "label": "TANK_5",
+   "confidence": null,
+   "evidence": null
+  },
+  {
+   "id": "TANK_6",
+   "section": "tanks",
+   "label": "TANK_6",
+   "confidence": null,
+   "evidence": null
+  },
+  {
+   "id": "TANK_7",
+   "section": "tanks",
+   "label": "TANK_7",
+   "confidence": null,
+   "evidence": null
+  },
+  {
+   "id": "TANK_8",
+   "section": "tanks",
+   "label": "TANK_8",
+   "confidence": null,
+   "evidence": null
+  },
+  {
+   "id": "PUMP_1",
+   "section": "pumps",
+   "label": "PUMP_1",
+   "confidence": null,
+   "evidence": null
+  },
+  {
+   "id": "PUMP_2",
+   "section": "pumps",
+   "label": "PUMP_2",
+   "confidence": null,
+   "evidence": null
+  },
+  {
+   "id": "PUMP_3",
+   "section": "pumps",
+   "label": "PUMP_3",
+   "confidence": null,
+   "evidence": null
+  },
+  {
+   "id": "PUMP_4",
+   "section": "pumps",
+   "label": "PUMP_4",
+   "confidence": null,
+   "evidence": null
+  },
+  {
+   "id": "PUMP_5",
+   "section": "pumps",
+   "label": "PUMP_5",
+   "confidence": null,
+   "evidence": null
+  },
+  {
+   "id": "PUMP_6",
+   "section": "pumps",
+   "label": "PUMP_6",
+   "confidence": null,
+   "evidence": null
+  },
+  {
+   "id": "PUMP_7",
+   "section": "pumps",
+   "label": "PUMP_7",
+   "confidence": null,
+   "evidence": null
+  },
+  {
+   "id": "PUMP_8",
+   "section": "pumps",
+   "label": "PUMP_8",
+   "confidence": null,
+   "evidence": null
+  },
+  {
+   "id": "VALVE_D_1",
+   "section": "valves",
+   "label": "VALVE_D_1",
+   "confidence": null,
+   "evidence": null
+  },
+  {
+   "id": "VALVE_D_2",
+   "section": "valves",
+   "label": "VALVE_D_2",
+   "confidence": null,
+   "evidence": null
+  },
+  {
+   "id": "VALVE_D_3",
+   "section": "valves",
+   "label": "VALVE_D_3",
+   "confidence": null,
+   "evidence": null
+  },
+  {
+   "id": "VALVE_D_4",
+   "section": "valves",
+   "label": "VALVE_D_4",
+   "confidence": null,
+   "evidence": null
+  },
+  {
+   "id": "VALVE_D_5",
+   "section": "valves",
+   "label": "VALVE_D_5",
+   "confidence": null,
+   "evidence": null
+  },
+  {
+   "id": "VALVE_D_6",
+   "section": "valves",
+   "label": "VALVE_D_6",
+   "confidence": null,
+   "evidence": null
+  },
+  {
+   "id": "VALVE_D_7",
+   "section": "valves",
+   "label": "VALVE_D_7",
+   "confidence": null,
+   "evidence": null
+  },
+  {
+   "id": "VALVE_D_8",
+   "section": "valves",
+   "label": "VALVE_D_8",
+   "confidence": null,
+   "evidence": null
+  },
+  {
+   "id": "VALVE_XO_12",
+   "section": "valves",
+   "label": "VALVE_XO_12",
+   "confidence": null,
+   "evidence": null
+  },
+  {
+   "id": "VALVE_XO_34",
+   "section": "valves",
+   "label": "VALVE_XO_34",
+   "confidence": null,
+   "evidence": null
+  },
+  {
+   "id": "VALVE_XO_56",
+   "section": "valves",
+   "label": "VALVE_XO_56",
+   "confidence": null,
+   "evidence": null
+  },
+  {
+   "id": "VALVE_XO_67",
+   "section": "valves",
+   "label": "VALVE_XO_67",
+   "confidence": null,
+   "evidence": null
+  },
+  {
+   "id": "VALVE_XO_78",
+   "section": "valves",
+   "label": "VALVE_XO_78",
+   "confidence": null,
+   "evidence": null
+  },
+  {
+   "id": "WELL_1",
+   "section": "wells",
+   "label": "WELL_1",
+   "confidence": null,
+   "evidence": null
+  },
+  {
+   "id": "WELL_2",
+   "section": "wells",
+   "label": "WELL_2",
+   "confidence": null,
+   "evidence": null
+  },
+  {
+   "id": "WELL_3",
+   "section": "wells",
+   "label": "WELL_3",
+   "confidence": null,
+   "evidence": null
+  },
+  {
+   "id": "WELL_4",
+   "section": "wells",
+   "label": "WELL_4",
+   "confidence": null,
+   "evidence": null
+  },
+  {
+   "id": "WELL_5",
+   "section": "wells",
+   "label": "WELL_5",
+   "confidence": null,
+   "evidence": null
+  },
+  {
+   "id": "WELL_6",
+   "section": "wells",
+   "label": "WELL_6",
+   "confidence": null,
+   "evidence": null
+  },
+  {
+   "id": "WELL_7",
+   "section": "wells",
+   "label": "WELL_7",
+   "confidence": null,
+   "evidence": null
+  },
+  {
+   "id": "WELL_8",
+   "section": "wells",
+   "label": "WELL_8",
+   "confidence": null,
+   "evidence": null
+  },
+  {
+   "id": "WELL_9",
+   "section": "wells",
+   "label": "WELL_9",
+   "confidence": null,
+   "evidence": null
+  },
+  {
+   "id": "WELL_10",
+   "section": "wells",
+   "label": "WELL_10",
+   "confidence": null,
+   "evidence": null
+  },
+  {
+   "id": "WELL_11",
+   "section": "wells",
+   "label": "WELL_11",
+   "confidence": null,
+   "evidence": null
+  },
+  {
+   "id": "WELL_12",
+   "section": "wells",
+   "label": "WELL_12",
+   "confidence": null,
+   "evidence": null
+  },
+  {
+   "id": "WELL_13",
+   "section": "wells",
+   "label": "WELL_13",
+   "confidence": null,
+   "evidence": null
+  },
+  {
+   "id": "WELL_14",
+   "section": "wells",
+   "label": "WELL_14",
+   "confidence": null,
+   "evidence": null
+  },
+  {
+   "id": "WELL_15",
+   "section": "wells",
+   "label": "WELL_15",
+   "confidence": null,
+   "evidence": null
+  },
+  {
+   "id": "WELL_16",
+   "section": "wells",
+   "label": "WELL_16",
+   "confidence": null,
+   "evidence": null
+  },
+  {
+   "id": "WELL_17",
+   "section": "wells",
+   "label": "WELL_17",
+   "confidence": null,
+   "evidence": null
+  },
+  {
+   "id": "WELL_18",
+   "section": "wells",
+   "label": "WELL_18",
+   "confidence": null,
+   "evidence": null
+  },
+  {
+   "id": "WELL_19",
+   "section": "wells",
+   "label": "WELL_19",
+   "confidence": null,
+   "evidence": null
+  },
+  {
+   "id": "WELL_20",
+   "section": "wells",
+   "label": "WELL_20",
+   "confidence": null,
+   "evidence": null
+  },
+  {
+   "id": "WELL_21",
+   "section": "wells",
+   "label": "WELL_21",
+   "confidence": null,
+   "evidence": null
+  },
+  {
+   "id": "WELL_22",
+   "section": "wells",
+   "label": "WELL_22",
+   "confidence": null,
+   "evidence": null
+  },
+  {
+   "id": "WELL_23",
+   "section": "wells",
+   "label": "WELL_23",
+   "confidence": null,
+   "evidence": null
+  },
+  {
+   "id": "WELL_24",
+   "section": "wells",
+   "label": "WELL_24",
+   "confidence": null,
+   "evidence": null
+  },
+  {
+   "id": "SWD_1",
+   "section": "disposal_wells",
+   "label": "SWD_1",
+   "confidence": null,
+   "evidence": null
+  },
+  {
+   "id": "SWD_2",
+   "section": "disposal_wells",
+   "label": "SWD_2",
+   "confidence": null,
+   "evidence": null
+  },
+  {
+   "id": "SWD_3",
+   "section": "disposal_wells",
+   "label": "SWD_3",
+   "confidence": null,
+   "evidence": null
+  },
+  {
+   "id": "TRUCK_1",
+   "section": "trucks",
+   "label": "TRUCK_1",
+   "confidence": null,
+   "evidence": null
+  },
+  {
+   "id": "TRUCK_2",
+   "section": "trucks",
+   "label": "TRUCK_2",
+   "confidence": null,
+   "evidence": null
+  },
+  {
+   "id": "TRUCK_3",
+   "section": "trucks",
+   "label": "TRUCK_3",
+   "confidence": null,
+   "evidence": null
+  },
+  {
+   "id": "YARD_1",
+   "section": "yards",
+   "label": "YARD_1",
+   "confidence": null,
+   "evidence": null
+  }
+ ],
+ "errors": []
+}

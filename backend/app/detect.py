@@ -58,6 +58,9 @@ class Detector:
         self.good: dict[tuple, int] = {}
         self.stale_keys: set[Key] = set()
         self.rates: dict[str, dict] = {}             # tank id -> observed / expected bbl/hr
+        self.flow_state: dict[str, tuple] = {}       # tank id -> its pumps' and valves' last known state
+        self.flow_changed_t: dict[str, float] = {}   # tank id -> live time that state last changed
+        self.pump_cap: dict[str, float] = {}         # pump id -> bbl/hr it can move (shared disposal well)
         self.expected_keys: set[Key] = {(tid, "level_pct") for tid in fmap.tanks}
 
     # ---------- queries ----------
@@ -92,14 +95,18 @@ class Detector:
                 changed += self._set(aid, "SENSOR_STALE", "WARNING", "", False, t, clock, confirm=1)
 
         # Observed fill rate for every tank, every tick, so it never goes stale after a trip.
-        # The pump check below fills in expected_bbl_hr when it can explain the rate.
+        # Only readings since the tank's pumps or valves last changed state count, so right
+        # after a trip the rate doesn't still average in the draining before it.
+        # expected_bbl_hr is what the wells and the pumps' run states explain (the pump check
+        # below refines it when a pump should be running).
+        self._track_flow_state(t, latest, fresh)
+        self._share_disposal(latest, fresh)
         for tid, tank in self.f.tanks.items():
             obs = None
             if fresh((tid, "level_pct")):
-                pts = [(tt, v) for tt, v in history.get((tid, "level_pct"), ()) if tt >= t - RATE_WINDOW_MIN]
-                obs = slope_bbl_hr(pts, float(tank["capacity_bbl"]))
+                obs = slope_bbl_hr(self._rate_points(tid, t, history), float(tank["capacity_bbl"]))
             self.rates[tid] = {"observed_bbl_hr": None if obs is None else round(obs, 1),
-                               "expected_bbl_hr": None}
+                               "expected_bbl_hr": self._expected_bbl_hr(tid, latest, fresh)}
 
         # PUMP_TRIP
         for pid, pump in self.f.pumps.items():
@@ -120,6 +127,84 @@ class Detector:
                    f"Check it in the field.")
             changed += self._set(vid, "VALVE_MISMATCH", "WARNING", msg, bad, t, clock)
         return changed
+
+    def _rate_points(self, tid: str, t: float, history: dict) -> list[tuple[float, float]]:
+        """Level readings in the rate window, starting no earlier than the last state change."""
+        since = max(t - RATE_WINDOW_MIN, self.flow_changed_t.get(tid, float("-inf")))
+        return [(tt, v) for tt, v in history.get((tid, "level_pct"), ()) if tt >= since - 1e-9]
+
+    def _track_flow_state(self, t: float, latest: dict, fresh) -> None:
+        """Note when anything that moves water out of a tank changes state: one of its pumps
+        starting or stopping (run signal, else flow over 10% of its rate), or its discharge
+        valve or a crossover on it opening or closing."""
+        f = self.f
+        for tid in f.tanks:
+            pumps = sorted(f.pumps_by_tank.get(tid, []))
+            valves = sorted({f.pump_valve[p] for p in pumps if p in f.pump_valve} |
+                            {xo["id"] for xo in f.crossovers if tid in (xo.get("connects") or [])})
+            sig = (tuple((p, self._pump_on(p, latest, fresh)) for p in pumps) +
+                   tuple((v, self._position(v, latest, fresh)) for v in valves))
+            prev = self.flow_state.get(tid)
+            if prev is not None and sig != prev:
+                self.flow_changed_t[tid] = t
+            self.flow_state[tid] = sig
+
+    def _share_disposal(self, latest: dict, fresh) -> None:
+        """What each pump can move when the pumps on one disposal well ask for more than it
+        takes: they share its max_bbl_hr, as the field does. Without this, a busy disposal
+        well looks like pumps that aren't moving water."""
+        f = self.f
+        want: dict[str, float] = {}
+        for pid, p in f.pumps.items():
+            tid = p["tank_id"]
+            r = latest.get((tid, "level_pct"))
+            low = r is not None and fresh((tid, "level_pct")) and float(r["value"]) <= f.low_pct(tid) + 0.5
+            want[pid] = 0.0 if self._pump_on(pid, latest, fresh) is False or low else float(p["rate_bbl_hr"])
+        self.pump_cap = {pid: float(p["rate_bbl_hr"]) for pid, p in f.pumps.items()}
+        for sid, s in f.swds.items():
+            feeders = [pid for pid, s_id in f.pump_swd.items() if s_id == sid and pid in want]
+            total, mx = sum(want[p] for p in feeders), float(s.get("max_bbl_hr") or 0)
+            if total > mx > 0:
+                for pid in feeders:
+                    self.pump_cap[pid] = float(f.pumps[pid]["rate_bbl_hr"]) * mx / total
+
+    def _pump_on(self, pid: str, latest: dict, fresh) -> Optional[bool]:
+        """Run state from the run signal, else from flow over 10% of its rate; None if unknown."""
+        if fresh((pid, "running")):
+            return latest[(pid, "running")]["value"] not in (False, 0, "false", "OFF", "STOPPED")
+        if fresh((pid, "flow_bbl_hr")):
+            return float(latest[(pid, "flow_bbl_hr")]["value"]) >= 0.1 * float(self.f.pumps[pid]["rate_bbl_hr"])
+        return None
+
+    @staticmethod
+    def _position(vid: str, latest: dict, fresh) -> Optional[str]:
+        return str(latest[(vid, "position")]["value"]).upper() if fresh((vid, "position")) else None
+
+    def _expected_bbl_hr(self, tid: str, latest: dict, fresh) -> Optional[float]:
+        """Wells in minus the pumps that are running, or None when it can't be explained
+        that simply (no fresh level, an unknown pump, a crossover not known to be closed)."""
+        f = self.f
+        r = latest.get((tid, "level_pct"))
+        if not r or not fresh((tid, "level_pct")):
+            return None
+        if any(tid in (xo.get("connects") or []) and self._position(xo["id"], latest, fresh) != "CLOSED"
+               for xo in f.crossovers):
+            return None
+        out = 0.0
+        for pid in f.pumps_by_tank.get(tid, []):
+            on = self._pump_on(pid, latest, fresh)
+            if on is None:
+                return None
+            vid = f.pump_valve.get(pid)
+            if on and not (vid and self._position(vid, latest, fresh) == "CLOSED"):
+                out += self.pump_cap.get(pid, float(f.pumps[pid]["rate_bbl_hr"]))
+        inflow = 0.0
+        for wid in f.wells_by_tank.get(tid, []):
+            w = latest.get((wid, "flow_bbl_hr"))
+            inflow += float(w["value"]) if w and fresh((wid, "flow_bbl_hr")) else float(f.wells[wid]["water_bbl_hr"])
+        if out and float(r["value"]) <= f.low_pct(tid) + 0.5:
+            return 0.0  # the pump is holding the tank at its low level
+        return round(inflow - out, 1)
 
     def _pump_check(self, t, pid, pump, latest, history, commanded, fresh) -> tuple[Optional[bool], str]:
         f, tid = self.f, pump["tank_id"]
@@ -144,13 +229,12 @@ class Detector:
         if level is not None and should_run and not any(
                 tid in (xo.get("connects") or []) and str(latest.get((xo["id"], "position"), {}).get("value", "")).upper() == "OPEN"
                 for xo in f.crossovers):
-            pts = [(tt, v) for tt, v in history.get((tid, "level_pct"), ()) if tt >= t - RATE_WINDOW_MIN]
-            obs = slope_bbl_hr(pts, float(f.tanks[tid]["capacity_bbl"]))
+            obs = slope_bbl_hr(self._rate_points(tid, t, history), float(f.tanks[tid]["capacity_bbl"]))
             inflow = 0.0
             for wid in f.wells_by_tank.get(tid, []):
                 r = latest.get((wid, "flow_bbl_hr"))
                 inflow += float(r["value"]) if r and fresh((wid, "flow_bbl_hr")) else float(f.wells[wid]["water_bbl_hr"])
-            out = sum(float(f.pumps[p]["rate_bbl_hr"]) for p in f.pumps_by_tank.get(tid, []))
+            out = sum(self.pump_cap.get(p, float(f.pumps[p]["rate_bbl_hr"])) for p in f.pumps_by_tank.get(tid, []))
             expected = inflow - out if level > f.low_pct(tid) + 0.5 else 0.0
             self.rates[tid] = {"observed_bbl_hr": None if obs is None else round(obs, 1),
                                "expected_bbl_hr": round(expected, 1)}

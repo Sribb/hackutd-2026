@@ -6,7 +6,7 @@ Three ways a customer hands us their field. Each one goes through `POST /api/ing
 |---|---|---|---|
 | 1 | `sample1_pecos_8tank.json` | A complete blueprint for a different, bigger lease: 8 tanks, 24 wells, 3 disposal wells, 3 trucks, and a simulated SCADA connector | 0 review items. Pump 6 trips at 1:00 AM, and Tank 6 shuts down at **2:03 AM** (±11 min). The cheapest plan that survives +15% inflow is **$287** (5-to-6 crossover + Truck 2). Choking a well instead costs $746 and fails at +15%. |
 | 1b | `sample1_pecos_mqtt_modbus.json` | Sample 1 on real protocols (#62): Tanks 1-4 and Pumps 1-4 over MQTT, the rest over Modbus TCP. Hosts and ports only | Run `python -m backend.tools.fake_field`, then the backend with `FREEBOARD_SCENARIO` set to this file. Both connectors show `connected`, and Pump 6 trips on the fake PLC. |
-| 2 | `sample2_delaware_4tank.csv` | A spreadsheet equipment list, the way most operators keep it | 24 items parsed with no Claude call. 13 review items: shutdown level on 4 tanks, lost $/hr on 8 wells, and crossover manual/remote. The truck's `minutes_to` is also missing (see BLUEPRINT.md, gap 1). |
+| 2 | `sample2_delaware_4tank.csv` | A spreadsheet equipment list, the way most operators keep it | 24 items parsed with no Claude call. 14 review items: shutdown level on 4 tanks, lost $/hr on 8 wells, crossover manual, and the truck's `minutes_to`. The upload screen's *Fill all* clears them with a few entries. |
 | 3 | `sample3_handdrawn.jpg` (to add) | A photo of a site plan drawn by hand on paper | Claude reads it. Expect review items for anything not written on the paper. |
 
 `tools/check` validates every `.json` here against the schema.
