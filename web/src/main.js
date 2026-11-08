@@ -1448,31 +1448,56 @@ addEventListener("keydown", (e) => {
 
 // ---------------------------------------------------------------- pager ----
 // A QR code for /phone. A judge scans it and their own phone becomes the night pager.
+// Classic has a Pager button in its side panel; the gaia console a "phone" pill on the 3D
+// (#147 item 15). The judges tour opens it with ?pager=1 or window.__pager.open().
+async function openPager() {
+  if (document.querySelector(".pager")) return;
+  const gaia = layout === "console";
+  // The phone token rides in the fragment, only if this console was opened with one (#104).
+  const pt = phoneToken();
+  const url = (import.meta.env.VITE_PHONE_URL || `${location.origin}/phone`) + (pt ? `#k=${encodeURIComponent(pt)}` : "");
+  const QR = (await import("qrcode")).default;
+  const svg = await QR.toString(url, { type: "svg", margin: 1, color: { dark: "#e8e2d6", light: "#050505" } });
+  const local = /^(127\.0\.0\.1|localhost)$/.test(new URL(url).hostname);
+  const box = document.createElement("div");
+  box.className = `pager${gaia ? " pager-gaia" : ""}`;
+  box.setAttribute("role", "dialog");
+  box.setAttribute("aria-label", "phone pager");
+  box.innerHTML = `<div class="pager-card"><div class="kicker">The night pager</div>
+    <div class="pager-qr">${svg}</div>
+    <p>Scan with your phone. It buzzes on every alert, and a fix can be confirmed from it with a press and hold. Nothing moves until a person holds to confirm.</p>
+    <code>${esc(url.split("#")[0])}</code>
+    ${local ? `<p class="note">This address only works on this laptop. Start with <b>npm run demo:lan</b> (same Wi-Fi) or <b>npm run demo:tunnel</b> (a public link).</p>` : ""}
+    ${pt ? `<p class="muted">This QR carries a phone token (never shown as text): that phone can confirm, reject and acknowledge, nothing else.</p>`
+      : `<p class="muted">No control token: anyone on this network can confirm. Start with npm run demo to get one.</p>`}
+    <button type="button">Close</button></div>`;
+  const close = () => { box.remove(); removeEventListener("keydown", onKey, true); };
+  const onKey = (e) => { if (e.key === "Escape") { e.stopPropagation(); close(); } };
+  box.onclick = (e) => { if (e.target === box || e.target.tagName === "BUTTON") close(); };
+  addEventListener("keydown", onKey, true);
+  document.body.appendChild(box);
+  box.querySelector("button").focus();
+}
 function mountPager() {
-  const btn = document.createElement("button");
-  btn.className = "upload-open";
-  btn.textContent = "Pager";
-  document.querySelector(".brand-row").appendChild(btn);
-  btn.onclick = async () => {
-    // The phone token rides in the fragment, only if this console was opened with one (#104).
-    const pt = phoneToken();
-    const url = (import.meta.env.VITE_PHONE_URL || `${location.origin}/phone`) + (pt ? `#k=${encodeURIComponent(pt)}` : "");
-    const QR = (await import("qrcode")).default;
-    const svg = await QR.toString(url, { type: "svg", margin: 1, color: { dark: "#e8e2d6", light: "#050505" } });
-    const local = /^(127\.0\.0\.1|localhost)$/.test(new URL(url).hostname);
-    const box = document.createElement("div");
-    box.className = "pager";
-    box.innerHTML = `<div class="pager-card"><div class="kicker">The night pager</div>
-      <div class="pager-qr">${svg}</div>
-      <p>Scan with a phone on this Wi-Fi. It buzzes on every alert, and a fix can be confirmed from it with a press and hold.</p>
-      <code>${esc(url.split("#")[0])}</code>
-      ${local ? `<p class="note">This address only works on this laptop. Start with <b>npm run demo:lan</b> to get a Wi-Fi address.</p>` : ""}
-      ${pt ? `<p class="muted">This QR carries a phone token (never shown as text): that phone can confirm, reject and acknowledge, nothing else.</p>`
-        : `<p class="muted">No control token: anyone on this network can confirm. Start with npm run demo to get one.</p>`}
-      <button>Close</button></div>`;
-    box.onclick = (e) => { if (e.target === box || e.target.tagName === "BUTTON") box.remove(); };
-    document.body.appendChild(box);
-  };
+  window.__pager = { open: openPager };
+  const row = document.querySelector(".brand-row");
+  if (row) {
+    const btn = document.createElement("button");
+    btn.className = "upload-open";
+    btn.textContent = "Pager";
+    btn.onclick = openPager;
+    row.appendChild(btn);
+  }
+  if (layout === "console") {
+    const pill = document.createElement("button");
+    pill.type = "button";
+    pill.className = "pager-pill";
+    pill.textContent = "phone pager";
+    pill.title = "Get alerts on your phone and confirm fixes from it";
+    pill.onclick = openPager;
+    document.body.appendChild(pill);
+  }
+  if (new URLSearchParams(location.search).get("pager") === "1") openPager();
 }
 
 // ----------------------------------------------------------------- boot ----
