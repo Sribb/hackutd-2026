@@ -266,7 +266,7 @@ class Rehearsal:
             if h.status_code == 200:
                 why = f" (/api/health lastcall: {h.json().get('lastcall')})"
             return self.add(name, "FAIL", "not mounted on this server" + why +
-                            ". DEMO.md beat 6 says the expiry out loud; lastcall/ is PR #10.")
+                            ". DEMO.md beat 6 says the expiry out loud; this backend lacks lastcall/ (#10).")
         if r.status_code != 200:
             return self.add(name, "FAIL", f"HTTP {r.status_code}: {quote(r.text)}")
         lc = r.json()
