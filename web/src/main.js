@@ -3,6 +3,7 @@ import "@fontsource/azeret-mono/400.css";
 import "@fontsource/azeret-mono/600.css";
 import * as THREE from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+import { mountFlow } from "./flow.js";
 import { MeshoptDecoder } from "three/addons/libs/meshopt_decoder.module.js";
 import { DRACOLoader } from "three/addons/loaders/DRACOLoader.js";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
@@ -1530,6 +1531,7 @@ async function boot() {
   scene.add(model.root);
   sky.attach(model.root); // before indexModel darkens the site, so the sky knows its daytime colors
   indexModel(model.root);
+  flow = mountFlow(model.root); // stripes along pipes that carry water right now
   mountIot3d({ root: model.root, field, live: liveFeed, base: api.BASE }); // #80: sensor and RTU lights, alert and run highlights
 
   const missing = [...ids].filter((id) => !assets.has(id));
@@ -1618,13 +1620,14 @@ async function boot() {
       renderPlans(); // the approved plan's card shows how far the run got
     },
   });
-  window.__freeboard = { assets, select, viewAt: (t) => viewAt(t), missing, setActions, get actions() { return actions; }, handoff: () => handoffText(),
+  window.__freeboard = { assets, select, viewAt: (t) => viewAt(t), missing, setActions, flow: () => flow && flow.debug(lastView), get actions() { return actions; }, handoff: () => handoffText(),
     // Pumpjack linkage, for checks: per well, beam angle and how far the pitman's foot is from its crank pin (m).
     jacks: () => [...jacks].map(([id, j]) => { const E = equalizer(j.beam.rotation.x), P = crankPin(j.crank.rotation.x); return { id, beam: +j.beam.rotation.x.toFixed(3), gap: +Math.abs(Math.hypot(E[0] - P[0], E[1] - P[1]) - j.L).toFixed(4) }; }) };
 }
 
 const clock = new THREE.Clock();
 let lastSec = -1;
+let flow = null;
 renderer.setAnimationLoop(() => {
   const dt = clock.getDelta();
   const t = clock.elapsedTime;
@@ -1639,6 +1642,7 @@ renderer.setAnimationLoop(() => {
   if (data) {
     for (const id of ids) paint(id, (lastView[id] || {}).status || "NO_DATA", t);
     animateMovers(dt, t);
+    if (flow) flow.update(dt, lastView);
     sky.update(dt); // after paint(), so lamps and headlights layer on top of the status colors
     if ((t | 0) !== lastSec) { lastSec = t | 0; $("clock").textContent = shiftlog.clockNow(true); if (liveFeed.live.lostSince) renderFeed(); }
   }
