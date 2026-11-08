@@ -6,10 +6,10 @@ import { fmtTime } from "./chart.js";
 export const money = (n) => (Number.isFinite(n) ? "$" + Math.round(n).toLocaleString("en-US") : "?");
 
 const CATEGORY = {
-  pump_failure: { label: "Pump failure", short: "FAIL", tone: "alarm" },
-  pipeline_leak: { label: "Pipeline leak", short: "LEAK", tone: "warning" },
-  pump_degradation: { label: "Pump wearing out", short: "WORN", tone: "warning" },
-  other: { label: "Other", short: "CHECK", tone: "warning" },
+  pump_failure: { label: "Pump failure", short: "fail", tone: "alarm" },
+  pipeline_leak: { label: "Pipeline leak", short: "leak", tone: "warning" },
+  pump_degradation: { label: "Pump wearing out", short: "worn", tone: "warning" },
+  other: { label: "Other", short: "check", tone: "warning" },
 };
 export const categoryOf = (c) => CATEGORY[c] || CATEGORY.other;
 

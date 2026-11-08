@@ -36,7 +36,7 @@ const C = (hex) => new THREE.Color(hex);
 export const STYLES = {
   part:      { priority: 100, color: 0xffffff, level: 1.0, emissive: C(0x34383e) },
   hover:     { priority: 90, color: 0xe8e2d6, level: 0.5 },
-  jarvis:    { priority: 80, color: 0xb9a7f0, level: 0.5, emissive: C(0x1c1830), pulse: 1.2, note: "Jarvis pointed here." },
+  jarvis:    { priority: 80, color: 0xb9a7f0, level: 0.5, emissive: C(0x1c1830), pulse: 1.2, note: "gaia pointed here." },
   phone:     { priority: 80, color: 0xb9a7f0, level: 0.5, emissive: C(0x1c1830), pulse: 1.2, note: "Shown from a phone." },
   selection: { priority: 70, color: 0xe8e2d6, level: 0.5, emissive: C(0x2a2f36), dimOthers: true },
   run:       { priority: 60, color: 0x8fa36b, level: 0.5, pulse: 1.6, note: "Plan step." },
@@ -84,7 +84,7 @@ export const highlight = {
   },
   get(source) { const s = sources.get(source); return s ? s.ids.map((x) => (typeof x === "string" ? x : x.name)) : []; },
   sources() { return [...sources.keys()]; },
-  // Notes from every source that covers this asset, for the tooltip ("Jarvis pointed here.").
+  // Notes from every source that covers this asset, for the tooltip ("gaia pointed here.").
   notes(assetId) {
     const out = [];
     for (const [, s] of sources) if (s.style.note && s.ids.includes(assetId) && !out.includes(s.style.note)) out.push(s.style.note);

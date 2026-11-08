@@ -27,7 +27,7 @@ import { makeNotifier } from "./notify.js";
 import * as intents from "./intents.js";
 import { makeCharts } from "./chartask.js";
 import {
-  normalizeBrief, fallbackBrief, toMin, clock12, minsUntil, usd, andList,
+  normalizeBrief, fallbackBrief, toMin, clock12, clockSpan, minsUntil, usd, andList,
   countdownBar, planBars, dot, prioOf, levelOf, watchText, forecastText, plannerText,
 } from "./agents.js";
 import "./console.css";
@@ -739,7 +739,7 @@ export function mountConsole(H) {
     else ftext = cd ? cdText : vouchable() ? "no shutdown in 6 h" : "no shutdown forecast · not live";
     const src = b.source === "brief" ? "the live brief" : b.from === "alerts" ? "the backend's live forecast (alerts)" : "the shift forecast (/api/forecast, every 30 s)";
     const forecast = { text: ftext, unknown: unknown.length > 0,
-      title: cd ? `${nice(cd.asset_id)} shuts in at ${clock12(cd.at)}${cd.low != null && cd.high != null ? ` (${clock12(cd.low)} to ${clock12(cd.high)})` : ""}, from ${src}.` : `From ${src}.` };
+      title: cd ? `${nice(cd.asset_id)} shuts in at ${clock12(cd.at)}${cd.low != null && cd.high != null && clockSpan(cd.low, cd.high, clock12, cd.at) ? ` (${clockSpan(cd.low, cd.high, clock12, cd.at)})` : ""}, from ${src}.` : `From ${src}.` };
 
     const plan = b.plans.robust;
     const nothing = !cd && !unknown.length && vouchable();
