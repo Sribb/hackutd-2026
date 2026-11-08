@@ -1,6 +1,6 @@
 // Alerts view rules from the sponsor SPEC, the handoff wording, and the telemetry parser.
 import assert from "node:assert/strict";
-import { normAlerts, sortAlerts, actionLines, handoffText, trucksInUse, durationText } from "../src/dataset/alerts.js";
+import { normAlerts, sortAlerts, actionLines, durationText, money } from "../src/dataset/alerts.js";
 import { parseTelemetry, sortFolders, checkDataset } from "../src/dataset/data.js";
 
 const raw = [
@@ -11,7 +11,7 @@ const raw = [
     recommended_actions: [{ type: "shut_in_wells", wells: ["S2_WELL_A1"], start_after_min: 30 }] },
   { event_id: "P0", category: "pump_failure", status: "ongoing", system_id: "S2", facility_id: "S2_FACILITY_C", hours_to_limit: 1.0, lost_revenue_per_hour: 10 },
   { event_id: "W", category: "pump_degradation", status: "ongoing", asset_id: "S3_PUMP_A", onset_unix: 50 },
-  { event_id: "Q", category: "pump_failure", status: "ongoing", system_id: "S4", facility_id: "S4_FACILITY_A", hours_to_limit: null },
+  { event_id: "Q", category: "pump_failure", status: "ongoing", system_id: "S4", facility_id: "S4_FACILITY_A", hours_to_limit: null, level_pct: 40 },
   { event_id: "R", category: "pump_failure", status: "resolved", end_unix: 9 },
 ];
 const list = normAlerts({ alerts: raw });
@@ -27,20 +27,36 @@ assert.deepEqual(actionLines(list.find((a) => a.id === "P2"), { at, ops }), ["Se
 assert.deepEqual(actionLines(list.find((a) => a.id === "P1"), { at }), ["Shut in S2_WELL_A1 at 12:30 UTC (+30 min)"]);
 assert.match(actionLines(list.find((a) => a.id === "L"))[0], /inspector to S1_PIPELINE_A/);
 assert.match(actionLines(list.find((a) => a.id === "Q"))[0], /stays under shutdown/);
-assert.equal(trucksInUse(list, "S2", "P1"), 1);
-assert.equal(trucksInUse(list, "S2", "P2"), 0);
 assert.equal(durationText(1.5), "1 h 30 min");
 assert.equal(durationText(0.25), "15 min");
 
-// Handoff: never an all-clear unless detection ran.
-const off = handoffText({ folder: "test", at, now: at, alerts: [], detection: "absent" });
-assert.match(off, /NOT an all-clear/);
-assert.doesNotMatch(off, /No problems/);
-const clear = handoffText({ folder: "test", at, now: at, alerts: [], detection: "ok" });
-assert.match(clear, /No problems in progress/);
-const busy = handoffText({ folder: "test", at, now: at + 3600, alerts: list, detection: "ok", ops });
-assert.match(busy, /6 problems in progress, 4 with a tank filling/);
-assert.match(busy, /replaying/);
+// /api/eog/alerts: countdown and action are nested, and the backend's order wins.
+const eog = normAlerts({ alerts: [
+  { order: 2, event_id: "EV-2", category: "pipeline_leak", status: "ongoing", system: "S5", facility: "S5_FACILITY_B", asset: "S5_PIPELINE_B", onset: 10,
+    countdown: null, action: { type: "field_inspection", asset_id: "S5_PIPELINE_B", summary: "Send an inspector to S5_PIPELINE_B." } },
+  { order: 1, event_id: "EV-1", category: "pump_failure", status: "ongoing", system: "S2", facility: "S2_FACILITY_B", asset: "S2_PUMP_B", onset: 5,
+    countdown: { level_pct: 78.6, hours_to_limit: { p50: 1.42, p10: 1.42, p90: 1.42 }, trips_at: 900, repair_end: 1200, tripped: false, lost_revenue_per_hour: 2450 },
+    action: { type: "plan", summary: "1 truck, 1 trip (~$905)", cost: 905, expires_at: 640,
+      actions: [{ type: "dispatch_truck", facility_id: "S2_FACILITY_B", trucks: 1, trips_per_truck: 1 }] } },
+] });
+assert.deepEqual(sortAlerts(eog).map((a) => a.id), ["EV-1", "EV-2"]);
+const pf = eog.find((a) => a.id === "EV-1");
+assert.equal(pf.hours, 1.42);
+assert.equal(pf.levelPct, 78.6);
+assert.equal(pf.tripsAt, 900);
+assert.equal(pf.repairEnd, 1200);
+assert.equal(pf.lostRevPerHour, 2450);
+assert.equal(pf.estCost, 905);
+assert.equal(pf.expiresAt, 640);
+assert.equal(pf.actions[0].type, "dispatch_truck");
+assert.match(actionLines(eog.find((a) => a.id === "EV-2"))[0], /inspector to S5_PIPELINE_B/);
+assert.equal(money(3108.33), "$3,108");
+// Review fixes: hours_to_limit without trips_at means the repair comes first; no level is never safe.
+const rc = normAlerts([{ event_id: "R1", category: "pump_failure", status: "ongoing", countdown: { level_pct: 60, hours_to_limit: { p50: 6.5 }, trips_at: null, repair_end: 900 },
+  action: { type: "plan", actions: [{ type: "none" }] } }])[0];
+assert.match(actionLines(rc)[0], /No action needed/);
+const nl = normAlerts([{ event_id: "N1", category: "pump_failure", status: "ongoing", countdown: { level_pct: null, hours_to_limit: null, trips_at: null } }])[0];
+assert.match(actionLines(nl)[0], /No level readings/);
 
 // Parser: shared grid, a missing cell stays NaN, stale readings are not carried forward.
 const csv = [
@@ -98,5 +114,4 @@ const tripList = normAlerts([
 ]);
 assert.deepEqual(sortAlerts(tripList).map((a) => a.id), ["T", "A"]);
 assert.match(actionLines(tripList[1])[0], /at shutdown/);
-assert.match(handoffText({ folder: "f", at, now: at, alerts: tripList, detection: "ok" }), /at shutdown and its wells are shut in/);
 console.log("dataset-alerts review fixes: pass");

@@ -139,6 +139,8 @@ function phoneRoute() {
       server.middlewares.use((req, res, next) => {
         if (/^\/phone\/?(\?|$)/.test(req.url)) req.url = req.url.replace(/^\/phone\/?/, "/phone.html");
         else if (/^\/dataset\/?(\?|$)/.test(req.url)) req.url = req.url.replace(/^\/dataset\/?/, "/dataset.html");
+        // The judge flow's opening (#147): intro, landing, judges path.
+        else if (/^\/start\/?(\?|$)/.test(req.url)) req.url = req.url.replace(/^\/start\/?/, "/start.html");
         next();
       });
     },
@@ -153,6 +155,9 @@ export default defineConfig({
   server: {
     host: "127.0.0.1",
     port: 5173,
+    // npm run demo:tunnel sets FREEBOARD_TUNNEL_HOST to its one *.trycloudflare.com name.
+    // Any other unknown Host still gets Vite's 403.
+    allowedHosts: process.env.FREEBOARD_TUNNEL_HOST ? [process.env.FREEBOARD_TUNNEL_HOST] : undefined,
     // #104: no cross-origin reads of the dev server, and it serves nothing outside web/
     // (Vite's own client and node_modules excepted). Secrets are denied by name even inside it.
     cors: false,
@@ -165,6 +170,6 @@ export default defineConfig({
   },
   build: {
     chunkSizeWarningLimit: 1200,
-    rollupOptions: { input: { main: path.resolve(__dirname, "index.html"), phone: path.resolve(__dirname, "phone.html"), dataset: path.resolve(__dirname, "dataset.html") } },
+    rollupOptions: { input: { main: path.resolve(__dirname, "index.html"), phone: path.resolve(__dirname, "phone.html"), dataset: path.resolve(__dirname, "dataset.html"), start: path.resolve(__dirname, "start.html") } },
   },
 });

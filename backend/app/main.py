@@ -95,6 +95,8 @@ async def _mirror(_app: FastAPI) -> None:
 
 app = FastAPI(title="Freeboard backend", lifespan=lifespan)
 app.include_router(history.router)   # GET /api/history (CF-14)
+from . import phone_alerts  # noqa: E402
+app.include_router(phone_alerts.router)   # /api/phone: text and voice alerts (#160), off without TWILIO_*
 
 
 @app.exception_handler(Exception)
@@ -322,6 +324,17 @@ try:
     LASTCALL = "mounted"
 except ImportError:
     LASTCALL = "not installed (lastcall/ is not on this branch yet)"
+
+
+# ---------- Dataset mode (backend/app/eog): the EOG sponsor data under /api/eog ----------
+# Every /api/eog route answers 503 until FREEBOARD_EOG_DIR points at a folder of datasets.
+
+try:
+    from .eog.api import router as eog_router
+
+    app.include_router(eog_router)
+except ImportError as e:
+    log.warning("Dataset mode not mounted: %s", e)
 
 
 # ---------- Ingest (ingest/, owned by @teameuphoriainv-dot) ----------

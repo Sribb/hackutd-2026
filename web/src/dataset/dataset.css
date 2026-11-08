@@ -90,8 +90,6 @@ body.travelling .ds-travel input[type=range] { accent-color: var(--warning); }
 .ds-check.alarm { border-left-color: var(--alarm); color: var(--ink); }
 .ds-unknown, .ds-clear { border: 1px solid var(--line-2); padding: 10px 12px; }
 .ds-unknown { border-color: var(--warning); }
-.ds-lead { margin: 8px 0 0; }
-.ds-lead strong { color: var(--ink, inherit); font-weight: 600; }
 .ds-unknown b { color: var(--warning); letter-spacing: .08em; text-transform: uppercase; font-size: 12px; }
 .ds-clear b { color: var(--ok); }
 .ds-unknown p, .ds-clear p { margin: 6px 0 0; }
@@ -148,7 +146,6 @@ body.travelling .ds-travel input[type=range] { accent-color: var(--warning); }
 .ds-win { display: flex; }
 .ds-win button { padding: 3px 9px; font-size: 11px; margin-left: -1px; }
 .ds-win button.on { border-color: var(--ink-2); color: var(--ink); background: var(--bg); position: relative; }
-.ds-whatif-btn { margin: 0 0 10px; }
 .ds-evidence ul { margin: 4px 0 10px; padding-left: 16px; color: var(--ink-2); }
 .ds-traces { display: grid; gap: 4px; }
 .chart { border-top: 1px solid var(--line); padding-top: 4px; }
@@ -231,15 +228,13 @@ body.travelling .ds-travel input[type=range] { accent-color: var(--warning); }
 .ds-3d-tip { position: absolute; pointer-events: none; background: var(--surface-2); border: 1px solid var(--line-2); padding: 3px 8px; font-size: 11px; white-space: nowrap; }
 .ds-3d-tip[hidden] { display: none; }
 
-/* ---- fleet size ---- */
-.ds-fleet { margin-top: 10px; }
-.ds-fleet-row { display: grid; grid-template-columns: 112px minmax(0, 1fr) 70px; gap: 0 8px; align-items: center; font-size: 11px; margin-top: 3px; color: var(--ink-2); }
-.ds-fleet-row i { display: block; height: 8px; background: var(--s1); border-radius: 0 4px 4px 0; opacity: .55; }
-.ds-fleet-row.on i { opacity: 1; }
-.ds-fleet-row.on span { color: var(--ink); }
-.ds-fleet-row b { text-align: right; font-weight: 400; color: var(--ink); font-variant-numeric: tabular-nums; }
-.ds-fleet-row em { grid-column: 2 / -1; font-style: normal; color: var(--muted); font-size: 10px; }
-.ds-fleet-row em:empty { display: none; }
+/* ---- plan: last call, approval, what-if ---- */
+.ds-lastcall { margin: 10px 0; }
+.ds-approve { margin: 10px 0; }
+.ds-radio { margin: 4px 0 0; font-size: 12px; line-height: 1.5; color: var(--ink-2); }
+.ds-wi-edit { margin-top: 10px; }
+.ds-wi-edit > summary { cursor: pointer; color: var(--ink-2); }
+.ds-wi-body { margin-top: 8px; }
 
 .ds-compare { padding: 1px 7px; font-size: 10px; margin-left: 6px; }
 .ds-sys-head .ds-tag + .ds-compare { margin-left: 6px; }
