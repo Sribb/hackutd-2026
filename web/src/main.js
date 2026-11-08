@@ -21,6 +21,7 @@ import { mountScenery } from "./scenery.js";
 import { mountInspect } from "./inspect.js";
 import { mountAlarms, alarms } from "./alarms.js";
 import { startTrend, trendHtml, wireTrend } from "./trend.js";
+import { mountRuns, runsSupported, execute as executeRun } from "./runs.js";
 
 const $ = (id) => document.getElementById(id);
 // Meshopt-compressed glb (#112/#117) loads with no extra files; a plain glb is unaffected.
@@ -710,6 +711,16 @@ function renderWalk() {
 
 async function startWalk(plan) {
   await setActions(plan.actions.map((a) => ({ ...a })));
+  // A backend with plan runs (#75) carries the plan out itself: each step becomes a proposal
+  // that waits for a hold-to-confirm in the run panel. The static walk stays for older backends.
+  if (await runsSupported()) {
+    walk = null;
+    const r = await executeRun(plan);
+    // runs.js logged the approval; keep the full plan (actions, cost) for the handoff.
+    if (r && approved && approved.run === r.id && r.plan_id === plan.id) approved.plan = plan;
+    renderAll();
+    return;
+  }
   let res;
   try {
     res = await api.approve(plan.id);
@@ -923,7 +934,11 @@ function handoffText() {
   if (!approved) L.push("  No plan approved yet.");
   else {
     L.push(`  Approved ${approved.at}: ${approved.plan.summary} (${usd(approved.plan.cost.total_usd)}).`);
-    approved.steps.forEach((s, i) => L.push(`  [${i < approved.done ? "x" : " "}] ${i < approved.done ? "done   " : "pending"}  ${s.text}`));
+    approved.steps.forEach((s, i) => {
+      // Run steps carry their own status (#75); a static walk counts steps walked.
+      const word = s.status ? (s.status === "DONE" ? "done" : s.status.toLowerCase()) : i < approved.done ? "done" : "pending";
+      L.push(`  [${word === "done" ? "x" : " "}] ${word.padEnd(9)}${s.text}${s.status === "MISMATCH" && s.verify ? ` (${s.verify})` : ""}`);
+    });
   }
 
   head(5, "NEXT DEADLINE");
@@ -1298,6 +1313,31 @@ async function boot() {
     clockIn: (m) => shiftlog.clockNow(false, m),
     select: (id) => select(id, true),
     log: (text) => { shiftlog.add("alarm", text); renderLog(); },
+  });
+  // #75 plan runs: the run panel under the plans. It feeds the handoff's approved plan.
+  mountRuns($("run"), {
+    base: api.usingBackend ? api.BASE : "",
+    usd,
+    nice,
+    select: (id) => select(id, true),
+    log: (text) => { shiftlog.add("step", text); renderLog(); },
+    progress: (r) => {
+      if (!approved || approved.run !== r.id) {
+        if (!approved || approved.run) approved = { plan: { summary: r.summary, cost: { total_usd: r.cost_usd }, actions: r.steps.map((s) => s.action).filter(Boolean) }, steps: r.steps, done: 0, at: shiftlog.clockNow(), run: r.id };
+        else return;
+      }
+      approved.steps = r.steps;
+      approved.done = r.steps.filter((s) => s.status === "DONE").length;
+      approved.logged = approved.logged || new Set();
+      let fresh = false;
+      for (const s of r.steps) {
+        if (approved.logged.has(s.n) || !["DONE", "MISMATCH", "FAILED", "REJECTED"].includes(s.status)) continue;
+        approved.logged.add(s.n);
+        shiftlog.add("step", s.status === "DONE" ? `Done: ${s.text}${s.verify ? ` ${s.verify}` : ""}` : `Step ${s.status.toLowerCase()}: ${s.text}${s.verify || s.result ? ` ${s.verify || s.result}` : ""}`);
+        fresh = true;
+      }
+      if (fresh) renderLog();
+    },
   });
   window.__freeboard = { assets, select, viewAt: (t) => viewAt(t), missing, setActions, get actions() { return actions; }, handoff: () => handoffText() };
 }

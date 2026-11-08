@@ -1,7 +1,7 @@
 // The shift log: what the operator weighed, approved and finished, stamped with the
 // shift clock. The clock starts at /api/state's clock and runs in real time from the
 // moment the console opens. Entries stay in this browser (localStorage) so a reload
-// mid-shift keeps them; a different incident starts a fresh log.
+// mid-shift keeps them (30 min idle at most); a different incident, or ?fresh, starts a fresh log.
 
 let baseMin = 0;
 let t0 = Date.now();
@@ -14,8 +14,13 @@ export function start(clock, incident) {
   // Keyed by the incident only: with one live clock (#42), /api/state's clock moves between reloads.
   key = `freeboard.shiftlog.${incident}`;
   try {
+    // Restore only a log written to in the last 30 min (a reload mid-shift). An older one is a
+    // rehearsal: restoring it would start the demo clock hours late, past the shutdown, with
+    // old APPROVED lines in the handoff. ?fresh always starts clean.
     const saved = JSON.parse(localStorage.getItem(key) || "null");
-    if (saved && Array.isArray(saved.list) && Date.now() - (saved.t0 || 0) < 12 * 3600 * 1000) {
+    const fresh = new URLSearchParams(location.search).has("fresh");
+    if (fresh || !saved || Date.now() - (saved.last || saved.t0 || 0) > 30 * 60 * 1000) localStorage.removeItem(key);
+    else if (Array.isArray(saved.list)) {
       list = saved.list;
       t0 = saved.t0 || t0;
     }
@@ -47,7 +52,7 @@ export function clockNow(seconds = false, plusMin = 0) {
 
 export function add(kind, text) {
   list.push({ at: clockNow(), kind, text });
-  try { localStorage.setItem(key, JSON.stringify({ t0, list })); } catch { /* private window: keep it in memory */ }
+  try { localStorage.setItem(key, JSON.stringify({ t0, last: Date.now(), list })); } catch { /* private window: keep it in memory */ }
 }
 
 export function entries() {

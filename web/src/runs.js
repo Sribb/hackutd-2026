@@ -1,0 +1,295 @@
+// Plan runs (#63/#75, CONTRACT.md "Plan runs"): an approved plan carried out step by step on
+// the live field. Every step is an ordinary proposal that waits for a person's hold-to-confirm;
+// the run never confirms anything. This panel shows the run and its steps with honest statuses,
+// lets a person confirm or reject the step that is waiting, and handles the hard cases:
+//
+//   - a stale plan (409 on execute): says why and offers the backend's current plan, which can
+//     be run with one more hold;
+//   - a paused run (a step not seen to take effect, a tank rising faster than the replay, a
+//     rejected or failed step): says why, and offers Jarvis's re-plan with a hold to start it;
+//   - a step whose command is SENDING or UNCERTAIN: never shown as done, never retried.
+//
+// Fed by POST /api/plans/{id}/execute, GET /api/runs, /ws "run" and "proposal" events.
+// Only used when the backend has /api/runs; otherwise the console keeps its static walk.
+
+import { authFetch } from "./auth.js";
+import * as liveFeed from "./live.js";
+import { holdButton, isHolding, afterHold } from "./fx.js";
+
+let base = "";
+let hooks = null;
+let box = null;
+let supported = null;      // null unknown, true/false after the first GET /api/runs
+let run = null;            // the run on screen
+let offer = null;          // { kind: "stale"|"replan", text, plan?, run? }
+let note = "";
+const props = new Map();   // proposal id -> proposal (for SENDING / UNCERTAIN / FAILED)
+let lastStatus = "";
+
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+
+const ACTIVE = new Set(["RUNNING", "PAUSED", "CANCELLING"]);
+const STEP_WORD = {
+  WAITING: "waiting", PENDING: "needs you", VERIFYING: "checking", DONE: "done", MISMATCH: "not seen",
+  REJECTED: "rejected", FAILED: "failed", CANCELLED: "cancelled",
+};
+
+async function call(path, body) {
+  const r = await authFetch(`${base}${path}`, body === undefined ? undefined
+    : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const out = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    const d = out && out.detail;
+    const msg = r.status === 401 ? "Not sent: control is locked without the operator PIN."
+      : r.status === 403 ? "This device can't do that. Nothing was sent."
+      : typeof d === "string" ? d : `HTTP ${r.status}`;
+    throw Object.assign(new Error(msg), { status: r.status, body: out });
+  }
+  return out;
+}
+
+// True when this backend runs plans (GET /api/runs answers).
+export async function runsSupported() {
+  if (supported != null || !base) return !!supported;
+  try {
+    const r = await fetch(`${base}/api/runs`);
+    supported = r.ok;
+    if (r.ok) {
+      const j = await r.json();
+      const active = (j.runs || []).filter((x) => ACTIVE.has(x.status) && x.started !== false);
+      if (active.length) setRun(active[active.length - 1]);
+    }
+  } catch { supported = false; }
+  return supported;
+}
+
+// The backend's 409 text ends with "Execute plan_x to run it.", an instruction for API callers.
+const plain = (t) => String(t || "").replace(/\s*Execute plan_\w+ to run it\.?/, "").trim();
+
+// Same commands (type, asset, value, target), whatever their timing. A re-scored plan with the
+// same commands is what the person already held to approve, so it can start without asking twice.
+const key = (a) => `${a.type}|${a.asset_id}|${a.value ?? ""}|${a.target_id ?? ""}`;
+function sameActions(a, b) {
+  const x = ((a && a.actions) || (a && a.steps ? a.steps.map((s) => s.action) : [])).map(key).sort();
+  const y = ((b && b.actions) || []).map(key).sort();
+  return x.length > 0 && x.length === y.length && x.every((k, i) => k === y[i]);
+}
+
+function stepProposal(s) {
+  return s.proposal_id ? props.get(s.proposal_id) : null;
+}
+
+// What a step's line says, from the step and its proposal. A command that was sent but not
+// answered is UNCERTAIN: it may have reached the device, so it is never called done or failed.
+function stepState(s) {
+  const p = stepProposal(s);
+  if (p && p.status === "SENDING") return { cls: "SENDING", word: "sending", detail: "Command on its way to the device." };
+  if (p && p.status === "UNCERTAIN") return { cls: "UNCERTAIN", word: "uncertain", detail: `${p.result || "No answer from the device."} It may have moved. Check it in person. Not retried.` };
+  const word = STEP_WORD[s.status] || String(s.status || "").toLowerCase();
+  const detail = s.status === "MISMATCH" ? s.verify || s.result
+    : s.status === "FAILED" ? s.result || "The connector refused the command."
+    : s.status === "DONE" ? s.verify || s.result
+    : s.status === "VERIFYING" ? `Confirmed. Watching the readings for the effect.`
+    : s.status === "WAITING" ? ""
+    : s.result || "";
+  return { cls: s.status, word, detail };
+}
+
+function headline(r) {
+  if (!r) return "";
+  if (r.status === "RUNNING") {
+    const waiting = r.steps.filter((s) => s.status === "PENDING").length;
+    return waiting ? `${waiting} step${waiting > 1 ? "s" : ""} waiting for you.` : "Running. The next step is released on time.";
+  }
+  if (r.status === "PAUSED") return r.started === false ? "Offered, not started." : `Paused: ${r.reason || "no reason given"}`;
+  if (r.status === "CANCELLING") return "Cancelling: a command already sent is finishing. Nothing new goes out.";
+  if (r.status === "DONE") return "Every step is done.";
+  if (r.status === "FAILED") return `Failed: ${r.reason || "a tank reached shutdown during the run."}`;
+  if (r.status === "CANCELLED") return `Cancelled.${r.reason ? ` ${r.reason}` : ""}`;
+  return r.status;
+}
+
+function draw() {
+  if (!box) return;
+  if (isHolding()) { afterHold(draw); return; }
+  if (!run && !offer && !note) { box.hidden = true; box.innerHTML = ""; return; }
+  box.hidden = false;
+  const r = run;
+  const steps = r ? r.steps : [];
+  const done = steps.filter((s) => s.status === "DONE").length;
+  box.innerHTML = `<div class="kicker">Plan run${r ? ` · ${esc(r.status)}` : ""}${r ? ` · ${done} of ${steps.length} done` : ""}</div>
+    ${r ? `<div class="run-sum">${esc(r.summary.split(". ")[0])}. <b>${hooks.usd(r.cost_usd)}</b>${r.robust === false ? ` <span class="muted">· not enough if inflow runs 15% high</span>` : ""}</div>
+      <div class="run-head ${esc(r.status)}">${esc(headline(r))}</div>
+      <ol class="run-steps">${steps.map((s) => {
+        const st = stepState(s);
+        const pid = s.proposal_id && s.status === "PENDING" && !(stepProposal(s) && stepProposal(s).status !== "PENDING") ? s.proposal_id : null;
+        return `<li class="${esc(st.cls)}" data-asset="${esc(s.action && s.action.asset_id)}">
+          <div class="run-step"><span class="chip ${esc(st.cls)}">${esc(st.word)}</span><span class="run-text">${esc(s.text)}</span>${s.release_clock ? `<time>${esc(s.release_clock)}</time>` : ""}</div>
+          ${st.detail ? `<div class="run-detail">${esc(st.detail)}</div>` : ""}
+          ${pid ? `<div class="plan-btns"><button data-reject="${esc(pid)}">Reject</button><button class="primary hold" data-confirm="${esc(pid)}" title="Press and hold to send this command"><i></i><span>Hold to confirm</span></button></div>` : ""}
+        </li>`;
+      }).join("")}</ol>` : ""}
+    ${offer ? `<div class="run-offer"><div class="run-offer-k">${offer.kind === "stale" ? "This plan is out of date" : "Re-plan offered"}</div>
+        <p>${esc(offer.text)}</p>
+        ${offer.plan || offer.run ? `<div class="plan-btns"><button class="primary hold" data-offer title="Press and hold to start it"><i></i><span>Hold to run it</span></button></div>` : ""}</div>` : ""}
+    ${note ? `<div class="run-note" role="alert">${esc(note)}</div>` : ""}
+    ${r && ACTIVE.has(r.status) ? `<div class="plan-btns run-ctl">${r.status === "RUNNING" ? `<button data-pause>Pause</button>` : ""}${r.status === "PAUSED" && r.started !== false && !offer ? `<button data-resume>Resume</button>` : ""}${r.status !== "CANCELLING" ? `<button class="hold" data-cancel title="Press and hold to cancel the run"><i></i><span>Hold to cancel run</span></button>` : ""}</div>` : ""}`;
+
+  box.querySelectorAll("[data-asset]").forEach((li) => {
+    li.querySelector(".run-text").onclick = () => li.dataset.asset && hooks.select(li.dataset.asset);
+  });
+  box.querySelectorAll("[data-reject]").forEach((b) => { b.onclick = () => decide(b.dataset.reject, "reject"); });
+  box.querySelectorAll("[data-confirm]").forEach((b) => holdButton(b, () => decide(b.dataset.confirm, "confirm"), 1500));
+  const ob = box.querySelector("[data-offer]");
+  if (ob) holdButton(ob, takeOffer, 1500);
+  const pb = box.querySelector("[data-pause]");
+  if (pb) pb.onclick = () => control("pause");
+  const rb = box.querySelector("[data-resume]");
+  if (rb) rb.onclick = () => control("resume");
+  const cb = box.querySelector("[data-cancel]");
+  if (cb) holdButton(cb, () => control("cancel"), 800);
+}
+
+function setRun(r) {
+  if (!r) return;
+  // An offered re-plan (not started) never replaces the run on screen: it shows as an offer.
+  if (run && r.id !== run.id && r.started === false) return;
+  const was = run && run.id === r.id ? run.status : "";
+  run = r;
+  if (r.status !== was) {
+    if (was && r.status !== lastStatus) hooks.log(`Plan run ${r.status.toLowerCase()}${r.reason ? `: ${String(r.reason).replace(/\.+$/, "")}` : ""}.`);
+    lastStatus = r.status;
+  }
+  hooks.progress(r);
+  if (r.status === "PAUSED" && r.replan_run_id) loadReplan(r.replan_run_id);
+  else if (!(offer && offer.kind === "stale")) offer = null;
+  draw();
+}
+
+async function loadReplan(id) {
+  if (offer && offer.run && offer.run.id === id) return;
+  try {
+    const nr = await call(`/api/runs/${encodeURIComponent(id)}`);
+    offer = { kind: "replan", run: nr, text: `${nr.summary.split(". ")[0]}. ${hooks.usd(nr.cost_usd)}${run && run.replan_source ? ` (picked by ${run.replan_source === "claude" ? "Jarvis" : "the rules: cheapest that holds"})` : ""}${run && run.excluded && run.excluded.length ? `. Avoids ${run.excluded.map(hooks.nice).join(", ")}.` : "."}${run && run.note ? ` ${run.note}` : ""}` };
+  } catch { /* the paused run still shows its reason */ }
+  draw();
+}
+
+async function takeOffer() {
+  const o = offer;
+  if (!o) return;
+  note = "";
+  try {
+    if (o.run) {
+      const nr = await call(`/api/runs/${encodeURIComponent(o.run.id)}/resume`, { by: "console" });
+      offer = null;
+      hooks.log(`Started the re-plan: ${nr.summary.split(". ")[0]} (${hooks.usd(nr.cost_usd)}).`);
+      setRun(nr);
+    } else if (o.plan) {
+      offer = null;
+      await execute(o.plan, { approved: true });
+      return;
+    }
+  } catch (e) {
+    const fresh = e.body && e.body.plan;
+    if (e.status === 409 && e.body && e.body.stale_plan_id && o.run) {
+      // The offered re-plan went out of date while it waited. Same commands re-scored on the live
+      // state: start that, since it is what the person just held to run. Otherwise offer it.
+      if (fresh && sameActions(o.run, fresh)) { offer = null; await execute(fresh, { approved: true }); return; }
+      offer = { kind: "stale", plan: fresh || null, text: plain(e.message) + (fresh ? "" : " Nothing needs doing now.") };
+    } else note = plain(e.message);
+  }
+  draw();
+}
+
+async function control(verb) {
+  if (!run) return;
+  note = "";
+  try {
+    const r = await call(`/api/runs/${encodeURIComponent(run.id)}/${verb}`, { by: "console" });
+    hooks.log(`Plan run: ${verb === "cancel" ? "cancelled by hand" : verb === "pause" ? "paused by hand" : "resumed"}.`);
+    setRun(r);
+  } catch (e) { note = e.status === 409 ? `Can't ${verb} it now: ${e.message}` : e.message; draw(); }
+}
+
+async function decide(pid, verb) {
+  note = "";
+  const s = run && run.steps.find((x) => x.proposal_id === pid);
+  try {
+    const p = await call(`/api/actions/${encodeURIComponent(pid)}/${verb}`, { by: "console" });
+    props.set(p.id, p);
+    if (s && verb === "confirm") hooks.log(`CONFIRMED step ${s.n}: ${s.text}`); // a rejection is logged from the run's step status
+  } catch (e) {
+    note = e.status === 409 ? "That step was already decided on another screen." : e.message;
+  }
+  refresh();
+}
+
+async function refresh() {
+  if (!run) return draw();
+  try { setRun(await call(`/api/runs/${encodeURIComponent(run.id)}`)); } catch { draw(); }
+}
+
+// Start a run for a plan. Returns the run, or null (the panel says why).
+// opts.approved: the person already held to run exactly this plan (an offer they took).
+export async function execute(plan, opts = {}) {
+  note = "";
+  try {
+    const r = await call(`/api/plans/${encodeURIComponent(plan.id)}/execute`, { by: "console" });
+    offer = null;
+    hooks.log(`APPROVED and started: ${plan.summary.split(". ")[0]} (${hooks.usd(plan.cost ? plan.cost.total_usd : r.cost_usd)}). Each step waits for a confirm.`);
+    setRun(r);
+    return r;
+  } catch (e) {
+    const fresh = e.body && e.body.plan;
+    if (e.status === 409 && e.body && e.body.stale_plan_id) {
+      // Plans on the list are scored at the scenario's start, so they age by the live minute. If
+      // the live state still calls for the same commands, start that once: the person held to
+      // approve exactly these. Different commands always go back to the person.
+      if (fresh && !opts.retried && sameActions(plan, fresh)) {
+        hooks.log(`Re-scored on the live state: same steps, new times. Starting it.`);
+        return execute(fresh, { ...opts, retried: true });
+      }
+      offer = { kind: "stale", plan: fresh || null, text: plain(e.message) + (fresh ? "" : " Nothing needs doing now.") };
+      hooks.log(`Plan out of date, not started: ${plain(e.message).split(". From the live state")[0]}.`);
+    } else {
+      note = e.status === 409 ? e.message : `Not started: ${e.message}`;
+      if (e.status === 409 && (!run || !ACTIVE.has(run.status))) {
+        // Another run is already going: put it on screen so the person can see and steer it.
+        try {
+          const j = await call("/api/runs");
+          const going = (j.runs || []).filter((x) => ACTIVE.has(x.status) && x.started !== false).pop();
+          if (going) setRun(going);
+        } catch { /* the note still says why */ }
+      }
+    }
+    draw();
+    return null;
+  }
+}
+
+export function currentRun() { return run; }
+
+export function mountRuns(el, h) {
+  box = el;
+  hooks = h;
+  base = h.base || "";
+  if (!base) return;
+  runsSupported();
+  liveFeed.on("run", (msg) => {
+    const r = msg && msg.run;
+    if (!r) return;
+    if (!run || r.id === run.id) setRun(r);
+    else if (r.replaces === run.id && r.started !== false) { offer = null; setRun(r); } // the re-plan was started (here, on the phone, or by Jarvis)
+    else if (run.replan_run_id === r.id) { offer = null; loadReplan(r.id); }
+    else if (ACTIVE.has(r.status) && r.started !== false && !ACTIVE.has(run.status)) setRun(r); // a run started elsewhere (Jarvis)
+  });
+  liveFeed.on("proposal", (msg) => {
+    const p = msg && msg.proposal;
+    if (!p) return;
+    props.set(p.id, p);
+    if (run && run.steps.some((s) => s.proposal_id === p.id)) draw();
+  });
+  // Safety net when the socket is quiet: re-read the run every 10 s while it is active.
+  setInterval(() => { if (run && ACTIVE.has(run.status)) refresh(); }, 10000);
+}
