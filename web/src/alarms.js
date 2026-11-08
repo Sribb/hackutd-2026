@@ -137,6 +137,8 @@ function put(a, fresh = false) {
 async function post(path, body) {
   const r = await authFetch(`${base}${path}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) });
   const out = await r.json().catch(() => ({}));
+  if (r.status === 401) throw Object.assign(new Error("Not sent: control is locked without the operator PIN."), { status: 401 });
+  if (r.status === 403) throw Object.assign(new Error("This device can't do that. Nothing was sent."), { status: 403 });
   if (!r.ok) {
     const d = out && out.detail;
     const text = typeof d === "string" ? d : Array.isArray(d) && d[0] && d[0].msg ? String(d[0].msg).replace(/^Value error, /, "") : `HTTP ${r.status}`;

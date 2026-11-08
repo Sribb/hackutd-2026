@@ -7,10 +7,13 @@
 // Rules: a stale reading is UNKNOWN (never OK, never a stale alarm passed off as current). If the feed drops, every value we hold is
 // marked stale and the UI says "live feed lost". Nothing freezes silently.
 
-import { wsUrl } from "./auth.js";
+import { wsUrl, token } from "./auth.js";
 let base = "";
 let role = "web";
 let ws = null, tries = 0, pollTimer = 0, lostTimer = 0;
+let heard = false;       // this socket delivered a message
+let queryToken = false;  // fall back to /ws?token= (a backend without first-message auth)
+let authed = false, authTimer = 0;
 const subs = new Map(); // type -> Set(fn)
 
 export const live = {
@@ -89,28 +92,49 @@ async function healthConnectors() {
 
 function connect() {
   try {
-    ws = new WebSocket(wsUrl(base.replace(/^http/, "ws") + `/ws?role=${role}`));
+    // The token goes in the first message, not the URL, so it never lands in a server log
+    // (#57). A backend that predates that never answers {type: "auth"}; then this tab falls
+    // back to ?token= for the rest of the visit (see onopen).
+    const url = base.replace(/^http/, "ws") + `/ws?role=${role}`;
+    ws = new WebSocket(queryToken ? wsUrl(url) : url);
+    heard = false;
+    authed = false;
   } catch {
     return retry();
   }
   ws.onopen = () => {
     tries = 0;
+    const t = token();
+    if (t && !queryToken) {
+      try { ws.send(JSON.stringify({ type: "auth", token: t })); } catch { /* closing */ }
+      // No {type: "auth", ok: true} within 1.5 s: this backend ignores first-message auth and
+      // treats us as read-only. Reconnect with ?token= for the rest of the visit.
+      const me = ws;
+      clearTimeout(authTimer);
+      authTimer = setTimeout(() => { if (ws === me && !authed) { queryToken = true; try { me.close(); } catch { /* gone */ } } }, 1500);
+    }
     live.connected = true;
     markLost(false);
     emit("feed", live);
   };
   ws.onmessage = (m) => {
+    heard = true;
     let msg;
     try { msg = JSON.parse(m.data); } catch { return; }
-    if (msg.type === "state") {
+    if (msg.type === "auth") {
+      authed = msg.ok !== false;
+      if (!authed) queryToken = false; // a wrong token: the URL wouldn't help either
+      emit("auth", msg);
+    } else if (msg.type === "state") {
       mergeState(msg.state || msg);
       emit("state", live);
     } else {
       emit(msg.type, msg);
     }
   };
-  ws.onclose = () => {
+  ws.onclose = (ev) => {
     ws = null;
+    if (!heard && !queryToken && token() && [1008, 4001, 4003, 4401, 4403].includes(ev && ev.code)) queryToken = true;
     const was = live.connected;
     live.connected = false;
     // A brief blip is normal. After 4 s without the socket, say the feed is lost.

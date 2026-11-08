@@ -3,6 +3,7 @@ import "@fontsource/azeret-mono/400.css";
 import "@fontsource/azeret-mono/600.css";
 import * as THREE from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+import { MeshoptDecoder } from "three/addons/libs/meshopt_decoder.module.js";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { mountSky } from "./sky.js";
 import * as api from "./api.js";
@@ -20,6 +21,8 @@ import { mountInspect } from "./inspect.js";
 import { mountAlarms } from "./alarms.js";
 
 const $ = (id) => document.getElementById(id);
+// Meshopt-compressed glb (#112/#117) loads with no extra files; a plain glb is unaffected.
+const gltfLoader = () => new GLTFLoader().setMeshoptDecoder(MeshoptDecoder);
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
 const usd = (n) => "$" + Math.round(n).toLocaleString("en-US");
 
@@ -76,7 +79,7 @@ async function loadModel() {
   try { built = sessionStorage.getItem("freeboard.glb"); } catch { /* storage blocked */ }
   if (built) {
     try {
-      const gltf = await new GLTFLoader().loadAsync(built);
+      const gltf = await gltfLoader().loadAsync(built);
       return { root: gltf.scene, from: "your uploaded blueprint" };
     } catch {
       try { sessionStorage.removeItem("freeboard.glb"); } catch { /* ignore */ }
@@ -85,7 +88,7 @@ async function loadModel() {
   try {
     const head = await fetch("/field.glb", { method: "HEAD" });
     if (!head.ok) throw new Error("no field.glb");
-    const gltf = await new GLTFLoader().loadAsync("/field.glb");
+    const gltf = await gltfLoader().loadAsync("/field.glb");
     return { root: gltf.scene, from: "blender/field.glb" };
   } catch {
     return { root: buildPlaceholder(), from: "placeholder" };
@@ -298,7 +301,11 @@ function paint(id, status, t) {
     if (status === "OFFLINE") m.material.color.multiplyScalar(0.3);
     else if (COLORS[status]) {
       m.material.color.lerp(COLORS[status], status === "ALARM" ? 0.85 : 0.6);
-      if (m.material.emissive) m.material.emissive.copy(COLORS[status]).multiplyScalar(status === "ALARM" ? 0.5 * pulse : 0.25);
+      // A textured part (#127's look pass) multiplies the diffuse color by the texture and the
+      // weathering, about 25% darker. State must not get quieter with a nicer model, so the
+      // emissive part carries more of it there.
+      const gain = m.material.map ? 1.8 : 1;
+      if (m.material.emissive) m.material.emissive.copy(COLORS[status]).multiplyScalar((status === "ALARM" ? 0.5 * pulse : 0.25) * gain);
     }
     // The trying (TRYING x 0.35) and selected (SELECTED) lifts now come from highlight.js (#86), after paint().
   }
