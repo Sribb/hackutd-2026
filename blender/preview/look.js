@@ -120,6 +120,7 @@ export function createLook({ renderer, scene, camera, container, initial }) {
       if (!scenery) box.expandByObject(o);
     });
     if (box.isEmpty()) box.setFromObject(root);
+    state.box = box;  // the lease without its scenery, for framing
     const size = box.getSize(new THREE.Vector3());
     state.span = Math.max(size.x, size.z, 60);
     box.getCenter(state.center);

@@ -91,7 +91,10 @@ function prepare(gltf) {
       if (g === "pipe") o.material.clippingPlanes = [pipePlane];
     });
   }
-  const box = new THREE.Box3().setFromObject(gltf.scene);
+  // Frame and sweep the pipes over the lease, not the terrain out to the horizon (SCENERY, #98).
+  const box = new THREE.Box3();
+  for (const [g, roots] of Object.entries(groups)) if (g !== "scenery" && g !== "hidden") for (const r of roots) box.expandByObject(r);
+  if (box.isEmpty()) box.setFromObject(gltf.scene);
   const parts = { levels: [] };  // rotors, beams, and cranks are animated by look.js
   gltf.scene.traverse((o) => {
     if (/^(TANK_\w+)_LEVEL$/.test(o.name)) parts.levels.push({ o, tank: o.name.replace(/_LEVEL$/, ""), y0: o.scale.y });

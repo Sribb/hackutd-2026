@@ -108,7 +108,9 @@ function assetOf(obj) {
 }
 
 function frame(obj, close) {
-  const box = new THREE.Box3().setFromObject(obj), c = box.getCenter(new THREE.Vector3());
+  // The whole field frames on the lease, not on the terrain out to the horizon (SCENERY, #98).
+  const box = obj === field && look.state.box ? look.state.box.clone() : new THREE.Box3().setFromObject(obj);
+  const c = box.getCenter(new THREE.Vector3());
   const size = Math.max(box.getSize(new THREE.Vector3()).length(), close ? 12 : 50);
   controls.target.copy(c);
   camera.position.copy(c).add(new THREE.Vector3(0.45, 0.55, 0.7).multiplyScalar(size * (close ? 1.1 : 0.75)));
