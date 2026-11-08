@@ -35,7 +35,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from starlette.concurrency import run_in_threadpool
 
 from . import dataset as dsmod
-from . import gaia, service
+from . import service
 from .dataset import Dataset, DatasetError
 from .model import Event, iso
 
@@ -262,6 +262,15 @@ def prebuild(path: Path) -> Optional[threading.Thread]:
     return t
 
 
+def _on_activate(ds_id: str, path: Any) -> None:
+    """Service.activate's hook: whichever route switched the dataset, start building its 3D."""
+    prebuild(Path(path))
+
+
+if _on_activate.__name__ not in {getattr(f, "__name__", "") for f in service.ON_ACTIVATE}:
+    service.ON_ACTIVATE.append(_on_activate)
+
+
 def _system_glb(system: Optional[str]) -> Path:
     if not isinstance(system, str) or not system.strip():
         raise HTTPException(422, "system is required, for example ?system=<a system id from network.json>.")
@@ -274,6 +283,8 @@ def _system_glb(system: Optional[str]) -> Path:
         return build_glb(path, system.strip())
     except BuildError as e:
         raise HTTPException(503, f"The 3D field for {system.strip()} did not build: {e}") from None
+    finally:
+        prebuild(path)   # e.g. a startup default nobody activated: its other systems next
 
 
 # ---------- routes ----------
@@ -301,9 +312,7 @@ async def post_load(request: Request) -> JSONResponse:
         await run_in_threadpool(_svc().activate, body["folder"].strip())
     except service.ServiceError as e:
         raise _fail(e) from None
-    ds_id, path = _active()
-    gaia.use(ds_id)   # a dataset is on screen: gaia's tools answer from it (eog/gaia.py)
-    prebuild(path)
+    ds_id, _ = _active()   # Service.activate ran the ON_ACTIVATE hook: the 3D pre-build has started
     return JSONResponse({"folder": ds_id, "folders": list(_folders())})
 
 

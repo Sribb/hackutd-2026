@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -14,6 +16,7 @@ from backend.app.main import app
 from backend.tests.eog_fixture import write_dataset
 
 REAL_ROOT = os.environ.get("FREEBOARD_EOG_DIR", "")
+LEGACY_ON = gaia._legacy_on        # the real check, before the fixture stubs it
 client = TestClient(app)
 
 # jarvis.py's own top-level keys per tool (Jarvis.run_tool), which gaia's answers keep
@@ -34,11 +37,12 @@ def fresh(monkeypatch):
     monkeypatch.setattr(dataset_api, "PREBUILD", False)
     for var in ("FREEBOARD_EOG_DATASET", "FREEBOARD_TOKEN", "OPERATOR_PIN", "FREEBOARD_PHONE_TOKEN"):
         monkeypatch.delenv(var, raising=False)
+    # #153's legacy routes (once mounted) serve the dataset whenever FREEBOARD_EOG_DIR is set; these
+    # tests check activation on its own, and test_follows_the_legacy_routes checks that path.
+    monkeypatch.setattr(gaia, "_legacy_on", lambda: False)
     service.SERVICE.reset()
-    gaia.clear()
     yield
     service.SERVICE.reset()
-    gaia.clear()
 
 
 @pytest.fixture
@@ -62,18 +66,42 @@ def bare_jarvis() -> Jarvis:
     return j
 
 
-def test_inactive_until_a_dataset_is_on_screen(root):
+def test_inactive_until_a_dataset_is_activated(root):
     assert not gaia.active()                      # FREEBOARD_EOG_DIR alone does not switch gaia
-    client.get("/api/eog/alerts")                 # nor does the /api/eog console reading it
+    client.get("/api/eog/alerts")                 # nor does reading the default dataset
+    client.get("/api/dataset")
     assert not gaia.active()
+
+
+def test_on_after_api_eog_activate(root):
+    """#157's /dataset page activates through /api/eog, not /api/dataset/load."""
+    assert client.post("/api/eog/datasets/activate", json={"id": "alpha"}).status_code == 200
+    assert gaia.active() and service.SERVICE.activated == "alpha"
+    assert run("list_alerts")["dataset"] == "alpha"
+    service.SERVICE.reset()                       # a restart forgets it
+    assert not gaia.active()
+
+
+def test_on_after_api_dataset_load(root):
     assert client.post("/api/dataset/load", json={"folder": "alpha"}).status_code == 200
     assert gaia.active()
-    gaia.clear()
+
+
+def test_follows_the_legacy_routes(root, monkeypatch):
+    """With #153's legacy routes serving the dataset, gaia answers from it too, activated or not."""
+    monkeypatch.setattr(gaia, "_legacy_on", LEGACY_ON)
+    fake = types.ModuleType("backend.app.eog.legacy_api")
+    fake.on = lambda: True
+    monkeypatch.setitem(sys.modules, "backend.app.eog.legacy_api", fake)
+    assert gaia.active()
+    fake.on = lambda: False
     assert not gaia.active()
+    fake.on = lambda: (_ for _ in ()).throw(RuntimeError("broken"))
+    assert not gaia.active()                      # never raises into jarvis
 
 
 def test_inactive_when_dataset_mode_is_off(root, monkeypatch):
-    gaia.use("alpha")
+    client.post("/api/dataset/load", json={"folder": "alpha"})
     monkeypatch.delenv("FREEBOARD_EOG_DIR")
     assert not gaia.active()
 

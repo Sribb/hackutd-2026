@@ -8,9 +8,11 @@ active dataset as of the service's clock cursor (service.SERVICE.view): sponsor 
 clock in UTC, and a "source" naming the folder and the cut. Every number is the service's cached
 detect and plan output, the same /api/eog and /api/dataset serve.
 
-active() is true once POST /api/dataset/load has put a dataset on screen in this process (use()),
-and while dataset mode is on. Dataset mode merely being configured (FREEBOARD_EOG_DIR) is not
-enough, so the live console's gaia behaves exactly as before until someone opens a dataset.
+active() is true while dataset mode serves a dataset: once one has been activated in this process
+by either route (POST /api/eog/datasets/activate or POST /api/dataset/load, which both set
+Service.activated), or while the console's legacy routes serve one (eog/legacy_api.py, #153).
+With no dataset ever activated and no legacy routes serving one, gaia reads the live field
+exactly as before.
 
 The dataset is a recording, so propose_action never makes an equipment action here: it answers
 with a sentence saying a plan can be approved for its steps and a radio script instead.
@@ -19,7 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import threading
+import sys
 from typing import Any, Optional
 
 from . import service
@@ -33,29 +35,22 @@ RECORDING = ("The dataset on screen is a recording, so gaia can't send equipment
              "A plan can be approved for its numbered steps and a radio script instead: "
              "POST /api/eog/plans/{event_id}/approve.")
 
-_lock = threading.Lock()
-_on: Optional[str] = None      # the folder POST /api/dataset/load put on screen
-
-
-def use(ds_id: Optional[str]) -> None:
-    """A dataset is on screen (POST /api/dataset/load); None turns gaia back to the live field."""
-    global _on
-    with _lock:
-        _on = ds_id
-
-
-def clear() -> None:
-    use(None)
+def _legacy_on() -> bool:
+    """The console's legacy routes serve the dataset (eog/legacy_api.py, #153, once it is mounted)."""
+    mod = sys.modules.get(f"{__package__}.legacy_api")
+    on = getattr(mod, "on", None)
+    return bool(on()) if callable(on) else False
 
 
 def active() -> bool:
-    """True while a dataset is on screen and dataset mode is on. Never raises."""
-    with _lock:
-        on = _on
-    if on is None:
-        return False
+    """True while dataset mode serves a dataset to someone: one was activated in this process,
+    by any route (Service.activated: POST /api/eog/datasets/activate or POST /api/dataset/load),
+    or the console's legacy routes serve one. False while dataset mode is off. Never raises."""
     try:
-        service.SERVICE.require_enabled()
+        svc = service.SERVICE
+        if getattr(svc, "activated", None) is None and not _legacy_on():
+            return False
+        svc.require_enabled()
     except Exception:  # noqa: BLE001 - dataset mode off or broken: gaia answers from the live field
         return False
     return True

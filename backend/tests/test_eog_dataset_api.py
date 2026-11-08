@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from backend.app.eog import dataset_api, detect, gaia, plan, service
+from backend.app.eog import dataset_api, detect, plan, service
 from backend.app.eog.dataset import load
 from backend.app.main import app
 from backend.tests.eog_fixture import facility_spec, write_dataset
@@ -38,10 +38,8 @@ def fresh(monkeypatch, tmp_path):
     dataset_api._glb.clear()
     dataset_api._prebuilt.clear()
     service.SERVICE.reset()
-    gaia.clear()
     yield
     service.SERVICE.reset()
-    gaia.clear()
 
 
 SYSTEMS_6_11 = {f"S{n}": {"pressure": 900.0 + 40 * n, "facilities": [
@@ -223,6 +221,22 @@ def test_activation_prebuilds_every_system(root, monkeypatch):
     assert built == sorted(_systems(root / "nested" / "beta"))
     ok(client.get("/api/dataset"))
     assert [t for t in started if t is not None] == threads     # once per folder
+
+
+def test_activation_through_api_eog_prebuilds_too(root, monkeypatch):
+    """The /dataset page of #157 activates through /api/eog: the Service hook starts the 3D build."""
+    monkeypatch.setattr(dataset_api, "PREBUILD", True)
+    started = []
+    real = dataset_api.prebuild
+    monkeypatch.setattr(dataset_api, "prebuild", lambda p: started.append(real(p)) or started[-1])
+    ok(client.post("/api/eog/datasets/activate", json={"id": "nested/beta"}))
+    threads = [t for t in started if t is not None]
+    assert len(threads) == 1
+    threads[0].join(120)
+    ids = ok(client.get("/api/dataset/field_ids", params={"system": "S11"}))
+    assert ids["system"] == "S11"
+    built = sorted(k[1] for k in dataset_api._glb if k[0] == str((root / "nested" / "beta").resolve()))
+    assert built == sorted(_systems(root / "nested" / "beta"))
 
 
 def test_blender_failure_falls_back_to_the_kit(root, monkeypatch):
