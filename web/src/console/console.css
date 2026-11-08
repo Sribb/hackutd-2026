@@ -325,14 +325,19 @@ body:not(.fb-console) .gm-strip, body.two-nights .gm-strip, body.cs-canvas-off .
 .gm-stat.red b { color: #ff7a5c; }
 .gm-stat.unknown b { color: #9a9a9a; }
 .gm-strip .sm { display: none; }
+.gm-strip.gm-tight .gm-l > span .lg { display: none; }   /* monitor.js fitNames: full names don't fit */
+.gm-strip.gm-tight .gm-l > span .sm { display: inline; }
 .gm-strip i { font-style: normal; }
-/* Narrower canvas: short labels (t3, pumps 6/6), ages kept. Narrower still: two rows, no ages. */
+/* Narrower canvas: short stats (pumps 6/6), ages kept, tank names still in full ("Tank C"),
+   since a laptop's 3D pane lands here. Narrower still: two rows, no ages, short names (TC). */
 @container (max-width: 860px) {
   .gm-stats { gap: 10px; padding-left: 10px; }
-  .gm-tank .lg, .gm-stat .lg, .gm-stat .gm-k { display: none; }
-  .gm-tank .sm, .gm-stat .sm { display: inline; }
+  .gm-tank b .lg, .gm-stat .lg, .gm-stat .gm-k { display: none; }
+  .gm-tank b .sm, .gm-stat .sm { display: inline; }
 }
 @container (max-width: 600px) {
+  .gm-tank .lg { display: none; }
+  .gm-tank .sm { display: inline; }
   .gm-age { display: none; }
   .gm-in { flex-wrap: wrap; gap: 4px; }
   .gm-tanks { gap: 6px; }

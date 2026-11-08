@@ -43,6 +43,9 @@ SUB_TTL_S = 4 * 3600
 MAX_SUBS = 50
 MAX_PER_SUB = 12
 MAX_TEXT = 300
+# The voice that reads a call (Twilio <Say>). Amazon Polly's neural voice reads times and money
+# naturally; TWILIO_VOICE overrides it (for example "alice").
+VOICE = os.environ.get("TWILIO_VOICE", "Polly.Joanna-Neural").strip() or "alice"
 E164_US = re.compile(r"^\+1[2-9]\d{2}[2-9]\d{6}$")
 
 router = APIRouter(prefix="/api/phone", tags=["phone alerts"])
@@ -78,6 +81,19 @@ def clean_text(raw: Any) -> str:
     return text[:MAX_TEXT]
 
 
+def spoken(text: str) -> str:
+    """The text message as a voice should say it: no "gaia:" tag and no texting shorthand.
+    "gaia: S1 Pump C failed; ... in 4 h 24 min; ... $905 vs $5,023" ->
+    "S1 Pump C failed. ... in 4 hours 24 minutes. ... $905 versus $5,023"."""
+    s = re.sub(r"^gaia:\s*", "", text, flags=re.I)
+    s = re.sub(r"\b0([1-9]):(\d\d)\b", r"\1:\2", s)  # 04:49 -> 4:49
+    s = re.sub(r"\b(\d+) h\b", lambda m: m[1] + (" hour" if m[1] == "1" else " hours"), s)
+    s = re.sub(r"\b(\d+) min\b", lambda m: m[1] + (" minute" if m[1] == "1" else " minutes"), s)
+    s = re.sub(r"\bvs\.?(?=\s)", "versus", s).replace("~", "about ")
+    s = re.sub(r"\s*;\s*", ". ", s).strip()
+    return s[:1].upper() + s[1:]
+
+
 def _prune(now: float) -> None:
     for k in [k for k, s in _subs.items() if now - s["created"] > SUB_TTL_S]:
         del _subs[k]
@@ -107,7 +123,13 @@ def _send(phone: str, text: str, call: bool) -> dict:
     sms = _twilio("Messages.json", {"To": phone, "From": sender, "Body": text})
     voice = None
     if call:
-        twiml = f'<Response><Say voice="alice">{html.escape(text)}</Say><Pause length="1"/><Say voice="alice">{html.escape(text)}</Say></Response>'
+        # The alert itself, said twice: what failed, when the tank shuts down, the cheapest fix and
+        # its cost, then how to act on it. The same numbers as the text and the alert card.
+        words = spoken(text)
+        say = lambda s: f'<Say voice="{html.escape(VOICE)}">{html.escape(s)}</Say>'  # noqa: E731
+        twiml = ("<Response>" + say("This is gaia, your night-shift agent, with a field alert.") + '<Pause length="1"/>'
+                 + say(words) + '<Pause length="1"/>' + say("Again. " + words)
+                 + say("Open gaia to see the plan. Nothing moves until a person holds to confirm.") + "</Response>")
         voice = _twilio("Calls.json", {"To": phone, "From": sender, "Twiml": twiml})
     ok = lambda s: s is not None and 200 <= s < 300  # noqa: E731
     log.info("phone alert to %s: text %s%s", mask(phone), "sent" if ok(sms) else f"failed ({sms})",
