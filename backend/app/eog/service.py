@@ -63,6 +63,9 @@ WORDS = {"pump_failure": "failure", "pump_degradation": "worn pump",
          "pipeline_leak": "leak", "other": "problem"}
 DAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 NO_DETECTION = "so these statuses come from the readings alone and leaks or worn pumps are not flagged"
+# Called as fn(dataset_id, folder) after Service.activate switches the active dataset, whichever
+# route asked (POST /api/eog/datasets/activate or POST /api/dataset/load).
+ON_ACTIVATE: list[Callable[[str, Path], None]] = []
 
 
 # ---------- errors: each carries one plain-English sentence ----------
@@ -471,6 +474,7 @@ class Service:
             self._seq = 0
             self._logged: set = set()
             self.version = 0
+            self.activated: Optional[str] = None   # the last dataset activate() switched to, by any route (#152)
             self.cache.clear()
 
     # ----- dataset selection -----
@@ -582,6 +586,12 @@ class Service:
             self.clock = Clock(lambda: self.real(), speed)
             self.clock.bind(ds.start, ds.last)
             self.version += 1
+            self.activated = ds_id
+        for fn in list(ON_ACTIVATE):   # e.g. dataset_api pre-builds the 3D (#152); never fails the switch
+            try:
+                fn(ds_id, found[ds_id])
+            except Exception as e:  # noqa: BLE001
+                log.warning("Dataset mode: an activation hook failed: %s: %s", type(e).__name__, e)
         return self.datasets_payload()
 
     # ----- /clock -----
