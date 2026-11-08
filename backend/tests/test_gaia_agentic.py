@@ -203,3 +203,46 @@ def test_chart_step_names_its_asset():
     out = run(j.run_tool("ui_action", {"action": "chart", "asset_id": "TANK_3", "step": "drawing the level"}, ctx))
     assert out["ok"]
     assert ctx["ui"] == [{"type": "ui", "action": "chart", "source": "gaia", "asset_id": "TANK_3", "step": "drawing the level"}]
+
+
+def _dataset_on(monkeypatch, answers: dict):
+    """Dataset mode with eog/gaia.py's tools answering from `answers` (asset id -> explain_asset)."""
+    from backend.app.eog import gaia as eog_gaia
+    monkeypatch.setattr(eog_gaia, "active", lambda: True)
+
+    async def fake(tool, args, ctx):
+        if tool == "explain_asset":
+            return answers.get(str(args.get("asset_id")).upper(), {"error": "Unknown asset."})
+        return {"error": "not in this test"}
+    monkeypatch.setattr(eog_gaia, "run_tool", fake)
+
+
+HEAD = {"dataset": "history/snapshot_2026-10-10T0900", "clock": "09:00", "as_of": "2026-10-10 09:00 UTC"}
+
+
+def test_this_binds_to_a_sponsor_id_on_a_dataset(monkeypatch):
+    _dataset_on(monkeypatch, {
+        "S4_TANK_A": {**HEAD, "asset_id": "S4_TANK_A", "kind": "tank", "live": {"status": "ALARM", "level_pct": 71.2},
+                      "design": {"shutdown_pct": 90.0},
+                      "alerts": [{"priority": "P2", "message": "S4_PUMP_A failed: S4_TANK_A reaches shutdown at 11:57 (in 2 h 57 min)"}]},
+        "S4_TANK_B": {**HEAD, "asset_id": "S4_TANK_B", "kind": "tank", "live": {"status": "OK", "level_pct": 40.0},
+                      "design": {"shutdown_pct": 90.0}, "alerts": []},
+        "S4_TANK_D": {**HEAD, "asset_id": "S4_TANK_D", "kind": "tank", "live": {"status": "UNKNOWN"}, "alerts": [],
+                      "say": "S4_TANK_D has no reading at 2026-10-10 09:00 UTC in this dataset, so gaia can't say it is safe."},
+    })
+    j = make(tripped_field())
+    out = run(j.handle("what's wrong with this", selected=["S4_TANK_A"]))
+    assert out["source"] == "rules"
+    assert out["reply"] == ("P2: S4_PUMP_A failed: S4_TANK_A reaches shutdown at 11:57 (in 2 h 57 min) (the dataset, as of "
+                            "2026-10-10 09:00 UTC). S4_TANK_A reads 71% against a 90% shutdown at 2026-10-10 09:00 UTC in "
+                            "the dataset.")
+    assert out["ui"] == [{"type": "ui", "action": "focus", "asset_id": "S4_TANK_A"}]
+    quiet = run(j.handle("how's it doing", selected=["S4_TANK_B"]))["reply"]
+    assert quiet.startswith("No open alert on S4_TANK_B at 2026-10-10 09:00 UTC in the dataset.") and "safe" not in quiet
+    blind = run(j.handle("what's wrong with it", selected=["S4_TANK_D"]))["reply"]
+    assert "can't say it is safe" in blind
+
+
+def test_unknown_selection_falls_through_to_the_field_status():
+    out = run(make(tripped_field()).handle("what's wrong with this", selected=["S9_TANK_Z"]))
+    assert out["source"] == "rules" and "S9_TANK_Z" not in out["reply"]

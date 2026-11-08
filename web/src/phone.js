@@ -173,7 +173,7 @@ const DONE_WORD = { SENDING: "Sending…", CONFIRMED: "Sent", REJECTED: "Rejecte
 
 // The live clock ("01:48") if the backend sent one, else the time part of the ISO stamp.
 function clockOf(a) {
-  if (a.clock) return a.clock;
+  if (a.clock) return liveFeed.live.dataset && /^\d{1,2}:\d{2}$/.test(a.clock) ? `${a.clock} utc` : a.clock;
   const m = String(a.t || "").match(/T(\d\d:\d\d)/);
   return m ? m[1] : String(a.t || "");
 }

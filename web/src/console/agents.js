@@ -25,9 +25,14 @@ export function toMin(clock) {
   if (m[3]) { h %= 12; if (/pm/i.test(m[3])) h += 12; }
   return h * 60 + Number(m[2]);
 }
+// The console says when the field is a dataset (index.js): its clock reads utc then.
+let utcClock = () => false;
+export function useUtcClock(fn) { utcClock = fn; }
 export function clock12(min) {
   if (min == null || !isFinite(min)) return "--:--";
   const x = ((Math.round(min) % 1440) + 1440) % 1440, hh = Math.floor(x / 60), mm = x % 60;
+  // A dataset runs on its own utc clock (#153): "13:25 utc", never "1:25 PM" beside it.
+  if (utcClock()) return `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")} utc`;
   return `${hh % 12 || 12}:${String(mm).padStart(2, "0")} ${hh < 12 ? "AM" : "PM"}`;
 }
 // Minutes from `now` to `at` on a 24 h clock, in -720..720.
