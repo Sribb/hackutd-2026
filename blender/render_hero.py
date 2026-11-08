@@ -179,25 +179,6 @@ def camera(scene, name, at, target, lens, fstop=None, focus=None):
     return ob
 
 
-def fit(lo, hi, direction, lens, aspect, margin=0.92):
-    """Distance along direction (target to camera) that fits the box lo..hi in frame."""
-    target = (lo + hi) / 2
-    f = -direction.normalized()
-    r = f.cross(Vector((0, 0, 1))).normalized()
-    u = r.cross(f)
-    th = 18.0 / lens * margin
-    tv = th / aspect
-    corners = [Vector((x, y, z)) for x in (lo.x, hi.x) for y in (lo.y, hi.y) for z in (lo.z, hi.z)]
-    a, b = 1.0, 50000.0
-    for _ in range(60):
-        d = (a + b) / 2
-        cam = target - f * d
-        ok = all((p - cam).dot(f) > 0 and abs((p - cam).dot(r)) <= th * (p - cam).dot(f)
-                 and abs((p - cam).dot(u)) <= tv * (p - cam).dot(f) for p in corners)
-        a, b = (a, d) if ok else (d, b)
-    return target, target - f * b
-
-
 def local(ob, x, y, z):
     return ob.matrix_world @ Vector((x, y, z))
 
@@ -206,15 +187,16 @@ def closeup(ob, cam, tgt, lens, fstop):
     return dict(at=local(ob, *cam), target=local(ob, *tgt), lens=lens, fstop=fstop)
 
 
-def shot_list(f, aspect):
+def shot_list(f):
     """Shot name -> (rig, camera builder). A shot whose asset is missing from this field is skipped."""
-    lo, hi = f.lo.copy(), f.hi.copy()
-    hi.z = max(hi.z, 12.0)
-
+    lo, hi = f.lo, f.hi
     L, my = max(hi.x - lo.x, 120.0), f.mid.y
     # Overviews look down the length of the lease, so the pads recede into the haze.
     shots = {"golden_hour": ("golden", lambda: dict(at=Vector((hi.x - 0.01 * L, lo.y + 0.04 * L, 0.06 * L)),
                                                     target=Vector((lo.x + 0.42 * L, my + 0.04 * L, 0)), lens=30))}
+    # The whole lease in one frame, from high to the south-east: the picture that explains the layout.
+    aerial = Vector((0.28, -0.62, 0.74)).normalized() * (0.5 * max(L, (hi.y - lo.y) * 1.78) / 0.514 * 0.98)
+    shots["field_aerial"] = ("afternoon", lambda: dict(at=f.mid + aerial, target=f.mid.copy(), lens=35))
     pump, tank = f.alarm_pump(), f.hero_tank()
     if pump:
         p = pump.matrix_world.translation
@@ -266,18 +248,24 @@ def light_shot(rig, rig_name, f):
                 0.8 if R["lamps"] else 1.6)
 
 
-def turntable(f, rig, scene, out, a, aspect):
+def turntable(f, rig, scene, out, a):
     """An orbit of the golden hour overview, pumpjacks working, encoded with ffmpeg if present."""
     scene.render.resolution_x, scene.render.resolution_y = 1920, 1080
+    if scene.render.engine != "CYCLES":  # lighter settings, so 264 frames finish in minutes, not an hour
+        scene.eevee.taa_render_samples = min(scene.eevee.taa_render_samples, 16 if a.quality == "final" else 8)
+        for k, v in (("use_raytracing", False), ("volumetric_tile_size", "16"), ("volumetric_samples", 32),
+                     ("shadow_ray_count", 1), ("shadow_step_count", 4)):
+            try:
+                setattr(scene.eevee, k, v)
+            except (AttributeError, TypeError):
+                pass
     light_shot(rig, "golden", f)
     n = round(a.seconds * a.fps)
     scene.frame_start, scene.frame_end, scene.render.fps = 1, n, a.fps
-    lo, hi = f.lo.copy(), f.hi.copy()
-    hi.z = max(hi.z, 12.0)
-    start = Vector((0.40, -0.86, 0.30)).normalized()
-    target, at = fit(lo, hi, start, 35, aspect, 0.9)
-    radius, el, az0 = (at - target).length, math.asin(start.z), math.atan2(start.y, start.x)
-    cam = camera(scene, "HERO_turntable", at, target, 35)
+    # A low orbit close enough that the pads read, with the horizon and sky in the top of frame.
+    target = Vector((f.mid.x, f.mid.y, 0.0))
+    radius, el, az0 = max(0.62 * (f.hi.x - f.lo.x), 120.0), math.radians(11), math.atan2(-0.86, 0.40)
+    cam = camera(scene, "HERO_turntable", target + Vector((radius, 0, 0)), target, 35)
     for i in range(n):
         az = az0 + 2 * math.pi * i / n
         cam.location = target + radius * Vector((math.cos(az) * math.cos(el), math.sin(az) * math.cos(el), math.sin(el)))
@@ -315,12 +303,12 @@ def main():
     scene = bpy.context.scene
     f = Field(scene)
     used = setup_render(scene, a.quality, a.engine or "eevee", a.width, round(a.width * 9 / 16))
-    aspect, rig = 16 / 9, Rig(f)
+    rig = Rig(f)
     levels = {t.name: f.get(f"{t.name}_LEVEL").scale.z for t in f.tanks if f.get(f"{t.name}_LEVEL")}
     wanted = [s for s in a.shots.split(",") if s]
     report = {"blend": Path(bpy.data.filepath).name, "engine": used, "quality": a.quality, "width": a.width, "shots": []}
     t_all = time.time()
-    for name, (rig_name, build) in shot_list(f, aspect).items():
+    for name, (rig_name, build) in shot_list(f).items():
         if wanted and name not in wanted:
             continue
         t0 = time.time()
@@ -342,7 +330,7 @@ def main():
                                 "jpeg_quality": q, "bytes": size})
         print(f"[hero] {name:13s} {rig_name:9s} {secs:6.1f} s  {size / 1000:5.0f} KB  q{q}", flush=True)
     if a.turntable:
-        report["turntable"] = turntable(f, rig, scene, a.out, a, aspect)
+        report["turntable"] = turntable(f, rig, scene, a.out, a)
         print(f"[hero] turntable {report['turntable']}", flush=True)
     report["seconds"] = round(time.time() - t_all, 1)
     (a.out / "renders.json").write_text(json.dumps(report, indent=1) + "\n")

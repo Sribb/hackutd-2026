@@ -13,6 +13,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Field Preview</title>
+<link rel="icon" href="data:,">
 <style>
   :root { --bg: #20252b; --panel: #15191e; --line: #2c333b; --text: #dde3ea; --dim: #8b96a3; --accent: #f2b33d; --bad: #c6403a; }
   * { box-sizing: border-box; }
@@ -111,7 +112,7 @@ function frame(obj, close) {
   const size = Math.max(box.getSize(new THREE.Vector3()).length(), close ? 12 : 50);
   controls.target.copy(c);
   camera.position.copy(c).add(new THREE.Vector3(0.45, 0.55, 0.7).multiplyScalar(size * (close ? 1.1 : 0.75)));
-  camera.far = size * 20;
+  camera.far = Math.max(size * 20, look.state.span * 12);  // close-ups still see the floor out to the fogged horizon
   camera.updateProjectionMatrix();
 }
 

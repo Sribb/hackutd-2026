@@ -149,7 +149,7 @@ class Rig:
         L(edge("X", cx, hx), mx.inputs[0])
         L(edge("Y", cy, hy), mx.inputs[1])
         L(mx.outputs[0], fade.inputs["Value"])
-        fade.inputs["From Min"].default_value, fade.inputs["From Max"].default_value = 0.0, 50.0
+        fade.inputs["From Min"].default_value, fade.inputs["From Max"].default_value = 0.0, 90.0
         flat, noise, ramp = N("ShaderNodeMix"), N("ShaderNodeTexNoise"), N("ShaderNodeMix")
         flat.data_type = ramp.data_type = "RGBA"
         noise.inputs["Scale"].default_value = 0.012
@@ -168,6 +168,20 @@ class Rig:
         L(col(ramp, "Result", True), col(flat, "B"))
         L(fade.outputs["Result"], flat.inputs["Factor"])
         L(col(flat, "Result", True), bsdf.inputs["Base Color"])
+        # The lease's normal map too, fading out with the color, so low sun shades both sides of the
+        # fence alike and no lease rectangle shows from the air.
+        nimg = next((n.image for n in src.node_tree.nodes if n.type == "TEX_IMAGE" and n.image
+                     and "normal" in n.image.name.lower()), None) if src and src.node_tree else None
+        if nimg:
+            ntex, nmap, inv = N("ShaderNodeTexImage"), N("ShaderNodeNormalMap"), N("ShaderNodeMath")
+            ntex.image = nimg
+            inv.operation = "SUBTRACT"
+            inv.inputs[0].default_value = 1.0
+            L(coord.outputs["UV"], ntex.inputs["Vector"])
+            L(ntex.outputs["Color"], nmap.inputs["Color"])
+            L(fade.outputs["Result"], inv.inputs[1])
+            L(inv.outputs[0], nmap.inputs["Strength"])
+            L(nmap.outputs["Normal"], bsdf.inputs["Normal"])
         return mat
 
     def world(self, rig, cam_az=None):
