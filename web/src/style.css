@@ -513,3 +513,15 @@ body.two-nights .sky-ctl { display: none; }
 .sky-ctl:not(:hover):not(:focus-within) .sky-pick { display: none; }
 .sky-ctl:not(:hover):not(:focus-within) { width: auto; }
 .wx.quiet { padding: 5px 10px; margin-bottom: 6px; }
+
+/* ---- #126 refused requests (security.js) ---- */
+.security .sec-head { font-size: 13px; color: var(--ink-2); margin: 0 0 6px; }
+.security .sec-head.hot { color: var(--warning); font-weight: 600; }
+.security .sec-list { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 6px; }
+.security .sec-ev { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; border-top: 1px solid var(--line); padding-top: 6px; font-size: 12px; }
+.security .sec-ev.w .sec-k { color: var(--warning); }
+.security .sec-k { color: var(--ink); }
+.security .sec-p { grid-column: 1; font: 11px var(--mono); color: var(--ink-2); overflow-wrap: anywhere; }
+.security .sec-c { grid-column: 1; font: 11px var(--mono); color: var(--muted); }
+.security .sec-ev time { grid-column: 2; grid-row: 1; font: 11px var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; }
+.security .sec-note { font-size: 11px; margin-top: 6px; }

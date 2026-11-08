@@ -244,3 +244,11 @@ A working level gauge jitters; the simulator's move about ±0.1 point per readin
 - **What changes:** the console stops vouching for that tank. Its row says "stuck?", the tank list says "Can't vouch for Tank 4: its gauge has read exactly 55.34% for 14 min…", and the tank counts as blind in the what-if verdicts. The shift log gets one line and the handoff lists it.
 - **What it isn't:** proof of a fault. It is a reason to check the level in person.
 - **Rehearsal:** `?gauge=freeze:TANK_4` pins that tank's level after the first reading. It is a labeled DRILL.
+
+## Refused requests (`src/security.js`, #126 security log)
+
+Every command to equipment needs the operator token. When the backend serves `GET /api/security/events` (and pushes `/ws` `security` messages), the console shows a "Refused requests" card for the last hour: wrong or missing tokens, writes from a page on another site, a token without that right, PIN lockouts, refused uploads, and refused `/ws` tokens.
+
+- **Burst:** 3 or more refused writes in 10 minutes (deduped events add their counts) turns the card amber and writes one shift-log line. It never pages and never blocks anything. Nothing was sent by any of these requests, and the card says so.
+- **Privacy:** the server masks client addresses and never records tokens, PINs or query strings. The console only shows what the server returns.
+- **Handoff:** section 7 lists counts by kind and the latest refused write. A backend without the log says "Not on this backend". A failed read says "Not checked", never "none".

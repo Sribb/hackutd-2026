@@ -23,6 +23,7 @@ import { mountInspect } from "./inspect.js";
 import { mountAlarms, alarms } from "./alarms.js";
 import { startTrend, trendHtml, wireTrend, frozen } from "./trend.js";
 import { mountRuns, runsSupported, execute as executeRun, peopleOut } from "./runs.js";
+import { mountSecurity, securityLines } from "./security.js";
 
 const $ = (id) => document.getElementById(id);
 // Meshopt-compressed glb (#112/#117) loads with no extra files; a plain glb is unaffected.
@@ -1107,6 +1108,9 @@ function handoffText() {
   if (!tried.length) L.push("  None.");
   for (const e of tried) L.push(`  ${e.at.padStart(8)}  ${e.text}`);
 
+  head(7, "REFUSED REQUESTS (security log)");
+  L.push(...securityLines());
+
   // Levels as they read right now (live readings win over the boot snapshot), stamped,
   // so the next crew never acts on a number that was stale when it was written (#104).
   L.push("", `TANK LEVELS as of ${shiftlog.clockNow()}${liveFeed.live.available ? (liveFeed.live.lostSince ? " (live feed LOST: last known values)" : " (live)") : ` (snapshot from ${dataAt})`}`);
@@ -1488,6 +1492,8 @@ async function boot() {
     select: (id) => select(id, true),
     log: (text) => { shiftlog.add("alarm", text); renderLog(); },
   });
+  // #126 security log: refused requests (wrong tokens, writes from another site). Its own card.
+  mountSecurity($("security"), api.usingBackend ? api.BASE : "", (text) => { shiftlog.add("alarm", text); renderLog(); });
   // #75 plan runs: the run panel under the plans. It feeds the handoff's approved plan.
   mountRuns($("run"), {
     base: api.usingBackend ? api.BASE : "",
