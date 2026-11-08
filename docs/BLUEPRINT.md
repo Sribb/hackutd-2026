@@ -91,7 +91,7 @@ The generator names 3D nodes after these IDs, and derived names (`<tank>_LEVEL`,
 ]
 ```
 
-- `kind` is one of `sim`, `mqtt`, `modbus`, `opcua`, or `webhook`.
+- `kind` is one of `sim`, `mqtt`, `modbus`, `opcua`, `webhook`, `sparkplug` (MQTT Sparkplug B), `enip` (EtherNet/IP), `dnp3`, `piwebapi` (AVEVA PI Web API, read-only), or `lorawan` (ChirpStack/TTN uplinks via the webhook). A kind whose driver isn't installed reports `unavailable` and its assets read UNKNOWN.
 - `signal` is one of `level_pct`, `flow_bbl_hr`, `running`, `position`, `pressure_psi`, or `motor_amps`.
 - `command` is one of `SET_VALVE`, `SET_PUMP`, or `CHOKE_WELL`. A command runs **only after a person confirms it in the console**.
 - **Never put a password or token in a blueprint.** Name an environment variable (`password_env`) instead. The schema rejects config keys named `password`, `token`, `secret`, `api_key`, or `key`.
