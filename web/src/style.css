@@ -525,3 +525,8 @@ body.two-nights .sky-ctl { display: none; }
 .security .sec-c { grid-column: 1; font: 11px var(--mono); color: var(--muted); }
 .security .sec-ev time { grid-column: 2; grid-row: 1; font: 11px var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; }
 .security .sec-note { font-size: 11px; margin-top: 6px; }
+
+/* Link to the sponsor dataset console (/dataset). */
+.ds-link { font: 10px var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--ink-2); text-decoration: none;
+  border: 1px solid var(--line); padding: 2px 7px; margin-left: 6px; }
+.ds-link:hover { color: var(--ink); border-color: var(--ink-2); }
