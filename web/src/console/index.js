@@ -22,7 +22,10 @@ import { mountStatusLine } from "./statusline.js";
 import { mountSidebar } from "./sidebar.js";
 import { makeDirectives } from "./directives.js";
 import { makeViewStub } from "./viewstub.js";
+import { mountMonitor } from "./monitor.js";
+import { makeNotifier } from "./notify.js";
 import * as intents from "./intents.js";
+import { makeCharts } from "./chartask.js";
 import {
   normalizeBrief, fallbackBrief, toMin, clock12, minsUntil, usd, andList,
   countdownBar, planBars, dot, prioOf, levelOf, watchText, forecastText, plannerText,
@@ -69,6 +72,8 @@ export function mountConsole(H) {
 
   // --------------------------------------------------------------- DOM ----
   const status = mountStatusLine(H.stage, onSegment);
+  // #154: the monitoring strip under the status line, and the big alert notification.
+  const monitor = mountMonitor(H.stage, { focus: (id) => { if (H.hasId(id)) { view().focus(id); highlight.flash("jarvis", [id], 8000); } }, openAlerts: () => onSegment("W") });
   const side = mountSidebar(app, onSide);
   const tab = document.createElement("button");
   tab.type = "button";
@@ -137,6 +142,22 @@ export function mountConsole(H) {
     setTimeFrom, resetView: () => ({ ok: true, said: resetView() }), openPanel,
   }, view);
 
+  const notifier = makeNotifier({
+    stage: H.stage, nice, brief: () => computeBrief(), nowMin: () => nowMin(), unknown: () => unknownTanks(),
+    alerts: () => [...alerts.values()], log,
+    // "show me": the field pane open, the 3D on the failed asset, and the incident open in the chat.
+    showMe(a) {
+      if (!layout.fieldOpen()) layout.field(true);
+      setOpen(true);
+      threads.view(a.root_id && a.root_id !== a.id ? a.root_id : a.id);
+      const ids = [a.asset_id, a.consequence_asset_id].filter((x) => H.hasId(x));
+      if (ids.length) { view().focus(ids[0]); highlight.flash("jarvis", ids, 8000); }
+      requestAnimationFrame(() => scrollTo("W"));
+    },
+  });
+  const tourAt = new URLSearchParams(location.search).get("tour") === "1" ? Date.now() : 0;
+  let tourDone = !tourAt;
+
   const stub = makeViewStub({
     nice, scene: H.scene, hasId: H.hasId, tanks: H.tanks, focus: H.focus, select: H.select, flyHome: H.flyHome,
     setTime: H.setTime, tankOf: H.tankOf,
@@ -144,6 +165,11 @@ export function mountConsole(H) {
   function view() {
     return H.view || (window.__console3d && window.__console3d.view) || stub;
   }
+  // Chart cards (chartask.js): drawn from the data in the browser, no AI. A click flies to the asset.
+  const charts = makeCharts({
+    BASE, data: H.data, hasId: H.hasId, nice, stream, say: (text, extra) => say(text, extra),
+    focus: (id) => { view().focus(id); highlight.flash("jarvis", [id], 8000); },
+  });
 
   // --------------------------------------------------------- helpers ----
   function nowMin() { return toMin(liveFeed.live.clock) ?? toMin(H.clockNow()); }
@@ -342,6 +368,8 @@ export function mountConsole(H) {
     const news = ev !== "updated" || becameP1;
     stream.say("W", { text: watchText(a, ev, nice), visual: watchVisual(a), ids: [a.asset_id, a.consequence_asset_id].filter(Boolean), key: a.id, ...(ev === "resolved" ? {} : watchExtra(a)) }, { news, urgent: urgent || becameP1 });
     if (becameP1 && !autoOpened.has(a.id)) { autoOpened.add(a.id); setOpen(true); threads.view(a.id); }
+    // A new incident: re-read the forecast and plans soon, so the card's fix is this incident's.
+    if (notifier.consider(a, ev, becameP1)) setTimeout(poll, 2500);
     agentsTick();
   }
 
@@ -452,6 +480,7 @@ export function mountConsole(H) {
     const ctx = { hasId: H.hasId, ids: H.ids, selected: H.selected, opened: () => (view().state() || {}).open };
     const m = intents.match(text, ctx);
     if (m) {
+      if (m.chart) { askChain = askChain.then(() => charts.answer(m.chart)).catch(() => {}); return; }
       if (m.hands) { setHands(m.hands === "on"); say(m.hands === "on" ? "Hands on. Point to look, pinch to open, open palm to turn, fist to reset." : "Hands off. The mouse does everything."); return; }
       if (m.clearWhatif) { H.setActions([]); say("Cleared every what-if. Back to the do-nothing forecast."); return; }
       const said = directives.apply({ action: m.action, asset_id: m.asset_id, args: m.args });
@@ -714,6 +743,15 @@ export function mountConsole(H) {
       isolated: (view().state() || {}).isolated ? lc(nice(view().state().isolated)) : "",
     });
     tab.hidden = true;
+    if (H.ready() && H.liveView) {
+      const red = act.some((a) => levelOf(a) === "red"), amber = act.some((a) => levelOf(a) === "amber");
+      monitor.render({
+        field: H.data().field, view: H.liveView(), unknown, nice: H.nice, down: alertsDown(),
+        alerts: { n: roots.length, rel: act.length - roots.length, red: roots.length > 0 && red, amber: roots.length > 0 && amber },
+        countdown: cd, left, src, vouch: vouchable() && !unknown.length,
+        asOf: liveFeed.live.available ? null : H.clockAt(0),
+      });
+    }
   }
 
   // ------------------------------------------------------------ socket ----
@@ -738,6 +776,10 @@ export function mountConsole(H) {
       const sc = note && note.querySelector(".scenery-btn");
       const row = document.querySelector(".timebar-row");
       if (sc && row) row.insertBefore(sc, row.querySelector(".cs-skybtn"));
+      const f = H.data() && H.data().field;
+      // The "show tank 3" pill names this field's first tank in dataset mode, or wherever tank 3 isn't.
+      const tank0 = f && (f.mode === "dataset" || !H.hasId("TANK_3")) && (f.tanks || []).map((t) => t.id).find((id) => H.hasId(id));
+      if (tank0) side.suggestAsset(`show ${tank0.replace(/_/g, " ").toLowerCase()}`);
       agentsTick();
       renderStatus();
       intro.ready();
@@ -751,7 +793,16 @@ export function mountConsole(H) {
       if (H.getTime() !== 0) tbUntil = Date.now() + 10000;
       document.body.classList.toggle("cs-tb-up", up);
       if (now - lastStatus > 250) { lastStatus = now; renderStatus(); side.setHands(handsState()); autoDrawer(); }
-      if (now - lastTick > 1000) { lastTick = now; agentsTick(); }
+      if (now - lastTick > 1000) {
+        lastTick = now;
+        agentsTick();
+        notifier.tick();
+        // ?tour=1 (the judge tour): show the current top alert once it is in, after a beat.
+        if (!tourDone && started && Date.now() - tourAt > 1500) {
+          const a = notifier.top();
+          if (a) { tourDone = true; notifier.show(a, { via: "tour" }); } else if (Date.now() - tourAt > 20000) tourDone = true;
+        }
+      }
     },
     reset() { const s = resetView(); if (s) say(s); },
     open: () => setOpen(true),
@@ -764,6 +815,12 @@ export function mountConsole(H) {
     unknown: () => unknownTanks(), now: () => nowMin(), reach: () => reach, vouchable: () => vouchable(), card: () => fix.shown(), cardLog: () => fix.log(),
     ask: (t) => ask(t), view: () => view(), reset: () => api.reset(), directives: () => directives.seen(),
     threads: () => threads.list(), thread: (id) => (id ? threads.view(id) : threads.viewing()), intro: () => intro.state(),
+    notify: () => notifier.state(),
+  };
+  // #154, for the judge tour: gaiaNotify() shows the current top alert; gaiaNotify(alert or id) a given one.
+  window.gaiaNotify = (x) => {
+    const a = x == null ? notifier.top() : typeof x === "string" ? alerts.get(x) : x && x.id && alerts.has(x.id) ? { ...alerts.get(x.id), ...x } : x;
+    return a ? notifier.show(a, { via: "api" }) : { shown: false, reason: "no active alert" };
   };
   return api;
 }
