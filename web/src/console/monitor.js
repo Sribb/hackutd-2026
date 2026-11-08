@@ -19,9 +19,9 @@ import { clock12 } from "./agents.js";
 const BLIND = new Set(["NO_DATA", "UNKNOWN"]);
 const blind = (v) => !v || BLIND.has(v.status) || v.stale === true;
 const lc = (s) => String(s).toLowerCase();
-// A sponsor id's system prefix ("s4 tank c" from S4_TANK_C): the strip shows one system's assets.
-const bare = (name) => String(name).replace(/^s\d+\s+/, "");
-// "tank 3" or "tank c" in full, "t3" or "tc" where the canvas is narrow (CSS picks one).
+// A sponsor id's system prefix ("S4 Tank C" from S4_TANK_C): the strip shows one system's assets.
+const bare = (name) => String(name).replace(/^s\d+\s+/i, "");
+// "Tank 3" or "Tank C" in full; "T3" or "TC" only on a very narrow canvas (CSS picks one).
 const label = (name) => { const m = /^(\D+?)\s+(\w{1,3})$/.exec(bare(name)); return m ? `<i class="lg">${esc(m[1])} </i><i class="sm">${esc(m[1][0])}</i>${esc(m[2])}` : esc(bare(name)); };
 // The console's clock: "2:48 AM" on the demo field, "14:05 UTC" on an EOG dataset.
 const clockOf = (min) => (liveFeed.live.dataset && min != null ? `${String(Math.floor((((min % 1440) + 1440) % 1440) / 60)).padStart(2, "0")}:${String((((Math.round(min) % 60) + 60) % 60)).padStart(2, "0")} UTC` : clock12(min));
@@ -42,10 +42,17 @@ export function mountMonitor(host, H) {
     else H.openAlerts();
   });
   const set = (node, html) => { if (node._h !== html) { node._h = html; node.innerHTML = html; } };
+  // Full tank names ("Tank C") while every one fits; a big system or a narrow pane gets TC instead.
+  // Measured with the full names showing, then decided in the same frame, so nothing flickers.
+  function fitNames() {
+    el.classList.remove("gm-tight");
+    if ([...tanksEl.querySelectorAll(".gm-l > span")].some((s) => s.scrollWidth > s.clientWidth + 1)) el.classList.add("gm-tight");
+  }
+  if (typeof ResizeObserver === "function") new ResizeObserver(fitNames).observe(el);
 
   function tankHtml(t, s) {
     const v = s.view[t.id];
-    const name = label(lc(s.nice(t.id)));
+    const name = label(s.nice(t.id));
     const stuck = frozen(t.id);
     const noRead = blind(v) || v.level_pct == null || s.unknown.includes(t.id) && !stuck;
     const shut = `left:${Math.min(100, t.shutdown_pct)}%`;
@@ -93,6 +100,7 @@ export function mountMonitor(host, H) {
       const here = (x) => !s.inSystem || s.inSystem(x.id);
       const tanks = (s.field.tanks || []).filter(here);
       set(tanksEl, tanks.map((t) => tankHtml(t, s)).join(""));
+      fitNames();
       const live = liveFeed.live.available ? "the live feed" : `the ${s.asOf || "boot"} snapshot`;
       const pumpList = (s.field.pumps || []).filter(here), wellList = (s.field.wells || []).filter(here);
       const pumps = count(pumpList, s, (v) => v.status !== "ALARM" && v.running !== false && v.status !== "OFFLINE");

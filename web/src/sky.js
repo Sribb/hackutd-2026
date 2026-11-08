@@ -18,6 +18,7 @@
 
 import * as THREE from "three";
 import * as shiftlog from "./shiftlog.js";
+import { live } from "./live.js";
 
 export const DEFAULT_SITE = { name: "Mentone, TX", lat: 31.7, lon: -103.6, timezone: "America/Chicago" };
 const LAMPS_ON_BELOW = -2;    // sun altitude in degrees
@@ -343,6 +344,10 @@ export function mountSky(hooks) {
     const rising = sunPosition(utc + 600000, site.lat, site.lon).alt > sun.alt;
     Object.assign(now, { minutes: min, utc, sun, moon, rising, phase: phaseOf(sun.alt, rising) });
     const L = lookAt(sun.alt);
+    // On an EOG dataset the judges have to read the sponsor's equipment at 2 AM, so night gets a
+    // floor: more fill light, pads a little less dark, a touch more exposure. Daylight already
+    // clears it. The demo field keeps Ronak's Night Survey look exactly.
+    if (live.dataset) { L.hi = Math.max(L.hi, 0.95); L.site = Math.max(L.site, 0.18); L.exp = Math.max(L.exp, 1.12); }
     skyDir(sun.alt, sun.az, sunV);
     skyDir(moon.alt, moon.az, moonV);
 
