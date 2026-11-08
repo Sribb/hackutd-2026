@@ -157,6 +157,152 @@ def test_mqtt_publish_while_disconnected_is_failed_and_dropped(field, scada, plc
     assert scada.commands == [], "a refused publish must not go out after the reconnect"
 
 
+def _confirm_in_thread(live, action_id: str) -> tuple[threading.Thread, dict]:
+    out: dict = {}
+
+    def go() -> None:
+        out["p"] = run(live.confirm(action_id, by="night operator"))
+    t = threading.Thread(target=go, daemon=True)
+    t.start()
+    return t, out
+
+
+def _drop_link_and_wait_for_reconnect(scada, conn) -> None:
+    """Acknowledge from now on (so a re-send would come back CONFIRMED), then drop the
+    link and wait until paho is back: the moment paho would re-send its queue."""
+    scada.broker.drop_pubacks = False
+    scada._bg.call(scada.broker.drop_clients)
+    wait_until(lambda: not conn.connected)
+    wait_until(lambda: conn.connected and scada.broker.clients >= 1, timeout=10)
+    time.sleep(0.5)  # time for a re-sent PUBLISH (and its PUBACK) to go through
+
+
+def test_mqtt_reconnect_during_the_puback_wait_is_uncertain_and_delivered_once(field, scada, plc, live_factory):
+    """(a) The link drops after the command went out and paho reconnects while send()
+    is still waiting. paho would re-send it on the new link (and that PUBACK would make
+    it look CONFIRMED after reaching the device twice). It must reach the device once
+    and come back UNCERTAIN."""
+    raw = blueprint(scada.port, plc.port)
+    raw["connectors"][0]["config"]["timeout_s"] = 8  # longer than the reconnect
+    live = live_factory(raw)
+    conn = live.registry.get("CONN_SCADA")
+    wait(live, lambda: conn_status(live)["CONN_SCADA"] == "connected", scada)
+    scada.broker.drop_pubacks = True
+
+    p = run(live.propose({"type": "SET_PUMP", "asset_id": "PUMP_2", "value": "OFF"}))
+    t, out = _confirm_in_thread(live, p["id"])
+    wait_until(lambda: len(scada.commands) == 1)
+    assert t.is_alive(), "send() must still be waiting for the PUBACK"
+    _drop_link_and_wait_for_reconnect(scada, conn)
+    t.join(timeout=10)
+    done = out["p"]
+    assert done["status"] == "UNCERTAIN", done
+    assert UNCERTAIN in done["result"] and "link dropped" in done["result"], done["result"]
+    assert "PUMP_2" not in live.commanded
+    time.sleep(0.3)
+    assert len(scada.commands) == 1, f"the command reached the device again: {scada.commands}"
+    assert conn.lost == 1 and "never re-sent" in conn.status()["detail"]
+    confirm_is_409(live, p["id"])
+
+
+def test_mqtt_reconnect_right_after_the_timeout_is_uncertain_and_delivered_once(
+        monkeypatch, field, scada, plc, live_factory):
+    """(b) The PUBACK wait times out, and paho reconnects before send() has taken the
+    message back. A re-send then gets a PUBACK; that must not turn into CONFIRMED (or
+    into a second delivery)."""
+    import paho.mqtt.client as mqtt
+
+    raw = blueprint(scada.port, plc.port)
+    raw["connectors"][0]["config"]["timeout_s"] = 0.4
+    live = live_factory(raw)
+    conn = live.registry.get("CONN_SCADA")
+    wait(live, lambda: conn_status(live)["CONN_SCADA"] == "connected", scada)
+    scada.broker.drop_pubacks = True
+    real_wait = mqtt.MQTTMessageInfo.wait_for_publish
+
+    def wait_then_reconnect(info, timeout=None):
+        try:
+            return real_wait(info, timeout)
+        finally:  # the wait is over; the take-back hasn't run yet
+            _drop_link_and_wait_for_reconnect(scada, conn)
+    monkeypatch.setattr(mqtt.MQTTMessageInfo, "wait_for_publish", wait_then_reconnect)
+
+    p = run(live.propose({"type": "SET_PUMP", "asset_id": "PUMP_2", "value": "OFF"}))
+    done = run(live.confirm(p["id"]))
+    assert done["status"] == "UNCERTAIN", done
+    assert UNCERTAIN in done["result"], done["result"]
+    time.sleep(0.3)
+    assert len(scada.commands) == 1, f"the command reached the device again: {scada.commands}"
+
+
+def test_mqtt_commands_refused_without_paho_queue_access(monkeypatch, field, scada, plc, live_factory):
+    """No way to take a message back means no at-most-once: refuse, send nothing."""
+    live = live_factory(blueprint(scada.port, plc.port))
+    wait(live, lambda: conn_status(live)["CONN_SCADA"] == "connected", scada)
+    monkeypatch.setattr(MqttConnector, "_queue", staticmethod(lambda client: None))
+    p = run(live.propose({"type": "SET_PUMP", "asset_id": "PUMP_2", "value": "OFF"}))
+    done = run(live.confirm(p["id"]))
+    assert done["status"] == "FAILED" and "Nothing was sent" in done["result"], done
+    time.sleep(0.3)
+    assert scada.commands == []
+
+
+class ExceptionPlc(BlackHolePlc):
+    """A PLC that answers every request with one Modbus exception code."""
+
+    def __init__(self, code: int) -> None:
+        self.code = code
+        super().__init__()
+
+    def _read(self, c: socket.socket) -> None:
+        buf = b""
+        while True:
+            try:
+                data = c.recv(4096)
+            except OSError:
+                return
+            if not data:
+                return
+            self.received += data
+            buf += data
+            while len(buf) >= 8 and len(buf) >= 6 + int.from_bytes(buf[4:6], "big"):
+                n = 6 + int.from_bytes(buf[4:6], "big")
+                frame, buf = buf[:n], buf[n:]
+                reply = frame[0:2] + b"\x00\x00\x00\x03" + frame[6:7] + bytes([frame[7] | 0x80, self.code])
+                try:
+                    c.sendall(reply)
+                except OSError:
+                    return
+
+
+@pytest.mark.parametrize("code,status", [
+    (0x01, "FAILED"), (0x02, "FAILED"), (0x03, "FAILED"),        # refused: nothing moved
+    (0x04, "UNCERTAIN"), (0x05, "UNCERTAIN"), (0x06, "UNCERTAIN"),  # device failure, ack, busy
+    (0x0A, "UNCERTAIN"), (0x0B, "UNCERTAIN"),                    # gateway
+    (0x07, "UNCERTAIN"),                                         # a code we don't map: not "refused"
+])
+def test_modbus_exception_codes_map_to_failed_or_uncertain(code, status, live_factory):
+    dev = ExceptionPlc(code)
+    try:
+        live = live_factory(with_connectors({
+            "id": "CONN_PLC", "kind": "modbus",
+            "config": {"host": "127.0.0.1", "port": dev.port, "timeout_s": 0.5, "poll_s": 30},
+            "commands": [{"asset_id": "VALVE_XO_56", "command": "SET_VALVE", "address": "hr:10"}]}))
+        p = run(live.propose({"type": "SET_VALVE", "asset_id": "VALVE_XO_56", "value": "OPEN"}))
+        done = run(live.confirm(p["id"]))
+        assert done["status"] == status, done
+        assert f"0x{code:02X}" in done["result"], done["result"]
+        if status == "FAILED":
+            assert "Nothing moved" in done["result"]
+        else:
+            assert UNCERTAIN in done["result"] and "hr:10" in done["result"]
+        time.sleep(0.2)
+        assert dev.frames(0x06) == 1, "a write is never retried"
+        confirm_is_409(live, p["id"])
+    finally:
+        dev.close()
+
+
 def test_modbus_write_with_no_reply_is_uncertain_and_sent_once(hole, live_factory):
     live = live_factory(with_connectors({
         "id": "CONN_PLC", "kind": "modbus",

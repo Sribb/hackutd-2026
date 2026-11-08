@@ -19,11 +19,15 @@ Commands, written only after a person confirms:
     SET_PUMP    ON 1, OFF 0
     CHOKE_WELL  percent kept, 0 (shut in) to 100 (untouched), in a holding register
 
-A write the PLC answers with a Modbus exception is FAILED (it refused, nothing moved).
-A write that was sent but got no reply within timeout_s (or whose link dropped while
-waiting) is `uncertain` (UNCERTAIN, never FAILED): the PLC may have applied it. The
-client runs with retries=0, so pymodbus never re-sends a write on its own, and the
-connector never retries one either.
+Only a Modbus exception that means "refused, nothing moved" makes a write FAILED:
+0x01 illegal function, 0x02 illegal data address, 0x03 illegal data value (REFUSED).
+Every other exception may come after the PLC started on the write, so it is
+`uncertain` (UNCERTAIN, never FAILED): 0x04 slave device failure, 0x05 acknowledge
+(accepted, still working), 0x06 busy, 0x0A/0x0B gateway path unavailable / target
+didn't respond, and any code this list doesn't know. A write that was sent but got no
+reply within timeout_s (or whose link dropped while waiting) is `uncertain` too: the
+PLC may have applied it. The client runs with retries=0, so pymodbus never re-sends a
+write on its own, and the connector never retries one either.
 
 Config: host (required), port (502), unit_id (1), poll_s (1), timeout_s (2),
 bad_value (65535).
@@ -78,8 +82,25 @@ def command_raw(command: dict) -> Optional[int]:
     return None
 
 
+# Exception codes that mean the PLC rejected the request before acting on it.
+REFUSED_CODES = {0x01: "illegal function", 0x02: "illegal data address", 0x03: "illegal data value"}
+# Every other code is UNCERTAIN for a write: the PLC (or a gateway) may have acted on it.
+EXCEPTION_NAMES = {**REFUSED_CODES, 0x04: "slave device failure", 0x05: "acknowledge (still working)",
+                   0x06: "slave device busy", 0x08: "memory parity error",
+                   0x0A: "gateway path unavailable", 0x0B: "gateway target device failed to respond"}
+
+
 class DeviceRefused(Exception):
-    """The PLC answered with a Modbus exception (bad address, say). The link itself is fine."""
+    """The PLC answered with a Modbus exception (bad address, say). The link itself is fine.
+    `code` is the exception code; only REFUSED_CODES mean nothing moved."""
+
+    def __init__(self, message: str, code: int = 0) -> None:
+        super().__init__(message)
+        self.code = code
+
+    @property
+    def nothing_moved(self) -> bool:
+        return self.code in REFUSED_CODES
 
 
 def _unit_kw(method) -> str:
@@ -191,8 +212,10 @@ class ModbusConnector(Connector):
 
     def _call(self, name: str, address: int, **kw):
         rr = getattr(self.client, name)(address, **kw, **{self._unit_kw: self.unit})
-        if rr is not None and getattr(rr, "exception_code", 0):
-            raise DeviceRefused(f"{name}({address}): the PLC answered exception code {rr.exception_code}")
+        code = int(getattr(rr, "exception_code", 0) or 0) if rr is not None else 0
+        if code:
+            what = EXCEPTION_NAMES.get(code, "unknown exception")
+            raise DeviceRefused(f"{name}({address}): the PLC answered exception 0x{code:02X} ({what})", code)
         if rr is None or rr.isError():
             raise IOError(f"{name}({address}) failed: {rr}")
         return rr
@@ -263,8 +286,12 @@ class ModbusConnector(Connector):
                     self._call("write_coil", n, value=bool(raw))
                 else:
                     self._call("write_register", n, value=raw)
-            except DeviceRefused as e:  # the PLC answered: it did not apply the write
-                return {"ok": False, "detail": f"{self.id} refused the write: {e}"}
+            except DeviceRefused as e:
+                if e.nothing_moved:  # illegal function, address, or value: rejected, nothing moved
+                    return {"ok": False, "detail": f"{self.id} refused the write to {where}: {e}. Nothing moved."}
+                # Busy, device failure, acknowledge, gateway: it may have acted (or still be acting).
+                return {"ok": False, "uncertain": True,
+                        "detail": f"{self.id}: wrote {raw} to {where}, {UNCERTAIN_DETAIL} ({e})."}
             except Exception as e:  # noqa: BLE001 - the request went out; the reply never came
                 self._fail(str(e))
                 return {"ok": False, "uncertain": True,
