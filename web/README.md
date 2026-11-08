@@ -54,3 +54,13 @@ The fake files are generated, not hand-written: `python3 web/scripts/make_fakes.
     python3 web/scripts/make_fakes.py --from-api http://127.0.0.1:8000
 
 The files say "Recorded from the backend" in their warnings, and the badge still reads FAKE DATA.
+
+## Load a field (upload screen, #43)
+
+**Load field** (top right), or open `/#upload`.
+
+1. **Drop** a site plan: a photo or PDF (Claude reads it on the server), a CSV equipment list, or a blueprint JSON. It is sent to `POST /api/ingest` as multipart `file`.
+2. **Check** every asset Claude or the parser found, with its label on the plan and how sure it is (under 80% shows red). Each `review` item needs a human: type the missing numbers, or tick "I checked this". Any `errors` block the build.
+3. **Hold to build** sends `{"blueprint": ...}` to `POST /api/blueprints` and polls `GET /api/blueprints/{id}` while `status` is `building`. On `ready` or `fallback` the console reopens on `/api/field` and the returned `glb_url`. The clock in the corner counts from the drop, and the shift log records the total.
+
+Without a backend, only a blueprint JSON can be shown, and nothing is built.
