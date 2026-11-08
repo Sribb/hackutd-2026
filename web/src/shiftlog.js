@@ -7,6 +7,9 @@ let baseMin = 0;
 let t0 = Date.now();
 let key = "freeboard.shiftlog";
 let list = [];
+let logId = "";   // this log's id: tabs only merge entries of the same log
+let started = false, opened = false;
+const early = []; // entries logged before start() (a /ws alert during the model load): added after it
 
 export function start(clock, incident) {
   const [h, m] = String(clock).split(":").map(Number);
@@ -19,14 +22,28 @@ export function start(clock, incident) {
     // old APPROVED lines in the handoff. ?fresh always starts clean.
     const saved = JSON.parse(localStorage.getItem(key) || "null");
     const fresh = new URLSearchParams(location.search).has("fresh");
-    if (fresh || !saved || Date.now() - (saved.last || saved.t0 || 0) > 30 * 60 * 1000) localStorage.removeItem(key);
-    else if (Array.isArray(saved.list)) {
+    if (fresh || !saved || !Array.isArray(saved.list) || Date.now() - (saved.last || saved.t0 || 0) > 30 * 60 * 1000) {
+      // A new log, with its own id: a tab still open on the old one stops writing here.
+      logId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+      list = [];
+      localStorage.setItem(key, JSON.stringify({ id: logId, t0, last: Date.now(), list: [] }));
+    } else {
       list = saved.list;
       t0 = saved.t0 || t0;
+      logId = saved.id || "";
     }
   } catch {
     list = [];
   }
+  started = true;
+  try { localStorage.removeItem("freeboard.shiftlog"); } catch { /* an old build logged here before start() */ }
+}
+
+// Entries logged before start(), added now. The console calls it after its "Console opened" line,
+// so the log reads in order. Also runs on the next add() or entries() if nobody calls it.
+export function flushEarly() {
+  if (!started) return;
+  for (const [kind, text] of early.splice(0)) add(kind, text);
 }
 
 // With a live layer, the backend's clock is the shift clock (#42 one clock): "HH:MM" plus
@@ -50,34 +67,55 @@ export function clockNow(seconds = false, plusMin = 0) {
   return `${hh % 12 || 12}:${String(mm).padStart(2, "0")}${sec} ${hh < 12 ? "AM" : "PM"}`;
 }
 
-// While the console is open and in view the log is alive, written or not: a quiet half hour
-// followed by a reload must keep it. Only a log nobody had on screen for 30 min is a rehearsal.
-// The timer only touches "last": it re-reads storage, so an idle second tab (a projector
-// window) never writes its older list over the active tab's newer entries.
+// While the console is open the log is alive, written or not: a quiet half hour followed by a
+// reload must keep it. Only a log no tab had open for 30 min is a rehearsal.
+// Several tabs on one incident (laptop and projector) share one log by id. The timer only
+// touches "last" on the stored copy, so an idle tab never writes its older list over newer
+// entries. A tab whose log was replaced (?fresh, or expiry, in another tab) keeps its own
+// entries in memory and stops writing here.
 const read = () => { try { return JSON.parse(localStorage.getItem(key) || "null"); } catch { return null; } };
 const sig = (e) => `${e.at}|${e.kind}|${e.text}`;
+const mine = (saved) => saved && Array.isArray(saved.list) && (saved.id || "") === logId;
+// Stored entries, plus this tab's that aren't stored yet (as many copies as this tab has).
 function merged() {
+  if (!started) return list; // no log yet: never another log's entries
   const saved = read();
-  if (!saved || !Array.isArray(saved.list)) return list;
-  const have = new Set(saved.list.map(sig));
-  return saved.list.concat(list.filter((e) => !have.has(sig(e))));
+  if (!mine(saved)) return list;
+  const out = saved.list.slice();
+  const left = new Map();
+  for (const e of saved.list) left.set(sig(e), (left.get(sig(e)) || 0) + 1);
+  for (const e of list) {
+    const k = sig(e), n = left.get(k) || 0;
+    if (n > 0) left.set(k, n - 1); else out.push(e);
+  }
+  return out;
 }
 setInterval(() => {
-  if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
   const saved = read();
-  if (!saved || !Array.isArray(saved.list)) return;
+  if (!mine(saved)) return;
   try { localStorage.setItem(key, JSON.stringify({ ...saved, last: Date.now() })); } catch { /* private window */ }
 }, 60000);
 
+// Automatic entries (live alarms, run steps): the same text in the same minute adds nothing,
+// whether this tab or another open tab on the same log already wrote it.
+const AUTO = new Set(["alarm", "alert", "step"]);
+
 export function add(kind, text) {
+  if (!started) { early.push([kind, text]); return; }
+  if (kind === "open") opened = true;
+  else if (early.length) { opened = true; flushEarly(); }
   const e = { at: clockNow(), kind, text };
+  const saved = read();
+  if (AUTO.has(kind) && merged().some((x) => sig(x) === sig(e))) { list = merged(); return; }
   list = merged();
   list.push(e);
-  try { localStorage.setItem(key, JSON.stringify({ t0, last: Date.now(), list })); } catch { /* private window: keep it in memory */ }
+  if (saved && !mine(saved)) return; // our log was replaced: keep this tab's entries in memory only
+  try { localStorage.setItem(key, JSON.stringify({ id: logId, t0, last: Date.now(), list })); } catch { /* private window: keep it in memory */ }
 }
 
 // Includes entries another tab on the same incident wrote.
 export function entries() {
+  if (early.length && opened) flushEarly();
   list = merged();
   return list;
 }

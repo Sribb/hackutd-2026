@@ -31,7 +31,8 @@ let s = socks.at(-1); s.onopen();
 const tick = (sk) => sk.onmessage({ data: JSON.stringify({ type: "state", state: st }) });
 for (let i = 0; i < 5; i++) { tick(s); now += 1000; }
 
-// (A) Paused sim: no state for 10 s, but pongs come back. Not lost, socket kept.
+// (A) Paused sim (the state says so): no state for 10 s, but pongs come back. Not lost, socket kept.
+st.paused = true; tick(s);
 for (let i = 0; i < 5; i++) { now += 2000; watchdog(); }
 assert.equal(L.live.lostSince, null, "a paused sim that answers pings is not a lost feed");
 assert.ok(!s.closed, "the healthy socket stays open");
@@ -57,6 +58,25 @@ now += 9000; // the backend took a while
 s2.onopen();
 now += 2000; watchdog();
 assert.ok(!s2.closed, "a fresh socket is not closed before it has had a chance to tick");
+
+// (D) Not paused, pongs keep coming, but state stopped (the server dropped us from its hub):
+// the socket is replaced, without a "lost" flash unless the new one fails to come up.
+st.paused = false; pong = true;
+for (let i = 0; i < 4; i++) { tick(s2); now += 1000; }
+timers.length = 0;
+for (let i = 0; i < 4; i++) { now += 2000; watchdog(); }
+assert.ok(s2.closed, "a ticking socket that only pongs is replaced");
+assert.equal(L.live.lostSince, null, "not marked lost at once");
+assert.ok(timers.some((x) => x.ms === 4000), "lost only if no new socket within 4 s");
+
+// (E) A socket opened while paused: one state, then only pongs. Total silence is still caught.
+const r2 = timers.at(-1); r2.fn(); // retry() is scheduled last
+const s3 = socks.at(-1); s3.onopen();
+st.paused = true; tick(s3); now += 1000;
+s3.send('{"type":"ping"}'); // pong seen
+pong = false;
+for (let i = 0; i < 4; i++) { now += 2000; watchdog(); }
+assert.ok(s3.closed && L.live.lostSince, "a socket opened during a pause still gets the half-open check");
 globalThis.setInterval = realSI;
 console.log("live.js watchdog: all checks pass");
 process.exit(0);

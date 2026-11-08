@@ -22,7 +22,7 @@ import { mountScenery } from "./scenery.js";
 import { mountInspect } from "./inspect.js";
 import { mountAlarms, alarms } from "./alarms.js";
 import { startTrend, trendHtml, wireTrend, frozen } from "./trend.js";
-import { mountRuns, runsSupported, execute as executeRun, peopleOut } from "./runs.js";
+import { mountRuns, runsSupported, runsOn, execute as executeRun, peopleOut } from "./runs.js";
 import { mountSecurity, securityLines } from "./security.js";
 
 const $ = (id) => document.getElementById(id);
@@ -489,19 +489,30 @@ function statusTag(s) {
 // Minutes the shift clock has moved past the clock the forecast was computed at
 // (data.state.clock). The forecast is re-read every minute with a backend; offline it isn't,
 // so countdowns subtract this to stay in step with the header clock.
+// Unwrapped across midnight and past 12 h: once the clock has run ahead, a later reading
+// picks the whole-day turn closest to the last answer, so a deadline that passed never reads
+// as ahead again. A new forecast clock starts the count over.
+let since = { key: "", d: 0 };
 function minutesSinceData() {
   const m = /^(\d{1,2}):(\d{2})(?::\d{2})? (AM|PM)$/.exec(shiftlog.clockNow());
-  const [h0, m0] = String(data.state.clock || "00:00").split(":").map(Number);
+  const key = String(data.state.clock || "00:00");
+  const [h0, m0] = key.split(":").map(Number);
   if (!m) return 0;
   const now = ((+m[1] % 12) + (m[3] === "PM" ? 12 : 0)) * 60 + +m[2];
-  const d = (((now - (h0 * 60 + m0)) % 1440) + 1440) % 1440;
-  return d > 720 ? 0 : d; // a clock behind the data (just re-read): nothing to subtract
+  const raw = (((now - (h0 * 60 + m0)) % 1440) + 1440) % 1440;
+  let d;
+  if (since.key !== key || since.d === 0) d = raw > 720 ? 0 : raw; // a clock behind the data (just re-read): nothing to subtract
+  else d = Math.max(0, raw + 1440 * Math.round((since.d - raw) / 1440));
+  since = { key, d };
+  return d;
 }
 
 // A forecast minute the shift clock has already passed. Deadlines from an old forecast must
 // say they passed, not still read as ahead of the crew.
 const passed = (min) => Number.isFinite(min) && minutesSinceData() > min;
-const sinceRead = () => `forecast last read ${clockAt(0)}`;
+const sinceRead = () => `forecast made from the ${clockAt(0)} readings`;
+// Where a fresh plan comes from: approving re-scores on the live state when the backend runs plans.
+const rescore = () => (runsOn() ? "Holding to approve re-scores a plan on the live state first." : "Ask Jarvis for a plan from the live state.");
 
 function renderIncident() {
   const inc = data.state.incident;
@@ -535,7 +546,7 @@ function renderIncident() {
       ? ` The forecast said nothing keeps every well online after ${pnr.clock}, and that time has passed.`
       : ` At the forecast inflow, nothing keeps every well online after ${pnr.clock}.`;
     last = passed(best.expires_min)
-      ? `<div class="lastcall"><b>Last Call passed at ${best.expires_clock}:</b> the cheapest plan (${usd(best.cost.total_usd)}) no longer works as planned (${sinceRead()}). Read the plans again before choosing.${pnrText}</div>`
+      ? `<div class="lastcall"><b>Last Call passed at ${best.expires_clock}:</b> the cheapest plan (${usd(best.cost.total_usd)}) no longer works as planned (${sinceRead()}). ${rescore()}${pnrText}</div>`
       : `<div class="lastcall"><b>Last Call:</b> the cheapest plan (${usd(best.cost.total_usd)}) only works if you start by
       <b>${best.expires_clock}</b>.${hot}${pnrText}</div>`;
   }
@@ -740,7 +751,7 @@ function renderPlans() {
     if (!allPlans && !show.has(i)) return "";
     const dl = deadlineFor(p);
     const hold = p.robust === true ? "Holds even if inflow runs 15% high" : p.robust === false ? "Holds at the forecast inflow, not at +15%" : "";
-    const stamp = [dl ? (passed(dl.min) ? `Start-by time ${dl.clock} has passed: read the plans again` : `Start by ${dl.clock}`) : "", hold].filter(Boolean).join(" · ");
+    const stamp = [dl ? (passed(dl.min) ? `Start-by time ${dl.clock} has passed${runsOn() ? ": approving re-scores it first" : ""}` : `Start by ${dl.clock}`) : "", hold].filter(Boolean).join(" · ");
     // An approved plan whose run was cancelled or failed can be approved again.
     const mine = approved && approved.plan.id === p.id && !approved.ended;
     const endedHere = approved && approved.plan.id === p.id && approved.ended;
@@ -1086,7 +1097,7 @@ function handoffText() {
   if (lc && lc.options && lc.options.length) {
     const o = lc.options[0], pnr = lc.point_of_no_return;
     L.push(passed(o.expires_min)
-      ? `  Last Call passed at ${o.expires_clock}: the cheapest plan (${usd(o.cost.total_usd)}) no longer works as planned (${sinceRead()}). Read the plans again.`
+      ? `  Last Call passed at ${o.expires_clock}: the cheapest plan (${usd(o.cost.total_usd)}) no longer works as planned (${sinceRead()}). ${rescore()}`
       : `  Last Call: the cheapest plan (${usd(o.cost.total_usd)}) only works if started by ${o.expires_clock}.`);
     if (pnr) L.push(passed(pnr.t_min) ? `  The point of no return (${pnr.clock}) has passed: the forecast had no plan keeping every well online after it.` : `  After ${pnr.clock}, nothing keeps every well online.`);
   } else if (lc && lc.status) L.push(`  Last Call: ${lc.headline || lc.status}.`);
@@ -1438,10 +1449,11 @@ async function boot() {
   let built = null;
   try { built = JSON.parse(sessionStorage.getItem("freeboard.built") || "null"); sessionStorage.removeItem("freeboard.built"); } catch { /* ignore */ }
   if (built) shiftlog.add("open", `Field "${built.name}" built from an uploaded blueprint in ${built.secs} s${built.status === "fallback" ? `, on the standard model (${built.note})` : ""}.`);
-  if (!shiftlog.entries().length) {
+  if (!shiftlog.entries().some((e) => e.kind === "open")) {
     const ev = shutdownOf(baseline);
-    shiftlog.add("open", `Console opened. ${(state.incident && state.incident.summary) || "No incident."}${ev ? ` ${nice(ev.asset_id)} reaches shutdown at ${clockAt(ev.t_min)} if nobody acts.` : ""}`);
+    shiftlog.add("open", `Console opened. ${(state.incident && state.incident.summary) || "No incident."}${ev ? (passed(ev.t_min) ? ` ${nice(ev.asset_id)} was forecast to reach shutdown at ${clockAt(ev.t_min)} (${sinceRead()}); that time has passed.` : ` ${nice(ev.asset_id)} reaches shutdown at ${clockAt(ev.t_min)} if nobody acts.`) : ""}`);
   }
+  shiftlog.flushEarly(); // live alerts that came in while the model loaded
   fc = baseline;
   scene.add(model.root);
   sky.attach(model.root); // before indexModel darkens the site, so the sky knows its daytime colors

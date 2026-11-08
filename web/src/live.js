@@ -16,6 +16,7 @@ let queryToken = false;  // fall back to /ws?token= (a backend without first-mes
 let authed = false, authTimer = 0;
 let sentAuth = "", rejected = "";
 let lastMsgAt = 0, ticks = 0;  // a socket that ticks state every second and then goes quiet is lost
+let lastStateAt = 0, pongSeen = false; // per socket: the last state message, and whether it answers ping
 const subs = new Map(); // type -> Set(fn)
 
 export const live = {
@@ -116,7 +117,8 @@ function connect() {
     heard = false;
     authed = false;
     ticks = 0;               // the watchdog judges each socket on its own messages
-    lastMsgAt = Date.now();
+    lastMsgAt = lastStateAt = Date.now();
+    pongSeen = false;
   } catch {
     return retry();
   }
@@ -132,7 +134,7 @@ function connect() {
     }
     live.connected = true;
     ticks = 0;
-    lastMsgAt = Date.now();
+    lastMsgAt = lastStateAt = Date.now();
     markLost(false);
     emit("feed", live);
   };
@@ -151,9 +153,11 @@ function connect() {
     } else if (msg.type === "state") {
       mergeState(msg.state || msg);
       ticks++;
+      lastStateAt = Date.now();
       markLost(false);
       emit("state", live);
     } else {
+      if (msg.type === "pong") pongSeen = true;
       emit(msg.type, msg);
     }
   };
@@ -183,14 +187,23 @@ export function send(msg) {
   return true;
 }
 
-// Half-open socket (Wi-Fi drop with no close event): once the socket has shown it sends state
-// every second, 6 s of silence means the feed is lost. A ping every 2 s gets a pong back
-// (live_api.py), so a paused sim, which sends no state, still counts as heard.
-// A dead socket can take a minute to fire onclose, so it is dropped and replaced right away.
+// Watchdog, every 2 s while a socket is open. It pings (live_api.py answers pong).
+//   - Nothing at all for 6 s (no state, no pong) on a socket that has ticked or answered a
+//     ping: half-open (Wi-Fi drop with no close event). The feed is lost; the socket is
+//     dropped and replaced at once, since a dead socket can take a minute to fire onclose.
+//   - Pongs but no state for 6 s on a socket that was ticking, while the sim is not paused:
+//     the server stopped sending us state (a dropped hub client, a dead tick task). Alerts,
+//     runs and proposals stop too, so the socket is replaced. Not marked lost unless the
+//     new one doesn't come up within 4 s. A pause shows up in the new socket's first state.
+// A backend that neither ticks nor answers ping (an old one) is left alone.
 setInterval(() => {
   if (!ws || ws.readyState !== 1) return;
   try { ws.send(JSON.stringify({ type: "ping" })); } catch { /* closing */ }
-  if (!live.connected || ticks < 3 || Date.now() - lastMsgAt < 6000) return;
+  if (!live.connected) return;
+  const now = Date.now();
+  const silent = (ticks >= 3 || pongSeen) && now - lastMsgAt > 6000;
+  const noState = !silent && !live.paused && ticks >= 3 && now - lastStateAt > 6000;
+  if (!silent && !noState) return;
   const dead = ws;
   dead.onopen = dead.onmessage = dead.onclose = dead.onerror = null;
   try { dead.close(); } catch { /* gone */ }
@@ -198,7 +211,9 @@ setInterval(() => {
   ticks = 0;
   sentAuth = "";
   live.connected = false;
-  markLost(true);
+  clearTimeout(lostTimer);
+  if (silent) markLost(true);
+  else lostTimer = setTimeout(() => { if (!live.connected) markLost(true); }, 4000);
   emit("feed", live);
   retry();
 }, 2000);
