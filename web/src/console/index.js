@@ -32,6 +32,7 @@ import { mountIntro } from "../gaia/intro.js";
 import { mountThreads } from "../gaia/threads.js";
 import { mountMic } from "../gaia/mic.js";
 import { makeLayout } from "../gaia/layout.js";
+import { mountRail } from "../gaia/rail.js";
 
 const POLL_MS = 30000;
 const BRIEF_RETRY_MS = 5 * 60000;
@@ -108,16 +109,20 @@ export function mountConsole(H) {
   });
   stream.onPost(() => { if (!open) unread = true; });
 
+  const railRef = { r: null };
   // Threads (left sidebar): incidents, the field overview, the person's chats (gaia/threads.js).
   const threads = mountThreads(app, side, {
     onNew: () => side.input.focus(),
     onLog: () => openPanel("log"),
     onOverview: () => { resetView(); },
     onNav: (v) => layout.nav(v),
+    onUnread: (v) => { if (railRef.r) railRef.r.unread(v); },
     onView: () => { if (!open) setOpen(true); },
     clock: (c) => clock12(toMin(c)).toLowerCase(),
     greeting: () => (activeAlerts().length || alertsDown() || unknownTanks().length || !vouchable() ? "what's happening on the field?" : "all quiet on the lease"),
   });
+  const rail = mountRail(app, { newChat: () => threads.newChat(), nav: (v) => layout.nav(v), navOpen: () => layout.navOpen(), layers: () => onSegment("LAYERS") });
+  railRef.r = rail;
   mountMic(side.mic, side.input, () => side.el.querySelector("#csAsk").requestSubmit());
 
   const fix = makeFixCard(side.fix, {
@@ -623,9 +628,17 @@ export function mountConsole(H) {
     if (seg === "F") tbUntil = Date.now() + 10000;
     if (seg === "J") { setOpen(!open); return; }
     if (seg === "FULL") { setOpen(!open); return; }
+    if (seg === "LAYERS") { tbUntil = Date.now() + 15000; document.body.classList.toggle("cs-sky-open"); return; }
+    if (seg === "XRAY") { const b = document.querySelector(".scenery-btn"); if (b) b.click(); document.body.classList.toggle("cs-xray"); return; }
+    if (seg === "FOLLOW") { const id = followId(); if (id) { view().focus(id); highlight.flash("jarvis", [id], 8000); } return; }
     if (seg === "NOFIELD") { layout.field(false); if (!open) setOpen(true); return; }
     setOpen(true);
     scrollTo(seg);
+  }
+  // The asset the active incident is about: its consequence (the tank) first, else the asset.
+  function followId() {
+    const a = alerts.get(threads.active());
+    return a ? (H.hasId(a.consequence_asset_id) ? a.consequence_asset_id : H.hasId(a.asset_id) ? a.asset_id : null) : null;
   }
   function onSide(kind, v) {
     if (kind === "close") setOpen(false);
@@ -694,6 +707,7 @@ export function mountConsole(H) {
     const planSeg = nothing ? { text: "no fix needed" } : plan ? { text: `best plan ${usd(plan.total_usd)} vs ${usd(b.do_nothing_usd)} if nothing changes`, title: `Cheapest robust fix vs doing nothing, from ${b.source === "brief" ? "the live brief" : "the shift plans"}.` } : { text: "" };
 
     status.render({
+      title: lc((H.data() && H.data().field && (H.data().field.name || H.data().field.site_name)) || "the lease"), follow: !!followId(),
       clock: lc(nowClock()), feed, watch, forecast, plan: planSeg,
       pending: fix.pending().length, unread, open, full: !open,
       isolated: (view().state() || {}).isolated ? lc(nice(view().state().isolated)) : "",

@@ -106,7 +106,7 @@ export function makeFixCard(box, H) {
     const eff = effects.get(p.id);
     const html = `<div class="cs-fx-top"><span>fix</span><span>${esc(sourceOf(p))}</span><b>${esc(st === "DECIDED" ? "409" : st.toLowerCase())}</b></div>
       <div class="cs-fx-text">${esc(p.text || "")}</div>
-      ${p.reason ? `<div class="cs-fx-why">${esc(p.reason)}</div>` : ""}
+      ${p.reason ? `<div class="cs-fx-why">${esc(String(p.reason).replace(/\b(jarvis|freeboard)\b/gi, "gaia"))}</div>` : ""}
       ${eff ? `<div class="cs-fx-eff">${esc(eff)}</div>` : eff === null || st === "PENDING" ? `<div class="cs-fx-eff muted"${eff === null ? " data-loading" : ""}>${eff === null ? "Working out the effect…" : ""}</div>` : ""}
       ${body(p, st)}`;
     // A ws echo that changes nothing must not rebuild the card (it would swap the hold button).

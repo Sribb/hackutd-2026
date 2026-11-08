@@ -40,7 +40,7 @@ export function makeStream(list, H) {
   // The text with each chip's name turned into an inline chip (first mention), and, when
   // streaming, every word in a span that fades in after the one before it.
   function textHtml(text, chips, streaming) {
-    let s = esc(text);
+    let s = esc(String(text ?? "").replace(/\b(jarvis|freeboard)\b/gi, "gaia"));
     const tokens = [];
     const used = new Set();
     for (const [id, name] of chips.map((id) => [id, H.nice(id)]).sort((a, b) => b[1].length - a[1].length)) {

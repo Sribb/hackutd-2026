@@ -1,8 +1,8 @@
-// The gaia page layout, ChatGPT style: threads on the left (collapsible), the conversation in
-// the middle, and the live 3D field as the canvas pane on the right (open by default; it can go
-// full width, which hides the chat, or close, which gives the chat the room).
+// The gaia page layout, ChatGPT-with-canvas style: a slim icon rail on the left, the
+// conversation (about 40%), and the live 3D field as the canvas pane on the right (open by
+// default; it can go full width, which hides the chat, or close, which gives the chat the room).
 //
-// Body classes: cs-nav-off (threads hidden), cs-canvas-full (field full width, chat hidden),
+// Body classes: cs-nav-off (threads popover closed), cs-canvas-full (field full width, chat hidden),
 // cs-canvas-off (field pane closed). Every change re-sizes the renderer through `resize`.
 
 import "@fontsource/inter/400.css";
@@ -13,7 +13,7 @@ import "@fontsource/great-vibes/400.css";
 export function makeLayout() {
   const b = document.body;
   const resize = () => requestAnimationFrame(() => dispatchEvent(new Event("resize")));
-  if (innerWidth < 1100) b.classList.add("cs-nav-off");
+  b.classList.add("cs-nav-off"); // the threads popover starts closed
   return {
     nav(v) { b.classList.toggle("cs-nav-off", !v); resize(); },
     navOpen: () => !b.classList.contains("cs-nav-off"),

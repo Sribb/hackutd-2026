@@ -1,6 +1,5 @@
-// The left sidebar (ChatGPT style): the cursive gaia wordmark, "new chat", "field overview",
-// "shift log", one thread per incident ("pump 3 tripped · 1:48 am"), the person's own chats,
-// and a quiet "classic view" link at the bottom.
+// The threads popover (opened from the left rail, gaia/rail.js): "new chat", "field overview",
+// "shift log", one thread per incident ("pump 3 tripped · 1:48 am"), and the person's own chats.
 //
 // Threads are views over the ONE agent stream (stream.js). Every <li> that lands in the stream
 // gets a data-thread: Watch, Forecast and Planner post into the active incident thread (or
@@ -25,7 +24,7 @@ export function mountThreads(app, side, H) {
   nav.className = "cs-nav";
   nav.setAttribute("aria-label", "Threads");
   nav.innerHTML = `
-    <div class="cs-nav-top"><span class="cs-wordmark" aria-label="gaia">gaia</span><span class="cs-grow"></span>
+    <div class="cs-nav-top"><span class="cs-nav-head">threads</span><span class="cs-grow"></span>
       <button type="button" class="cs-icon" id="csNavClose" title="Hide threads" aria-label="Hide threads">${ICON.sidebar}</button></div>
     <button type="button" class="cs-navrow" data-new>${ICON.compose}<span>new chat</span></button>
     <button type="button" class="cs-navrow" data-thread="field">${ICON.field}<span>field overview</span><i class="cs-unread" hidden></i></button>
@@ -34,21 +33,18 @@ export function mountThreads(app, side, H) {
     <div class="cs-nav-list" id="csIncidents"><p class="cs-nav-none">none yet</p></div>
     <div class="cs-nav-label" id="csChatsLabel" hidden>chats</div>
     <div class="cs-nav-list" id="csChats"></div>
-    <span class="cs-grow"></span>
-    <a class="cs-navrow quiet" href="/dataset">datasets</a>
-    <a class="cs-navrow quiet" id="csClassic" href="?layout=classic">classic view</a>`;
-  app.prepend(nav);
+`;
+  app.appendChild(nav);
   const $ = (id) => nav.querySelector(`#${id}`);
   const list = side.stream;
   const threads = new Map([["field", { id: "field", kind: "field", title: "field overview" }]]);
   const alertThread = new Map(); // alert id -> thread id
   let viewing = "new", chatN = 0;
 
-  nav.querySelector("[data-new]").onclick = () => newChat();
-  nav.querySelector("[data-log]").onclick = () => H.onLog();
-  nav.querySelector('[data-thread="field"]').onclick = () => { view("field"); H.onOverview(); };
+  nav.querySelector("[data-new]").onclick = () => { newChat(); H.onNav(false); };
+  nav.querySelector("[data-log]").onclick = () => { H.onLog(); H.onNav(false); };
+  nav.querySelector('[data-thread="field"]').onclick = () => { view("field"); H.onOverview(); H.onNav(false); };
   $("csNavClose").onclick = () => H.onNav(false);
-  $("csClassic").href = (() => { const u = new URL(location.href); u.searchParams.set("layout", "classic"); u.searchParams.delete("intro"); return u.pathname + u.search; })();
 
   function newChat() { view("new"); H.onNew(); }
 
@@ -87,10 +83,11 @@ export function mountThreads(app, side, H) {
     if ($("csIncidents")._h !== ih) { $("csIncidents").innerHTML = ih; $("csIncidents")._h = ih; }
     if ($("csChats")._h !== ch) { $("csChats").innerHTML = ch; $("csChats")._h = ch; }
     $("csChatsLabel").hidden = !chats.length;
-    nav.querySelectorAll(".cs-nav-list [data-thread]").forEach((b) => { b.onclick = () => view(b.dataset.thread); });
+    nav.querySelectorAll(".cs-nav-list [data-thread]").forEach((b) => { b.onclick = () => { view(b.dataset.thread); H.onNav(false); }; });
     const f = nav.querySelector('.cs-navrow[data-thread="field"]');
     f.classList.toggle("on", viewing === "field");
     f.querySelector(".cs-unread").hidden = !threads.get("field").unread;
+    if (H.onUnread) H.onUnread([...threads.values()].some((t) => t.unread));
   }
 
   function view(id) {

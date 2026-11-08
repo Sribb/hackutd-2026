@@ -1,15 +1,25 @@
-/* gaia console (docs/JARVIS_CONSOLE.md, restyled by the lead's call): ChatGPT-like layout.
-   Threads on the left, the conversation in the middle, the live 3D field as the canvas pane on
-   the right. Near-black, a clean sans (Inter, self-hosted), soft whites and grays, rounded
-   corners, no uppercase anywhere: every element in the console renders lowercase. */
+/* gaia console (docs/JARVIS_CONSOLE.md, restyled by the lead's call): ChatGPT with its canvas.
+   A slim icon rail, the conversation (about 40%), and the live 3D field as the canvas pane
+   (about 60%). Light shell by default (white, very light gray, soft shadows), dark in settings;
+   the 3D field keeps its own night look either way. Inter, self-hosted. No uppercase anywhere:
+   every element in the console renders lowercase. */
 
 body.fb-console {
-  --g-bg: #0d0d0d; --g-nav: #070707; --g-raise: #171717; --g-box: #1b1b1b; --g-bubble: #242424;
-  --g-ink: #ececec; --g-ink-2: #b4b4b4; --g-mute: #8e8e8e; --g-faint: #686868; --g-hair: rgba(255,255,255,.08);
-  --g-red: #ff5a3c; --g-amber: #e0b252; --g-green: #6fcf97;
+  --g-bg: #ffffff; --g-nav: #f9f9f9; --g-raise: #f7f7f8; --g-box: #ffffff; --g-bubble: #2f6fed; --g-bubble-ink: #ffffff;
+  --g-ink: #1f1f1f; --g-ink-2: #444; --g-mute: #6e6e6e; --g-faint: #9b9b9b; --g-strong: #000;
+  --g-hover: rgba(0,0,0,.05); --g-chip: rgba(0,0,0,.06); --g-chip-2: rgba(0,0,0,.1); --g-line: rgba(0,0,0,.1); --g-focus: rgba(0,0,0,.35);
+  --g-hair: rgba(0,0,0,.08); --g-btn: #1f1f1f; --g-btn-ink: #ffffff; --g-shadow: 0 8px 28px rgba(0,0,0,.08), 0 1px 3px rgba(0,0,0,.06);
+  --g-red: #e5452b; --g-amber: #b7841c; --g-green: #1f9d5b;
   --mono: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif; --sans: var(--mono); --display: var(--mono);
-  --cs-red: var(--g-red); --cs-amber: var(--g-amber); --cs-green: var(--g-green); --cs-gray: #777;
+  --cs-red: var(--g-red); --cs-amber: var(--g-amber); --cs-green: var(--g-green); --cs-gray: #8a8a8a;
   background: var(--g-bg); color: var(--g-ink); font: 15px/1.55 var(--sans); font-variant-ligatures: normal;
+}
+body.fb-console.cs-dark {
+  --g-bg: #0d0d0d; --g-nav: #070707; --g-raise: #171717; --g-box: #1b1b1b; --g-bubble: #2f6fed; --g-bubble-ink: #ffffff;
+  --g-ink: #ececec; --g-ink-2: #b4b4b4; --g-mute: #8e8e8e; --g-faint: #686868; --g-strong: #fff;
+  --g-hover: rgba(255,255,255,.07); --g-chip: rgba(255,255,255,.09); --g-chip-2: rgba(255,255,255,.17); --g-line: rgba(255,255,255,.12); --g-focus: rgba(255,255,255,.35);
+  --g-hair: rgba(255,255,255,.08); --g-btn: #f2f2f2; --g-btn-ink: #0d0d0d; --g-shadow: 0 10px 34px rgba(0,0,0,.4);
+  --g-red: #ff5a3c; --g-amber: #e0b252; --g-green: #6fcf97;
 }
 body.fb-console, body.fb-console *, body.fb-console *::before, body.fb-console *::after, body.fb-console ::placeholder {
   text-transform: lowercase !important; letter-spacing: normal !important;
@@ -19,41 +29,52 @@ body.fb-console button::before, body.fb-console button::after, body.fb-console .
 body.fb-console .kicker::before { content: none !important; }
 body.fb-console button { font: 13.5px/1.2 var(--sans); border-radius: 999px !important; }
 body.fb-console #side, body.fb-console #jarvisBtn, body.fb-console #jarvis, body.fb-console #handsBtn,
-body.fb-console #modelNote, body.fb-console .cs-tab { display: none !important; }
-body:not(.fb-console) .cs-tab, body:not(.fb-console) .cs-status, body:not(.fb-console) .cs-side, body:not(.fb-console) .cs-nav { display: none !important; }
+body.fb-console #modelNote, body.fb-console .cs-tab, body.fb-console #csNavOpen, body.fb-console #csNewTop { display: none !important; }
+body:not(.fb-console) .cs-tab, body:not(.fb-console) .cs-status, body:not(.fb-console) .cs-side, body:not(.fb-console) .cs-nav,
+body:not(.fb-console) .cs-rail, body:not(.fb-console) .cs-pop { display: none !important; }
 
 /* ------------------------------------------------------------- layout ---- */
-body.fb-console #app { display: grid; height: 100vh; grid-template-columns: var(--nav-w, 260px) minmax(380px, 1fr) minmax(0, 1.45fr);
-  grid-template-rows: 100vh; grid-template-areas: "nav chat stage"; background: var(--g-bg); }
-body.fb-console.cs-nav-off { --nav-w: 0px; }
-body.fb-console.cs-nav-off .cs-nav { display: none; }
-body.fb-console .cs-nav { grid-area: nav; }
+body.fb-console #app { display: grid; height: 100vh; grid-template-columns: 56px minmax(360px, 40%) minmax(0, 1fr);
+  grid-template-rows: 100vh; grid-template-areas: "rail chat stage"; background: var(--g-bg); }
+body.fb-console .cs-rail { grid-area: rail; }
 body.fb-console .cs-side { grid-area: chat; }
-body.fb-console #stage { grid-area: stage; min-height: 0; margin: 8px 8px 8px 0; border-radius: 18px !important; overflow: hidden; background: #000; }
-body.fb-console.cs-canvas-full #app { grid-template-columns: 0 0 1fr; }
-body.fb-console.cs-canvas-full .cs-nav, body.fb-console.cs-canvas-full .cs-side { display: none; }
-body.fb-console.cs-canvas-full #stage { margin: 8px; }
-body.fb-console.cs-canvas-off #app { grid-template-columns: var(--nav-w, 260px) 1fr; grid-template-areas: "nav chat"; }
+body.fb-console #stage { grid-area: stage; min-height: 0; margin: 10px 10px 10px 4px; border-radius: 18px !important; overflow: hidden; background: #000;
+  box-shadow: var(--g-shadow); }
+body.fb-console.cs-canvas-full #app { grid-template-columns: 56px 0 1fr; }
+body.fb-console.cs-canvas-full .cs-side { display: none; }
+body.fb-console.cs-canvas-off #app { grid-template-columns: 56px 1fr; grid-template-areas: "rail chat"; }
 /* Closed, the field keeps a real size off-screen so the renderer never sees a 0 px canvas. */
 body.fb-console.cs-canvas-off #stage { position: fixed; left: -10000px; top: 0; width: 640px; height: 480px; }
 body.fb-console:not(.cs-canvas-off) .cs-fieldbtn { display: none; }
-body.fb-console:not(.cs-nav-off) #csNavOpen, body.fb-console:not(.cs-nav-off) #csNewTop { display: none; }
+
+/* ---------------------------------------------------- the rail and popovers ---- */
+.cs-rail { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 12px 0 14px; background: var(--g-nav); border-right: 1px solid var(--g-hair); }
+.cs-rail-mark { font: 400 22px/1 "Great Vibes", cursive; color: var(--g-strong); padding: 2px 0 12px; }
+.cs-rail .cs-icon { position: relative; width: 38px; height: 38px; border-radius: 10px !important; }
+.cs-rail .cs-unread { position: absolute; top: 7px; right: 7px; }
+.cs-pop, body.fb-console .cs-nav { position: fixed; z-index: 40; left: 64px; top: 10px; width: 290px; max-height: calc(100vh - 20px); overflow-y: auto;
+  padding: 8px; border-radius: 16px !important; background: var(--g-box); border: 1px solid var(--g-hair); box-shadow: 0 16px 48px rgba(0,0,0,.18); }
+.cs-pop[hidden], body.fb-console.cs-nav-off .cs-nav { display: none; }
+.cs-settings { top: auto; bottom: 12px; width: 230px; display: grid; gap: 4px; }
+.cs-pop-label { padding: 6px 10px 2px; font-size: 12px; color: var(--g-faint); }
+.cs-seg2 { display: flex; gap: 4px; padding: 2px 6px 8px; }
+.cs-seg2 button { all: unset; flex: 1; text-align: center; padding: 7px 0; border-radius: 10px !important; border: 1px solid var(--g-line); color: var(--g-ink-2); font-size: 13.5px; cursor: pointer; }
+.cs-seg2 button[aria-checked="true"] { background: var(--g-btn); color: var(--g-btn-ink); border-color: var(--g-btn); }
 
 /* ------------------------------------------------------- threads (nav) ---- */
-.cs-nav { display: flex; flex-direction: column; gap: 1px; min-height: 0; overflow-y: auto; background: var(--g-nav); padding: 10px 8px 12px; font-size: 14px; }
-.cs-nav-top { display: flex; align-items: center; padding: 2px 4px 10px 10px; }
-.cs-wordmark { font: 400 34px/1 "Great Vibes", cursive; color: #fff; padding-top: 4px; }
+.cs-nav { display: flex; flex-direction: column; gap: 1px; font-size: 14px; }
+.cs-nav-top { display: flex; align-items: center; padding: 2px 2px 6px 10px; }
+.cs-nav-head { font-size: 13px; color: var(--g-mute); }
 .cs-navrow { all: unset; box-sizing: border-box; display: flex; align-items: center; gap: 10px; width: 100%; padding: 8px 10px; border-radius: 10px !important;
-  color: #d4d4d4; font: 14px/1.3 var(--sans); cursor: pointer; text-decoration: none; }
+  color: var(--g-ink); font: 14px/1.3 var(--sans); cursor: pointer; text-decoration: none; }
 .cs-navrow > span:not(.cs-dot) { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.cs-navrow svg { flex: none; color: var(--g-ink-2); }
-.cs-navrow:hover, .cs-navrow.on { background: rgba(255,255,255,.07); color: #fff; }
-.cs-navrow:focus-visible { outline: 1px solid rgba(255,255,255,.3); }
-.cs-navrow.quiet { color: var(--g-faint); font-size: 13px; padding: 6px 10px; }
-.cs-navrow.quiet:hover { color: var(--g-ink-2); }
-.cs-nav-label { padding: 16px 10px 4px; font-size: 12px; color: var(--g-faint); }
+.cs-navrow svg { flex: none; color: var(--g-mute); }
+.cs-navrow:hover, .cs-navrow.on { background: var(--g-hover); }
+.cs-navrow:focus-visible { outline: 1px solid var(--g-focus); }
+.cs-navrow.quiet { color: var(--g-mute); font-size: 13.5px; }
+.cs-nav-label { padding: 12px 10px 4px; font-size: 12px; color: var(--g-faint); }
 .cs-nav-list { display: grid; gap: 1px; }
-.cs-nav-none { margin: 0; padding: 4px 10px; font-size: 13px; color: #555; }
+.cs-nav-none { margin: 0; padding: 4px 10px; font-size: 13px; color: var(--g-faint); }
 .cs-unread { display: inline-block; width: 7px; height: 7px; border-radius: 50% !important; background: var(--g-red); flex: none; }
 .cs-unread[hidden] { display: none; }
 .cs-grow { flex: 1 1 auto; }
@@ -65,12 +86,12 @@ body.fb-console:not(.cs-nav-off) #csNavOpen, body.fb-console:not(.cs-nav-off) #c
 .cs-live { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--g-mute); white-space: nowrap; }
 .cs-icon { all: unset; box-sizing: border-box; width: 34px; height: 34px; display: grid; place-items: center; border-radius: 9px !important;
   color: var(--g-ink-2); cursor: pointer; font: 15px var(--sans); flex: none; }
-.cs-icon:hover { background: rgba(255,255,255,.07); color: #fff; }
-.cs-icon:focus-visible { outline: 1px solid rgba(255,255,255,.3); }
+.cs-icon:hover { background: var(--g-hover); color: var(--g-strong); }
+.cs-icon:focus-visible { outline: 1px solid var(--g-focus); }
 .cs-help { width: min(720px, calc(100% - 48px)); margin: 0 auto 8px; padding: 10px 14px; border-radius: 14px !important; background: var(--g-raise);
   font-size: 13px; line-height: 1.6; color: var(--g-ink-2); }
 .cs-help[hidden] { display: none; }
-.cs-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 8px 0 28px; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: #333 transparent; }
+.cs-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 8px 0 28px; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: var(--g-line) transparent; }
 .cs-stream, .cs-hello, .cs-side .cs-drawer, .cs-side > .cs-scroll > .cs-fix { width: min(720px, calc(100% - 48px)); margin-left: auto; margin-right: auto; }
 .cs-dock { flex: none; width: min(760px, calc(100% - 32px)); margin: 0 auto; padding: 0 0 10px; }
 
@@ -84,9 +105,9 @@ body.fb-console:not(.cs-nav-off) #csNavOpen, body.fb-console:not(.cs-nav-off) #c
 .cs-sugg { display: none; }
 .cs-side.cs-empty .cs-sugg { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 14px; }
 .cs-side.cs-empty .cs-disclaimer { margin-top: 18px; }
-.cs-pill-btn, .cs-q { all: unset; box-sizing: border-box; padding: 7px 14px; border-radius: 999px !important; border: 1px solid rgba(255,255,255,.12);
+.cs-pill-btn, .cs-q { all: unset; box-sizing: border-box; padding: 7px 14px; border-radius: 999px !important; border: 1px solid var(--g-line);
   color: var(--g-ink-2); font: 13.5px/1.2 var(--sans); cursor: pointer; white-space: nowrap; }
-.cs-pill-btn:hover, .cs-q:hover { background: rgba(255,255,255,.06); color: #fff; }
+.cs-pill-btn:hover, .cs-q:hover { background: var(--g-hover); color: var(--g-strong); }
 
 /* Messages: replies are plain text with a small mark; the person's lines are bubbles. */
 .cs-stream { list-style: none; padding: 0; margin-top: 4px; display: flex; flex-direction: column; gap: 24px; }
@@ -95,15 +116,15 @@ body.fb-console:not(.cs-nav-off) #csNavOpen, body.fb-console:not(.cs-nav-off) #c
 .cs-b.frozen { opacity: .6; }
 .cs-b.frozen .cs-actions, .cs-b.frozen .cs-shelve { display: none; }
 .cs-b.flash { animation: csflash 1.4s ease-out; border-radius: 12px !important; }
-@keyframes csflash { from { background: rgba(255,255,255,.07); } to { background: transparent; } }
+@keyframes csflash { from { background: var(--g-hover); } to { background: transparent; } }
 .cs-bh { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; font-size: 12.5px; color: var(--g-mute); }
-.cs-bh b { color: #d8d8d8; font-weight: 500; }
+.cs-bh b { color: var(--g-ink); font-weight: 500; }
 .cs-bh time { font-variant-numeric: tabular-nums; color: var(--g-faint); }
-.cs-mark { width: 22px; height: 22px; flex: none; display: inline-grid; place-items: center; border-radius: 50% !important; background: rgba(255,255,255,.06); }
-.cs-mark::after { content: "" !important; width: 7px; height: 7px; border-radius: 50% !important; background: #9a9a9a; }
+.cs-mark { width: 22px; height: 22px; flex: none; display: inline-grid; place-items: center; border-radius: 50% !important; background: var(--g-hover); }
+.cs-mark::after { content: "" !important; width: 7px; height: 7px; border-radius: 50% !important; background: var(--g-faint); }
 .cs-mark.a-W::after { background: var(--g-red); }
 .cs-mark.a-P::after { background: var(--g-green); }
-.cs-mark.g { font: 400 20px/1 "Great Vibes", cursive; color: #fff; background: rgba(255,255,255,.1); padding-bottom: 3px; }
+.cs-mark.g { font: 400 20px/1 "Great Vibes", cursive; color: var(--g-strong); background: var(--g-chip); padding-bottom: 3px; }
 .cs-mark.g::after { content: none !important; }
 .cs-tag { font-size: 11.5px; color: var(--g-faint); }
 .cs-tag.claude { color: #8fb8c8; }
@@ -111,20 +132,20 @@ body.fb-console:not(.cs-nav-off) #csNavOpen, body.fb-console:not(.cs-nav-off) #c
 .cs-text { margin: 0; overflow-wrap: anywhere; }
 .cs-text.streaming .w { opacity: 0; animation: csword .34s ease-out forwards; }
 @keyframes csword { from { opacity: 0; filter: blur(3px); } to { opacity: 1; filter: none; } }
-.cs-b.a-you { align-self: flex-end; max-width: 78%; padding: 10px 16px; border-radius: 22px !important; background: var(--g-bubble); }
+.cs-b.a-you { align-self: flex-end; max-width: 78%; padding: 10px 16px; border-radius: 22px !important; background: var(--g-bubble); color: var(--g-bubble-ink); }
 .cs-b.a-note { font-size: 13.5px; color: var(--g-mute); }
 .cs-b.a-note.warn { color: var(--g-amber); }
 .cs-chip { all: unset; box-sizing: border-box; display: inline-flex; align-items: center; gap: 4px; padding: 0 7px; margin: 0 1px; border-radius: 7px !important;
-  background: rgba(255,255,255,.09); color: #fff; font: inherit; line-height: 1.45; cursor: pointer; white-space: nowrap; }
-.cs-chip:hover { background: rgba(255,255,255,.17); }
-.cs-chip:focus-visible { outline: 1px solid rgba(255,255,255,.4); }
+  background: var(--g-chip); color: var(--g-strong); font: inherit; line-height: 1.45; cursor: pointer; white-space: nowrap; }
+.cs-chip:hover { background: var(--g-chip-2); }
+.cs-chip:focus-visible { outline: 1px solid var(--g-focus); }
 .cs-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 .cs-chips .cs-chip { font-size: 13.5px; padding: 2px 9px; }
-.cs-vis { display: flex; align-items: center; gap: 10px; margin-top: 10px; font-size: 12.5px; color: var(--g-mute); }
+.cs-vis { display: flex; align-items: center; gap: 10px; margin-top: 10px; padding: 12px 14px; border-radius: 14px !important; background: var(--g-raise); border: 1px solid var(--g-hair); font-size: 12.5px; color: var(--g-mute); max-width: 460px; }
 .cs-vlabel { white-space: nowrap; font-variant-numeric: tabular-nums; }
 .cs-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
-.cs-actions button, .cs-shelve button { padding: 6px 14px; background: transparent; border: 1px solid rgba(255,255,255,.13); color: var(--g-ink-2); }
-.cs-actions button:hover { color: #fff; background: rgba(255,255,255,.06); }
+.cs-actions button, .cs-shelve button { padding: 6px 14px; background: transparent; border: 1px solid var(--g-line); color: var(--g-ink-2); }
+.cs-actions button:hover { color: var(--g-strong); background: var(--g-hover); }
 .cs-shelve { display: grid; gap: 8px; margin-top: 10px; font-size: 13.5px; color: var(--g-ink-2); }
 .cs-shelve[hidden] { display: none; }
 .cs-shelve select, .cs-shelve input { background: var(--g-box); color: var(--g-ink); border: 1px solid var(--g-hair); border-radius: 10px !important; font: 14px var(--sans); padding: 6px 10px; }
@@ -142,14 +163,14 @@ body.fb-console:not(.cs-nav-off) #csNavOpen, body.fb-console:not(.cs-nav-off) #c
 .cs-dot.green { background: var(--g-green); }
 .cs-dot.gray { background: #777; }
 .cs-dot.hatched { background: transparent; box-shadow: inset 0 0 0 1.5px #8a8a8a; }
-.cs-cd { position: relative; display: inline-block; flex: 1; height: 6px; border-radius: 3px !important; background: rgba(255,255,255,.08); overflow: hidden; }
-.cs-cd .fill { position: absolute; inset: 0 auto 0 0; background: rgba(255,255,255,.55); border-radius: 3px !important; }
+.cs-cd { position: relative; display: inline-block; flex: 1; height: 6px; border-radius: 3px !important; background: var(--g-chip); overflow: hidden; }
+.cs-cd .fill { position: absolute; inset: 0 auto 0 0; background: var(--g-mute); border-radius: 3px !important; }
 .cs-cd.soon .fill { background: var(--g-red); }
-.cs-cd .band { position: absolute; top: 0; bottom: 0; background: rgba(255,255,255,.22); }
+.cs-cd .band { position: absolute; top: 0; bottom: 0; background: var(--g-line); }
 .cs-cd.hatched .fill { background: rgba(150,150,150,.4); }
 .cs-cd.none { opacity: .5; }
 .cs-pb { display: grid; grid-template-columns: 34px 1fr auto; gap: 6px 10px; align-items: center; width: 100%; font-size: 12.5px; }
-.cs-pb .bar { height: 6px; border-radius: 3px !important; background: rgba(255,255,255,.07); position: relative; overflow: hidden; }
+.cs-pb .bar { height: 6px; border-radius: 3px !important; background: var(--g-hover); position: relative; overflow: hidden; }
 .cs-pb .bar i { position: absolute; inset: 0 auto 0 0; border-radius: 3px !important; }
 .cs-pb .fix { background: var(--g-green); } .cs-pb .wait { background: var(--g-red); opacity: .85; }
 .cs-pb b { font-variant-numeric: tabular-nums; font-weight: 500; color: var(--g-ink); text-align: right; }
@@ -162,7 +183,7 @@ body.fb-console:not(.cs-nav-off) #csNavOpen, body.fb-console:not(.cs-nav-off) #c
 .cs-fx-top b { margin-left: auto; font-weight: 500; color: var(--g-amber); }
 .cs-fix.CONFIRMED .cs-fx-top b { color: var(--g-green); }
 .cs-fix.FAILED .cs-fx-top b { color: var(--g-red); }
-.cs-fx-text { font: 500 16.5px/1.45 var(--sans); color: #fff; }
+.cs-fx-text { font: 500 16.5px/1.45 var(--sans); color: var(--g-strong); }
 .cs-fx-why, .cs-fx-eff { font-size: 14px; line-height: 1.55; color: #a6a6a6; }
 .cs-fix.PENDING .cs-fx-eff { min-height: calc(2 * 1.55em); }
 .cs-fx-state { font-size: 14.5px; line-height: 1.55; }
@@ -171,18 +192,18 @@ body.fb-console:not(.cs-nav-off) #csNavOpen, body.fb-console:not(.cs-nav-off) #c
 .cs-fx-note { font-size: 13.5px; color: var(--g-amber); }
 .cs-fx-note[hidden] { display: none; }
 .cs-fix .cs-row { display: flex; gap: 10px; align-items: center; justify-content: flex-end; margin-top: 6px; }
-.cs-fix .cs-row button { padding: 10px 18px; background: transparent; border: 1px solid rgba(255,255,255,.14); color: var(--g-ink-2); font-size: 14px; }
-.cs-fix .cs-row button:hover { color: #fff; }
-body.fb-console .cs-fix button.cs-hold { position: relative; overflow: hidden; min-height: 42px; padding: 10px 24px; background: #f2f2f2; border: 0; color: #0d0d0d;
+.cs-fix .cs-row button { padding: 10px 18px; background: transparent; border: 1px solid var(--g-line); color: var(--g-ink-2); font-size: 14px; }
+.cs-fix .cs-row button:hover { color: var(--g-strong); }
+body.fb-console .cs-fix button.cs-hold { position: relative; overflow: hidden; min-height: 42px; padding: 10px 24px; background: var(--g-btn); border: 0; color: var(--g-btn-ink);
   font-weight: 500; touch-action: none; user-select: none; -webkit-user-select: none; }
 body.fb-console .cs-fix button.cs-hold > i { background: rgba(0,0,0,.2); }
 body.fb-console .cs-fix button.cs-hold > span { position: relative; }
-.cs-hold.holding { box-shadow: 0 0 0 4px rgba(255,255,255,.14); }
-body.fb-console button.hold.committed { color: #0d0d0d; }
+.cs-hold.holding { box-shadow: 0 0 0 4px var(--g-line); }
+body.fb-console button.hold.committed { color: var(--g-btn-ink); }
 .cs-more { justify-self: start; font-size: 13px; color: var(--g-mute); background: none; border: 0; cursor: pointer; text-decoration: underline; padding: 0; }
 
 /* Borrowed classic panels (open_panel, plan walk, what-if), as a card in the thread */
-.cs-drawer { margin-top: 20px; max-height: 46vh; overflow-y: auto; padding: 12px 16px 14px; border-radius: 18px !important; background: #131313; border: 1px solid var(--g-hair); font-size: 14px; }
+.cs-drawer { margin-top: 20px; max-height: 46vh; overflow-y: auto; padding: 12px 16px 14px; border-radius: 18px !important; background: var(--g-raise); border: 1px solid var(--g-hair); font-size: 14px; }
 .cs-drawer[hidden] { display: none; }
 .cs-drawer header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
 .cs-drawer .card { border: 0; padding: 0; background: transparent; }
@@ -193,59 +214,66 @@ body.fb-console .kicker { color: var(--g-mute); font-size: 12.5px; }
 .cs-quick { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; margin-bottom: 10px; }
 .cs-quick:empty { display: none; }
 .cs-ask { display: flex; flex-direction: column; gap: 4px; padding: 12px 10px 10px 18px; border-radius: 26px !important; background: var(--g-box);
-  border: 1px solid rgba(255,255,255,.09); box-shadow: 0 10px 34px rgba(0,0,0,.4); }
-.cs-ask:focus-within { border-color: rgba(255,255,255,.16); }
+  border: 1px solid var(--g-line); box-shadow: var(--g-shadow); }
+.cs-ask:focus-within { border-color: var(--g-line); }
 .cs-ask input { min-width: 0; background: transparent; border: 0; outline: none; color: var(--g-ink); font: 16px/1.5 var(--sans); padding: 4px 0 6px; }
-.cs-ask input::placeholder { color: #8a8a8a; }
+.cs-ask input::placeholder { color: var(--g-faint); }
 .cs-ask-row { display: flex; align-items: center; gap: 6px; }
 .cs-mic, .cs-send { all: unset; box-sizing: border-box; width: 36px; height: 36px; border-radius: 50% !important; display: grid; place-items: center; cursor: pointer; flex: none; }
 .cs-mic { color: var(--g-ink-2); }
-.cs-mic:hover:not(:disabled) { background: rgba(255,255,255,.07); color: #fff; }
+.cs-mic:hover:not(:disabled) { background: var(--g-hover); color: var(--g-strong); }
 .cs-mic:disabled { opacity: .35; cursor: default; }
-.cs-mic.on { background: rgba(255,90,60,.18); color: #ff8a70; }
-.cs-send { background: #f2f2f2; color: #0d0d0d; opacity: .3; transition: opacity .15s; }
+.cs-mic.on { background: rgba(255,90,60,.18); color: var(--g-red); }
+.cs-send { background: var(--g-btn); color: var(--g-btn-ink); opacity: .3; transition: opacity .15s; }
 .cs-send.on, .cs-send:focus-visible { opacity: 1; }
 .cs-disclaimer { margin: 8px 0 0; text-align: center; font-size: 12px; color: var(--g-faint); }
-.cs-selchip { display: inline-flex; align-items: center; gap: 2px; padding: 3px 4px 3px 10px; border-radius: 999px !important; background: rgba(255,255,255,.08); font-size: 13px; color: var(--g-ink); white-space: nowrap; }
+.cs-selchip { display: inline-flex; align-items: center; gap: 2px; padding: 3px 4px 3px 10px; border-radius: 999px !important; background: var(--g-chip); font-size: 13px; color: var(--g-ink); white-space: nowrap; }
 .cs-selchip[hidden] { display: none; }
 .cs-selchip button { all: unset; cursor: pointer; padding: 0 6px; color: var(--g-mute); }
-.cs-hands { position: relative; display: inline-flex; align-items: center; gap: 7px; padding: 5px 11px 5px 8px; border-radius: 999px !important; border: 1px solid rgba(255,255,255,.1);
+.cs-hands { position: relative; display: inline-flex; align-items: center; gap: 7px; padding: 5px 11px 5px 8px; border-radius: 999px !important; border: 1px solid var(--g-line);
   color: var(--g-mute); font-size: 13px; cursor: pointer; user-select: none; }
 .cs-hands input { position: absolute; opacity: 0; width: 1px; height: 1px; }
-.cs-hands i { position: relative; width: 24px; height: 14px; border-radius: 7px !important; background: rgba(255,255,255,.14); }
-.cs-hands i::after { content: "" !important; position: absolute; top: 2px; left: 2px; width: 10px; height: 10px; border-radius: 50% !important; background: #9a9a9a; transition: left .15s; }
+.cs-hands i { position: relative; width: 24px; height: 14px; border-radius: 7px !important; background: var(--g-chip-2); }
+.cs-hands i::after { content: "" !important; position: absolute; top: 2px; left: 2px; width: 10px; height: 10px; border-radius: 50% !important; background: var(--g-faint); transition: left .15s; }
 .cs-hands input:checked + i { background: rgba(111,207,151,.45); }
-.cs-hands input:checked + i::after { left: 12px; background: #fff; }
-.cs-hands input:focus-visible + i { outline: 1px solid #fff; outline-offset: 2px; }
+.cs-hands input:checked + i::after { left: 12px; background: var(--g-strong); }
+.cs-hands input:focus-visible + i { outline: 1px solid var(--g-strong); outline-offset: 2px; }
 .cs-hands[data-state="live"] { color: var(--g-ink); }
 
 /* ------------------------------------------- the field pane (3D canvas) ---- */
-.cs-status { position: absolute; top: 0; left: 0; right: 0; z-index: 6; display: flex; align-items: center; gap: 4px; padding: 10px 10px 18px 16px;
-  background: linear-gradient(rgba(0,0,0,.62), rgba(0,0,0,.3) 60%, transparent); font: 13.5px/1.4 var(--sans); color: rgba(255,255,255,.74); white-space: nowrap; }
+.cs-status { position: absolute; top: 0; left: 0; right: 0; z-index: 6; display: flex; align-items: center; gap: 2px; height: 46px; padding: 0 8px 0 16px;
+  background: var(--g-tool); border-bottom: 1px solid var(--g-hair); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px);
+  font: 13.5px/1.4 var(--sans); color: var(--g-ink-2); white-space: nowrap; }
+body.fb-console { --g-tool: rgba(255,255,255,.94); }
+body.fb-console.cs-dark { --g-tool: rgba(20,20,20,.9); }
+.cs-ftitle { flex: none; font-weight: 600; color: var(--g-strong); }
+.cs-ftitle::after { content: "·"; margin: 0 9px; font-weight: 400; color: var(--g-faint); }
+.cs-status .cs-icon:disabled { opacity: .3; cursor: default; }
 .cs-line { display: flex; align-items: center; min-width: 0; overflow: hidden; }
 .cs-seg { all: unset; box-sizing: border-box; display: inline-flex; align-items: center; gap: 6px; flex: none; color: inherit; cursor: pointer; }
 .cs-seg[hidden] { display: none; }
-.cs-seg:hover { color: #fff; }
-.cs-seg:focus-visible { outline: 1px solid rgba(255,255,255,.4); border-radius: 4px !important; }
-body.fb-console .cs-line > .cs-seg ~ .cs-seg::before { content: "·" !important; margin: 0 9px 0 9px; color: rgba(255,255,255,.35); }
+.cs-seg:hover { color: var(--g-strong); }
+.cs-seg:focus-visible { outline: 1px solid var(--g-focus); border-radius: 4px !important; }
+body.fb-console .cs-line > .cs-seg ~ .cs-seg::before { content: "·" !important; margin: 0 9px 0 9px; color: var(--g-mute); }
 .cs-seg .v { display: inline-flex; align-items: center; gap: 6px; }
 #csForecast { flex-shrink: 0; }
 #csPlan { flex-shrink: 1; min-width: 0; overflow: hidden; }
 #csPlan .v { display: block; overflow: hidden; text-overflow: ellipsis; }
 #csForecast .t { overflow: hidden; text-overflow: ellipsis; }
-#csForecast.unknown .t { color: #f0d08a; }
-.cs-feed.red { color: #ff8a70; } .cs-feed.amber { color: #f0d08a; }
-.cs-pill { color: #f0d08a; }
+#csForecast.unknown .t { color: var(--g-amber); }
+.cs-feed.red { color: var(--g-red); } .cs-feed.amber { color: var(--g-amber); }
+.cs-pill { color: var(--g-amber); }
 .cs-iso button { all: unset; cursor: pointer; text-decoration: underline; }
-.cs-status time { color: rgba(255,255,255,.5); font-variant-numeric: tabular-nums; margin-right: 4px; }
-.cs-status .cs-icon { width: 30px; height: 30px; color: rgba(255,255,255,.7); }
-.cs-jtab { padding: 5px 12px; border-radius: 999px !important; background: rgba(255,255,255,.1); color: #fff; }
+.cs-status time { color: var(--g-mute); font-variant-numeric: tabular-nums; margin-right: 4px; }
+.cs-status .cs-icon { width: 32px; height: 32px; color: var(--g-ink-2); }
+.cs-jtab { padding: 5px 12px; border-radius: 999px !important; background: var(--g-chip); color: var(--g-strong); }
 .cs-jtab[hidden] { display: none; }
-body.fb-console .tag { background: rgba(18,18,18,.92); border: 1px solid rgba(255,255,255,.1); border-radius: 10px !important; font: 13px/1.4 var(--sans); color: var(--g-ink); }
+body.fb-console .tag { background: rgba(18,18,18,.92); border: 1px solid rgba(255,255,255,.1); border-radius: 10px !important; font: 13px/1.4 var(--sans); color: #ececec; }
+body.fb-console .timebar, body.fb-console .sky-ctl, body.fb-console #twonights, body.fb-console .hover-tag { color: #ececec; }
 
 /* Timebar: hidden until time is not now, a bottom-edge hover, T, or a forecast click. */
 body.fb-console .timebar { left: 12px; right: 12px; bottom: 12px; padding: 8px 14px 6px; border-radius: 16px !important; background: rgba(14,14,14,.88);
-  border: 1px solid var(--g-hair); transform: translateY(140%); transition: transform .22s ease-out; z-index: 4; -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px); }
+  border: 1px solid rgba(255,255,255,.08); transform: translateY(140%); transition: transform .22s ease-out; z-index: 4; -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px); }
 body.fb-console.cs-tb-up .timebar { transform: none; }
 body.fb-console .timebar-row { gap: 10px; align-items: center; font-size: 13px; }
 body.fb-console .timebar-row b { font-weight: 500; }
@@ -260,11 +288,11 @@ body.fb-console .loading { background: #0a0a0a; font: 14px var(--sans); color: v
 body.fb-console .loading b { font: 400 64px/1 "Great Vibes", cursive; color: #fff; }
 
 @media (max-width: 860px) {
-  body.fb-console #app { grid-template-columns: 1fr; grid-template-rows: 42vh minmax(0, 1fr); grid-template-areas: "stage" "chat"; }
+  body.fb-console #app { grid-template-columns: 56px minmax(0, 1fr); grid-template-rows: 42vh minmax(0, 1fr); grid-template-areas: "rail stage" "rail chat"; }
   body.fb-console #stage { margin: 0; border-radius: 0 !important; }
   body.fb-console .cs-side { height: auto; }
-  body.fb-console .cs-nav { position: fixed; z-index: 40; top: 0; bottom: 0; left: 0; width: min(280px, 86vw); box-shadow: 0 0 40px rgba(0,0,0,.6); }
-  body.fb-console.cs-canvas-off #app { grid-template-columns: 1fr; grid-template-rows: 1fr; grid-template-areas: "chat"; }
+  body.fb-console.cs-canvas-off #app { grid-template-columns: 56px minmax(0, 1fr); grid-template-rows: 1fr; grid-template-areas: "rail chat"; }
+  body.fb-console #csStatus .cs-line { display: none; }
   body.fb-console #csStatus #csPlan { display: none; }
 }
 @media (prefers-reduced-motion: reduce) {
