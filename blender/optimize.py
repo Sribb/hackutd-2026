@@ -264,10 +264,32 @@ def export_options(compress=COMPRESS):
             "export_image_format": "WEBP", "export_image_quality": 80}
 
 
+def bake_modifiers(scene):
+    """Apply every mesh object's modifiers into its own mesh data, then drop the modifiers.
+    The exporter applies them anyway (export_apply=True), so the glb's geometry is the same. Doing
+    it first matters: merge() and share() skip objects that still carry modifiers, and #121's
+    Weighted Normal finish puts one on every hard-surface part, which left hundreds of identical
+    meshes unshared and pushed the 12-tank field over the draw-call budget."""
+    deps = bpy.context.evaluated_depsgraph_get()
+    baked = []
+    for obj in scene.objects:
+        if obj.type == "MESH" and obj.modifiers:
+            baked.append((obj, bpy.data.meshes.new_from_object(obj.evaluated_get(deps),
+                                                               preserve_all_data_layers=True, depsgraph=deps)))
+    for obj, me in baked:          # swap after evaluating all, so shared source meshes evaluate once each
+        old = obj.data
+        obj.modifiers.clear()
+        obj.data = me
+        if old.users == 0:
+            bpy.data.meshes.remove(old)
+    return len(baked)
+
+
 def run(scene, keep):
     """The whole pass on scene. keep is the set of node names that must stay real nodes."""
     t0 = time.time()
     root = bpy.data.objects.get(SCENERY_ROOT)
+    baked = bake_modifiers(scene)
     merged = merge(list(scene.objects), root, keep) if MERGE_PARTS else 0
     objs = list(scene.objects)
     before, after = share(objs)
@@ -276,6 +298,6 @@ def run(scene, keep):
     purged = purge()
     bpy.context.view_layer.update()
     no_shadow = shadows(root)
-    return {"merged": merged, "meshes_before": before, "meshes_after": after + unshared, "unshared": unshared,
+    return {"baked_modifiers": baked, "merged": merged, "meshes_before": before, "meshes_after": after + unshared, "unshared": unshared,
             "instanced": dict(sorted(groups.items())), "instances": sum(groups.values()),
             "no_shadow": len(no_shadow), "purged": purged, "seconds": round(time.time() - t0, 2)}

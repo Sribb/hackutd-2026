@@ -33,7 +33,7 @@ The web console finds objects by name, so names matter more than anything else h
 5. **Scale:** 1 Blender unit is 1 meter. Apply transforms before exporting, except where an origin has to stay put for rule 4.
 6. **Color:** Model everything in neutral gray and steel. The web console adds status color. Don't paint status into the model.
 7. **Materials:** Use Principled BSDF, because other node setups may not export correctly. Keep textures at 2K or below.
-8. **Budget:** For a field of up to 12 tanks: under 300,000 triangles, under 30 MB, and under 1,500 draw calls, so it runs smoothly on a laptop at the expo. Draw calls cost the most: in the console each one costs about 12 µs of frame time, and every 100,000 triangles cost about 0.7 ms (measured in Chrome on an M5, #97). The build reports `draw_calls`, and `build_field.py` and `blender/test_generator.py` hold the numbers.
+8. **Budget:** For a field of up to 12 tanks: under 300,000 triangles, under 30 MB, and under 1,600 draw calls, so it runs smoothly on a laptop at the expo. Draw calls cost the most: in the console each one costs about 12 µs of frame time, and every 100,000 triangles cost about 0.7 ms (measured in Chrome on an M5, #97). The build reports `draw_calls`, and `build_field.py` and `blender/test_generator.py` hold the numbers.
 
 **Exporting:** File, Export, glTF 2.0. Use the glTF Binary (`.glb`) format, keep the default +Y Up, and turn Apply Modifiers on. Leave Draco compression off at first.
 
@@ -61,7 +61,7 @@ Change the model in the scripts, not by hand in the `.blend`, or the next rebuil
 - `blender/blueprint.py` reads and checks the blueprint.
 - `blender/layout.py` decides where every asset goes.
 - `blender/field_build.py` and `blender/piping.py` build the field and its pipes. The civil works are a caliche lease road with a crown, two lanes of darker wheel tracks and sloped shoulders, driveways with their own tracks, caliche pads with soft edges and a low berm along their sides and back, and black HDPE flowlines on timber sleepers (#98).
-- `blender/field_parts.py` builds each core asset.
+- `blender/field_parts.py` builds each core asset; `blender/well_parts.py` (pumpjack and wellhead), `blender/truck_parts.py` (vacuum truck) and `blender/swd_parts.py` (disposal facility with its H-pumps) hold the bigger ones. At `--detail full` they build the hero detail; `lite` costs about what full did before #100.
 - `blender/detail_equipment.py` adds gauges, sensors, panels, wellhead trees, labels, and load-outs.
 - `blender/detail_site.py` adds power, light towers, corrugated steel containment walls with a black liner, disposal well equipment (a skim tank in lined containment and a truck offload header), yard equipment, and truck detail.
 - `blender/siting.py` finds free spots for anything added after the core layout, and `blender/equipment_parts.py` builds the blueprint's `equipment`.
@@ -125,7 +125,7 @@ Positions are plan meters. The lease road runs along x on y = 0, and y points no
   "optimize": { "merged": 39, "meshes_before": 750, "meshes_after": 318, "unshared": 0, "no_shadow": 32, "purged": 520,
                 "instanced": { "SCENERY_dry_grass_2_instances": 102, "SCENERY_rock_1_instances": 6, "...": 5 },
                 "instances": 121, "glb_meshes": 318, "instanced_nodes": 7 },
-  "budget": { "triangles": 300000, "mb": 30.0, "draw_calls": 1500 },
+  "budget": { "triangles": 300000, "mb": 30.0, "draw_calls": 1600 },
   "timing": { "plan": 0.0, "field": 3.42, "scenery": 2.61, "checks": 0.0, "look": 0.51, "optimize": 1.77, "export": 2.58, "blend": 0.11, "report": 0.03 },
   "seconds": 11.04, "cpu_seconds": 15.35
 }
@@ -151,9 +151,11 @@ Positions are plan meters. The lease road runs along x on y = 0, and y points no
 |---|---|---|
 | `<tank>_LEVEL` | Brine level inside the cutaway tank | `scale.y` from 0 (empty) to 1 (full). The file ships at 0.55 for preview. |
 | `<pump>_rotor` | Motor fan, so you can see the pump running | Spin `rotation.x` while running, stop when failed |
-| `<valve>_wheel` | Handwheel on every valve | Turn `rotation.y` while the valve opens or closes |
+| `<valve>_wheel` | Handwheel on every valve: the big wheel of a manual gate valve, or the override wheel under a remote valve's actuator. Its pivot is the same either way. Each valve's `userData.actuation` is `manual` or `remote`, from the blueprint's `manual` / `remote` | Turn `rotation.y` while the valve opens or closes |
 | `<well>_beam` | Pumpjack walking beam | Rock `rotation.x` by about ±0.25 rad while the well produces |
 | `<well>_crank` | Pumpjack crank and counterweights | Spin `rotation.x` while the well produces, stop when shut in |
+| `<well>_pitman` | Both pitman arms, a child of `<well>_beam` with its pivot on the equalizer | Optional. As shipped it rocks with the beam. To keep its foot on the wrist pins, each frame set `rotation.x = atan2(dy, -dz) - beam.rotation.x`, where `(dy, dz)` runs from the equalizer to the wrist pin in the well's frame, in Blender axes (y along the beam toward the motor, z up; three.js local `-z` and `y`). The equalizer is the point `(y 3.55, z -0.24)` in the beam's frame, so in the well's frame it is that point turned by the beam's angle plus `(y 0, z 4.1)`; the pin is `(y 2.7 + 0.85 cos c, z 1.6 + 0.85 sin c)`, with `c` the crank's `rotation.x` |
+| `<well>_bridle` | Wireline bridle, carrier bar and polished rod, a child of `<well>_beam` with its pivot where the line leaves the horse head | Optional. As shipped it rocks with the beam. Set `rotation.x = -beam.rotation.x` each frame to keep it plumb over the wellhead, as a real bridle hangs |
 | `<tank>_gauge` | Float marker on the outside level board | `position.y = 0.3 + 4.3 × level` (0 to 1), in the tank's local space |
 | `<truck>_axle_1` to `_3` | Wheel pairs | Spin `rotation.z` while the truck drives |
 | `<swd>_gate` | Swinging gate in the fence | `rotation.y` 0 is closed, 1.31 rad is open. It ships open. |
@@ -168,7 +170,7 @@ Assets on the south side of the road are turned 180 degrees about Y. Their parts
 
 **Sensors:** `<tank>_lt` (radar level) and `<tank>_lshh` (high-level switch) are separate meshes, so the console can highlight the sensor behind an alarm. Clicking them selects the tank.
 
-**IoT sensor nodes (#46):** `SENSOR_<asset>` is a wireless sensor node (an enclosure, a stub antenna, and the `SENSOR_<asset>_light` LED) mounted on an asset and parented to it, so clicking it selects that asset. The assets named in the blueprint's `connectors[].signals` get one each, and with no connectors every tank and pump does. Its `userData` has `kind` `sensor`, `for_asset` (the asset ID), `signals`, and `connectors`, the last two as comma-separated text like `"running,flow_bbl_hr"` and `"CONN_SIM"` (empty with no connectors). Today's field has `SENSOR_TANK_1` to `SENSOR_TANK_6` and `SENSOR_PUMP_1` to `SENSOR_PUMP_6`.
+**IoT sensor nodes (#46):** `SENSOR_<asset>` is a field instrument with a wireless adapter and the `SENSOR_<asset>_light` LED, mounted on an asset and parented to it, so clicking it selects that asset. Its `userData.device` says which instrument it is (#100): `radar_level` on a tank roof, `pressure` (a transmitter on a manifold) on pumps, wellheads, disposal wells and equipment, `position` on a valve, `telematics` on a truck, `gateway` on the yard. The assets named in the blueprint's `connectors[].signals` get one each, and with no connectors every tank and pump does. Its `userData` has `kind` `sensor`, `for_asset` (the asset ID), `signals`, and `connectors`, the last two as comma-separated text like `"running,flow_bbl_hr"` and `"CONN_SIM"` (empty with no connectors). Today's field has `SENSOR_TANK_1` to `SENSOR_TANK_6` and `SENSOR_PUMP_1` to `SENSOR_PUMP_6`.
 
 **RTUs (#46):** `RTU_PAD_n` is the remote terminal unit on each tank pad: a cabinet on a stand with a solar panel and battery box, the `RTU_PAD_n_light` status light, and `RTU_PAD_n_antenna`, the radio mast with an omni whip and a Yagi toward the road. It is parented to `PAD_n`, and its `userData` has `kind` `rtu` and `pad`. It is not a clickable asset. Today's field has `RTU_PAD_1` to `RTU_PAD_6`.
 
