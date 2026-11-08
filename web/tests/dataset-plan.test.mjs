@@ -84,6 +84,16 @@ const twin = cheapestJoint([
 assert.equal(twin.picks.reduce((n, p) => n + p.trucks, 0), 1);
 assert.ok(Math.abs(twin.total - (905 + noTruck.result.cost.total)) < 1);
 assert.deepEqual(planToActions({ trucks: 0, trips: 0, shutIns: [] }, "X"), [{ type: "none" }]);
+// The fleet curve gives the same answer as cheapestJoint at every fleet size, and never
+// costs more with more trucks.
+{
+  const { jointCurve } = await import("../src/dataset/plan.js");
+  const tanks = [{ id: "T1", input: base.input, truckSpec: spec }, { id: "T2", input: { ...base.input }, truckSpec: spec }];
+  const curve = jointCurve(tanks, 3);
+  assert.equal(curve.length, 4);
+  for (const { n, best } of curve) assert.ok(Math.abs(best.total - cheapestJoint(tanks, n).total) < 1e-6, `curve at ${n}`);
+  for (let n = 1; n < curve.length; n++) assert.ok(curve[n].best.total <= curve[n - 1].best.total + 1e-6);
+}
 console.log("dataset-plan optimizer: all pass");
 
 // Review fixes.

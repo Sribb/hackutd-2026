@@ -249,7 +249,7 @@ body.travelling .ds-travel input[type=range] { accent-color: var(--warning); }
    copies (handoff, events.json) keeps its own case: only the screen is lowercased. */
 :root {
   --sans: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
-  --script: "Snell Roundhand", "Apple Chancery", "Segoe Script", "Brush Script MT", cursive;
+  --script: "Great Vibes", "Snell Roundhand", "Apple Chancery", "Segoe Script", cursive; /* same mark as the console */
   --radius: 14px;
 }
 html, body { font: 14px/1.5 var(--sans); }
@@ -280,3 +280,15 @@ button:hover { background: #1b1a17; }
 .ds-foot { border-top: 0; }
 button { text-transform: lowercase; } /* browsers reset text-transform on buttons */
 .ds-back { display: inline-block; padding: 2px 4px 0 2px; }
+
+/* ---- disposal outage what-if ---- */
+.ds-outage { border: 1px solid var(--line-2); border-radius: 12px; padding: 10px 12px; margin: 0 0 12px; background: var(--bg); }
+.ds-outage > .kicker { display: inline-block; margin-right: 10px; }
+.ds-outage > .ds-win { display: inline-flex; vertical-align: middle; }
+.ds-outage-sum { margin: 8px 0; }
+.ds-outage-sum b { font-size: 15px; }
+.ds-outage-t th { vertical-align: top; width: 34%; }
+.ds-outage-t th .ds-hint, .ds-outage-t td .ds-hint { display: block; font-size: 11px; }
+.ds-outage-t td { vertical-align: top; }
+.ds-outage-t td:first-of-type { text-align: left; }
+.ds-outage-t .ds-plan { margin: 0; }

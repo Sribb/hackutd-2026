@@ -5,12 +5,13 @@
 // "Now" always comes from the telemetry, never from the system clock.
 
 import "@fontsource/gloock/400.css";
+import "@fontsource/great-vibes/400.css"; // the gaia mark, same as the console
 import "@fontsource/azeret-mono/400.css";
 import "@fontsource/azeret-mono/600.css";
 import "./dataset.css";
 import { apiSource, fileSource, assetIndex, checkDataset, STEP_S } from "./data.js";
 import { lineChart, fmtTime } from "./chart.js";
-import { replay, doNothing, inputFor, planFromActions, planToActions, cheapestJoint, money, revenuePerHour } from "./plan.js";
+import { replay, doNothing, inputFor, planFromActions, planToActions, cheapestJoint, walkCurve, money, revenuePerHour } from "./plan.js";
 import { normAlerts, sortAlerts, actionLines, handoffText, durationText, categoryOf, trucksInUse } from "./alerts.js";
 import { screenDataset, screenAt, screenSeries, recentMean, faultRuns, noiseSd, confidenceAt, WEAR } from "./screen.js";
 
@@ -820,6 +821,103 @@ function lostSeries(f, from, to) {
   return R(f.pump.id, "flow_bpd").filter(([t, v]) => run.get(t) === 1 && v > 0 && recv.has(t)).map(([t, v]) => [t, v - recv.get(t)]);
 }
 
+// README "Go further": what if the whole disposal site shut down? Every pump in the system
+// stops at once, every tank fills, and they all share the system's trucks. Plans every tank
+// together for the outage, and prices the same outage with 0 to fleet + 3 trucks.
+// Assumes the trucks haul to another site on the same cycle times as ops.json.
+const outageMemo = new Map(); // `${at}@${system}@${hours}` -> Promise of the result, per loaded store
+let outageStore = null, outageSeq = 0;
+const outageWorkers = [], outagePending = new Map();
+// One tank per worker, a small pool sized to the machine.
+function outageTank(tank, maxK) {
+  const size = Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 2) - 1));
+  if (!outageWorkers.length) for (let i = 0; i < size; i++) {
+    const w = new Worker(new URL("./outage.worker.js", import.meta.url), { type: "module" });
+    w.onmessage = (e) => { const p = outagePending.get(e.data.id); outagePending.delete(e.data.id); p?.(e.data); };
+    outageWorkers.push(w);
+  }
+  const id = ++outageSeq;
+  return new Promise((resolve) => { outagePending.set(id, resolve); outageWorkers[id % outageWorkers.length].postMessage({ id, tank, maxK }); });
+}
+function outageRun(tanks, maxFleet) {
+  return Promise.all(tanks.map((t) => outageTank(t, maxFleet))).then((rows) => {
+    const bad = rows.find((r) => r.error);
+    if (bad) return { error: bad.error };
+    return { curve: walkCurve(tanks, rows.map((r) => r.row), maxFleet), nothing: rows.map((r, i) => ({ id: tanks[i].id, r: r.nothing })) };
+  });
+}
+function outagePlan(sys, hours) {
+  if (outageStore !== state.store) { outageMemo.clear(); outageStore = state.store; }
+  const key = `${state.at}@${sys.id}@${hours}`;
+  if (outageMemo.has(key)) return outageMemo.get(key);
+  const horizonMin = Math.round(hours * 60);
+  const tanks = [], skipped = [];
+  for (const f of sys.facilities) {
+    const built = inputFor({ network: state.network, ops: state.ops, facilityId: f.id, ...readers(), horizonMin });
+    if (!built.input || !built.opsFacility) { skipped.push(`${f.id}: ${built.error || "no truck times in ops.json"}`); continue; }
+    tanks.push({ id: f.id, input: built.input, truckSpec: {
+      responseMin: built.opsFacility.response_min, cycleMin: built.opsFacility.cycle_min,
+      capacityBbl: state.ops.emergency_trucking.truck_capacity_bbl, costPerTrip: state.ops.emergency_trucking.cost_per_trip } });
+  }
+  const fleet = state.ops.systems?.[sys.id]?.emergency_fleet_size ?? 0;
+  const p = (tanks.length ? outageRun(tanks, fleet + 3) : Promise.resolve({ curve: [], nothing: [] })).then((r) => ({
+    hours, fleet, tanks, skipped, error: r.error || null, curve: r.curve || [], today: r.curve?.[fleet]?.best ?? null, nothing: r.nothing || [],
+  }));
+  outageMemo.set(key, p);
+  return p;
+}
+
+function outagePanel(sys) {
+  const el = document.createElement("div");
+  el.className = "ds-outage";
+  const repair = repairH();
+  const choices = [...new Set([repair, 12, 24].filter((h) => Number.isFinite(h) && h > 0))];
+  state.outageH ||= null;
+  const head = `<span class="kicker">What if ${esc(sys.disposal_site?.id || "the disposal site")} shut down now?</span>
+    <div class="ds-win" role="group" aria-label="Outage length">${choices.map((h) => `<button type="button" data-o="${h}" class="${state.outageH === h ? "on" : ""}">${h} h${h === repair ? " (a repair)" : ""}</button>`).join("")}</div>`;
+  if (!state.outageH) {
+    el.innerHTML = `${head}<p class="ds-hint">Every pump in ${esc(sys.id)} stops, every tank fills, and they share ${esc(sys.id)}'s trucks. Pick how long it lasts.</p>`;
+  } else {
+    el.innerHTML = `${head}<p class="ds-hint">Planning every tank together, with 0 to ${(state.ops.systems?.[sys.id]?.emergency_fleet_size ?? 0) + 3} trucks. A long outage takes a few seconds.</p>`;
+  }
+  for (const b of el.querySelectorAll("[data-o]")) b.onclick = () => { state.outageH = state.outageH === Number(b.dataset.o) ? null : Number(b.dataset.o); renderDetail(); };
+  if (!state.outageH) return el;
+  const want = { at: state.at, h: state.outageH, sys: sys.id };
+  outagePlan(sys, state.outageH).then((o) => {
+    // The operator may have moved on while it planned: draw only for what is still asked.
+    if (!el.isConnected || state.at !== want.at || state.outageH !== want.h) return;
+    const end = state.at + o.hours * 3600;
+    if (!o.today) { el.innerHTML = `${head}<p class="ds-hint">No plan possible: ${esc(o.error || o.skipped.join("; ") || "no tanks with readings")}.</p>`; wire(); return; }
+    const nothingTotal = o.nothing.reduce((n, x) => n + x.r.cost.total, 0);
+    const rows = o.today.picks.map((p) => {
+      const dn = o.nothing.find((x) => x.id === p.id).r;
+      const trips = dn.tripped ? "already at shutdown" : dn.safe ? "never reaches shutdown" : `shuts in ${fmtTime(state.at + dn.tripsAtMin * 60)} UTC`;
+      const fake = { category: "pump_failure", facility: p.id, system: sys.id, hours: dn.safe ? null : dn.tripsAtMin / 60, tripped: dn.tripped, actions: planToActions(p.plan, p.id) };
+      const lines = actionLines(fake, { at: state.at, ops: state.ops });
+      return `<tr><th>${esc(p.id)}<span class="ds-hint">${esc(trips)} if nobody acts</span></th>
+        <td><ul class="ds-plan">${lines.map((l) => `<li>${esc(l)}</li>`).join("")}</ul></td>
+        <td>${money(p.result.cost.total)}${p.result.safe ? "" : `<span class="ds-hint">shuts in ${esc(fmtTime(state.at + p.result.tripsAtMin * 60))}</span>`}</td></tr>`;
+    }).join("");
+    const max = Math.max(...o.curve.map((c) => c.best?.total ?? 0), 1);
+    const bars = o.curve.map((c) => {
+      const save = c.n > o.fleet && o.today.total - c.best.total > 0.5 ? ` · saves ${money(o.today.total - c.best.total)}` : "";
+      return `<div class="ds-fleet-row${c.n === o.fleet ? " on" : ""}"><span>${c.n} truck${c.n === 1 ? "" : "s"}${c.n === o.fleet ? " (today)" : ""}</span>
+        <i style="width:${Math.max(1, (c.best.total / max) * 100).toFixed(1)}%"></i><b>${money(c.best.total)}</b><em>${save}</em></div>`;
+    }).join("");
+    const extra = o.curve.find((c) => c.n > o.fleet && o.today.total - c.best.total > 0.5);
+    el.innerHTML = `${head}
+      <p class="ds-outage-sum">Until ${esc(fmtTime(end, true))} UTC: <b>${money(o.today.total)}</b> with ${esc(sys.id)}'s ${o.fleet} truck${o.fleet === 1 ? "" : "s"}, vs <b>${money(nothingTotal)}</b> doing nothing.${
+        extra ? ` With ${extra.n} trucks it would cost ${money(o.today.total - (o.today.total - extra.best.total))}, ${money(o.today.total - extra.best.total)} less.` : ` More trucks would not save anything.`}</p>
+      <table class="ds-costs ds-outage-t"><tbody>${rows}</tbody></table>
+      <div class="ds-fleet"><span class="kicker">Fleet size for this outage</span>${bars}</div>
+      ${o.skipped.length ? `<p class="ds-problems">${esc(o.skipped.join(" "))}</p>` : ""}
+      <p class="ds-hint">Assumes the trucks haul to another site on the cycle times in ops.json, and the wells keep their last hour's rates.</p>`;
+    wire();
+    function wire() { for (const b of el.querySelectorAll("[data-o]")) b.onclick = () => { state.outageH = state.outageH === Number(b.dataset.o) ? null : Number(b.dataset.o); renderDetail(); }; }
+  });
+  return el;
+}
+
 function compare(box, systemId) {
   const sys = state.network.systems.find((x) => x.id === systemId);
   if (!sys) { box.innerHTML = `<p class="ds-hint">${esc(systemId)} is not in this dataset.</p>`; return; }
@@ -829,6 +927,7 @@ function compare(box, systemId) {
     <div class="ds-win" role="group" aria-label="Metric">${COMPARE.map((c) => `<button type="button" data-m="${c.key}" class="${c.key === m.key ? "on" : ""}">${esc(c.label)}</button>`).join("")}</div>
     <div class="ds-win" role="group" aria-label="Trend window">${[[6, "6 h"], [24, "24 h"], [72, "3 d"], [168, "week"]].map(([h, l]) =>
       `<button type="button" data-h="${h}" class="${state.win === h * 3600 ? "on" : ""}">${l}</button>`).join("")}</div></div>`;
+  box.appendChild(outagePanel(sys));
   for (const b of box.querySelectorAll("[data-m]")) b.onclick = () => { state.compareMetric = b.dataset.m; renderDetail(); };
   for (const b of box.querySelectorAll("[data-h]")) b.onclick = () => { state.win = Number(b.dataset.h) * 3600; renderDetail(); };
   const wrap = document.createElement("div");

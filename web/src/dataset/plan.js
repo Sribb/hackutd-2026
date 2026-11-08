@@ -308,6 +308,44 @@ export function cheapestJoint(tanks, fleet) {
   return best;
 }
 
+// One tank's best plan with 0 to maxK trucks: the expensive part of a fleet-size curve,
+// and independent per tank, so it can run in parallel.
+export function tankRow(tank, maxK) {
+  const row = [];
+  for (let k = 0; k <= maxK; k++) row.push(bestForTrucks(tank.input, tank.truckSpec, k));
+  return row;
+}
+
+// Given each tank's row, the cheapest split of n trucks for every n from 0 to maxFleet.
+export function walkCurve(tanks, table, maxFleet) {
+  const out = [];
+  for (let n = 0; n <= maxFleet; n++) {
+    let best = null;
+    const walk = (i, left, picks, total) => {
+      if (i === tanks.length) {
+        const used = picks.reduce((m, p) => m + p.trucks, 0);
+        if (!best || total < best.total - 1e-6 || (Math.abs(total - best.total) < 1e-6 && used < best.used)) best = { total, used, picks: [...picks] };
+        return;
+      }
+      for (let k = 0; k <= left; k++) {
+        const b = table[i][k];
+        if (!b) continue;
+        picks.push({ id: tanks[i].id, trucks: k, plan: b.plan, result: b.result });
+        walk(i + 1, left - k, picks, total + b.result.cost.total);
+        picks.pop();
+      }
+    };
+    walk(0, n, [], 0);
+    out.push({ n, best });
+  }
+  return out;
+}
+
+// cheapestJoint for every fleet size from 0 to maxFleet, in one go.
+export function jointCurve(tanks, maxFleet) {
+  return walkCurve(tanks, tanks.map((tk) => tankRow(tk, maxFleet)), maxFleet);
+}
+
 // A plan in the SPEC events.json `recommended_actions` shape.
 export function planToActions(plan, facilityId) {
   const out = [];
