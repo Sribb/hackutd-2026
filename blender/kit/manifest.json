@@ -1,0 +1,1255 @@
+{
+ "format": 1,
+ "blender": "5.2.3 LTS",
+ "sources": {
+  "field_parts.py": "7886143b981e8bbc",
+  "detail_equipment.py": "0ed3fc575f571960",
+  "detail_site.py": "ae054f9c344b1d06",
+  "field_build.py": "a0956360ecb854dc",
+  "piping.py": "7df74a39713c9134",
+  "layout.py": "84813b7247b34245",
+  "build_field.py": "514a14f4bb396664"
+ },
+ "token": "KIT",
+ "axes": "anchors and bounds are in the type's own frame with Blender axes: x east, y north, z up",
+ "detail": {
+  "levels": {
+   "full": {
+    "bolts": true,
+    "small_labels": true,
+    "posts": true,
+    "trim": true
+   },
+   "lite": {
+    "bolts": false,
+    "small_labels": false,
+    "posts": false,
+    "trim": true
+   },
+   "bare": {
+    "bolts": false,
+    "small_labels": false,
+    "posts": false,
+    "trim": false
+   }
+  },
+  "dropped": {
+   "full": [],
+   "lite": [
+    "bolts",
+    "small labels, tags and signs",
+    "containment and fence posts"
+   ],
+   "bare": [
+    "bolts",
+    "small labels, tags and signs",
+    "containment and fence posts",
+    "wellhead trees, crank guards and well signs"
+   ]
+  },
+  "budget_triangles": 300000,
+  "budget_mb": 30.0,
+  "full_detail_max_tanks": 12
+ },
+ "layout": {
+  "pad_top": 0.15,
+  "tank_y": 46.0,
+  "yard_slots": [
+   [
+    -2.0,
+    4.0
+   ],
+   [
+    12.5,
+    4.0
+   ],
+   [
+    -2.0,
+    0.6
+   ],
+   [
+    12.5,
+    0.6
+   ],
+   [
+    -16.5,
+    0.6
+   ],
+   [
+    12.5,
+    -2.8
+   ]
+  ]
+ },
+ "types": {
+  "tank": {
+   "kind": "tank",
+   "token": "KIT",
+   "name": "{id}",
+   "levels": {
+    "full": "tank.glb",
+    "lite": "tank.glb",
+    "bare": "tank.glb"
+   },
+   "triangles": {
+    "full": 4364,
+    "lite": 4364,
+    "bare": 4364
+   },
+   "parts": [
+    {
+     "name": "_concrete",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_detail_pipe",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_detail_steel",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_detail_steel_dark",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_gauge",
+     "role": "moving",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_LEVEL",
+     "role": "moving",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_lshh",
+     "role": "sensor",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_lt",
+     "role": "sensor",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_pipe",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_steel",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_steel_dark",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_tank",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    }
+   ],
+   "bounds": [
+    -3.986,
+    3.65,
+    -3.65,
+    3.68,
+    -0.14,
+    6.23
+   ],
+   "anchors": {
+    "outlets": {
+     "-40.0": [
+      2.83436,
+      -2.37831,
+      0.85
+     ],
+     "-15.0": [
+      3.57393,
+      -0.95763,
+      0.85
+     ]
+    },
+    "inlet": [
+     -0.6425,
+     3.64379,
+     4.3
+    ],
+    "loadout": [
+     -3.03086,
+     -2.12223,
+     0.85
+    ]
+   },
+   "tank": {
+    "R": 3.25,
+    "nozzle_r": 3.7,
+    "outlet_z": 0.85,
+    "xo_z": 0.85,
+    "nozzle_pipe_r": 0.11,
+    "flange_r": 0.19,
+    "flange_thick": 0.05,
+    "flange_at": [
+     3.4,
+     3.6700000000000004
+    ],
+    "label_angle": -25.0,
+    "level": 0.55
+   },
+   "root": ""
+  },
+  "pump": {
+   "kind": "pump",
+   "token": "KIT",
+   "name": "{id}",
+   "levels": {
+    "full": "pump.glb",
+    "lite": "pump_lite.glb",
+    "bare": "pump_lite.glb"
+   },
+   "triangles": {
+    "full": 2172,
+    "lite": 1852,
+    "bare": 1852
+   },
+   "parts": [
+    {
+     "name": "_concrete",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_detail_steel",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_detail_steel_dark",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_light",
+     "role": "light",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_pipe",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_rotor",
+     "role": "moving",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_steel",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_steel_dark",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    }
+   ],
+   "bounds": [
+    -2.1,
+    2.1,
+    -1.15,
+    1.8,
+    0.0,
+    2.06
+   ],
+   "anchors": {
+    "suction": [
+     -1.75,
+     0.0,
+     0.85
+    ],
+    "discharge": [
+     -0.8,
+     0.0,
+     1.9
+    ]
+   },
+   "root": ""
+  },
+  "valve_discharge": {
+   "kind": "valve",
+   "token": "KIT",
+   "name": "{id}",
+   "levels": {
+    "full": "valve_discharge.glb",
+    "lite": "valve_discharge_lite.glb",
+    "bare": "valve_discharge_lite.glb"
+   },
+   "triangles": {
+    "full": 852,
+    "lite": 532,
+    "bare": 532
+   },
+   "parts": [
+    {
+     "name": "_detail_steel",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_detail_steel_dark",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_steel",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_steel_dark",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_wheel",
+     "role": "moving",
+     "type": "mesh",
+     "parent": ""
+    }
+   ],
+   "bounds": [
+    -0.285,
+    0.3,
+    -0.285,
+    0.285,
+    -0.27,
+    0.91
+   ],
+   "anchors": {
+    "north": [
+     0.0,
+     0.27,
+     0.0
+    ],
+    "south": [
+     0.0,
+     -0.27,
+     0.0
+    ]
+   },
+   "root": ""
+  },
+  "valve_crossover": {
+   "kind": "valve",
+   "token": "KIT",
+   "name": "{id}",
+   "levels": {
+    "full": "valve_crossover.glb",
+    "lite": "valve_crossover_lite.glb",
+    "bare": "valve_crossover_lite.glb"
+   },
+   "triangles": {
+    "full": 852,
+    "lite": 532,
+    "bare": 532
+   },
+   "parts": [
+    {
+     "name": "_detail_steel",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_detail_steel_dark",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_steel",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_steel_dark",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_wheel",
+     "role": "moving",
+     "type": "mesh",
+     "parent": ""
+    }
+   ],
+   "bounds": [
+    -0.285,
+    0.3,
+    -0.285,
+    0.285,
+    -0.27,
+    0.91
+   ],
+   "anchors": {
+    "north": [
+     0.0,
+     0.27,
+     0.0
+    ],
+    "south": [
+     0.0,
+     -0.27,
+     0.0
+    ]
+   },
+   "root": ""
+  },
+  "well": {
+   "kind": "well",
+   "token": "KIT",
+   "name": "{id}",
+   "levels": {
+    "full": "well.glb",
+    "lite": "well.glb",
+    "bare": "well_bare.glb"
+   },
+   "triangles": {
+    "full": 1476,
+    "lite": 1476,
+    "bare": 716
+   },
+   "parts": [
+    {
+     "name": "_beam",
+     "role": "moving",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_concrete",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_crank",
+     "role": "moving",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_detail_steel",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_detail_steel_dark",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_gravel",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_light",
+     "role": "light",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_pipe",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_steel",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_steel_dark",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    }
+   ],
+   "bounds": [
+    -2.5,
+    2.5,
+    -5.05,
+    5.45,
+    0.0,
+    4.821
+   ],
+   "anchors": {
+    "outlet": [
+     0.6,
+     -3.45,
+     0.85
+    ]
+   },
+   "root": ""
+  },
+  "disposal_well": {
+   "kind": "disposal_well",
+   "token": "KIT",
+   "name": "{id}",
+   "levels": {
+    "full": "disposal_well.glb",
+    "lite": "disposal_well_lite.glb",
+    "bare": "disposal_well_lite.glb"
+   },
+   "triangles": {
+    "full": 3516,
+    "lite": 2916,
+    "bare": 2916
+   },
+   "parts": [
+    {
+     "name": "_concrete",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_detail_pipe",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_detail_steel",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_detail_steel_dark",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_detail_tank",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_gate",
+     "role": "moving",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_gravel",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_pipe",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_steel",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_steel_dark",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    }
+   ],
+   "bounds": [
+    -13.0,
+    13.0,
+    -11.0,
+    11.0,
+    0.0,
+    5.2
+   ],
+   "anchors": {
+    "inlet": [
+     9.5,
+     -2.0,
+     0.6
+    ],
+    "tower": {
+     "loc": [
+      10.0,
+      9.0,
+      0.15
+     ],
+     "aim_deg": 222.0
+    }
+   },
+   "fx": 1,
+   "root": ""
+  },
+  "disposal_well_mirror": {
+   "kind": "disposal_well",
+   "token": "KIT",
+   "name": "{id}",
+   "levels": {
+    "full": "disposal_well_mirror.glb",
+    "lite": "disposal_well_mirror_lite.glb",
+    "bare": "disposal_well_mirror_lite.glb"
+   },
+   "triangles": {
+    "full": 3516,
+    "lite": 2916,
+    "bare": 2916
+   },
+   "parts": [
+    {
+     "name": "_concrete",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_detail_pipe",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_detail_steel",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_detail_steel_dark",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_detail_tank",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_gate",
+     "role": "moving",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_gravel",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_pipe",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_steel",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_steel_dark",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    }
+   ],
+   "bounds": [
+    -13.0,
+    13.0,
+    -11.0,
+    11.0,
+    0.0,
+    5.2
+   ],
+   "anchors": {
+    "inlet": [
+     -9.5,
+     -2.0,
+     0.6
+    ],
+    "tower": {
+     "loc": [
+      -10.0,
+      9.0,
+      0.15
+     ],
+     "aim_deg": 318.0
+    }
+   },
+   "fx": -1,
+   "root": ""
+  },
+  "truck": {
+   "kind": "truck",
+   "token": "KIT",
+   "name": "{id}",
+   "levels": {
+    "full": "truck.glb",
+    "lite": "truck.glb",
+    "bare": "truck.glb"
+   },
+   "triangles": {
+    "full": 3092,
+    "lite": 3092,
+    "bare": 3092
+   },
+   "parts": [
+    {
+     "name": "_axle_1",
+     "role": "moving",
+     "type": "empty",
+     "parent": ""
+    },
+    {
+     "name": "_axle_1_hub",
+     "role": "static",
+     "type": "mesh",
+     "parent": "_axle_1"
+    },
+    {
+     "name": "_axle_1_tire",
+     "role": "static",
+     "type": "mesh",
+     "parent": "_axle_1"
+    },
+    {
+     "name": "_axle_2",
+     "role": "moving",
+     "type": "empty",
+     "parent": ""
+    },
+    {
+     "name": "_axle_2_hub",
+     "role": "static",
+     "type": "mesh",
+     "parent": "_axle_2"
+    },
+    {
+     "name": "_axle_2_tire",
+     "role": "static",
+     "type": "mesh",
+     "parent": "_axle_2"
+    },
+    {
+     "name": "_axle_3",
+     "role": "moving",
+     "type": "empty",
+     "parent": ""
+    },
+    {
+     "name": "_axle_3_hub",
+     "role": "static",
+     "type": "mesh",
+     "parent": "_axle_3"
+    },
+    {
+     "name": "_axle_3_tire",
+     "role": "static",
+     "type": "mesh",
+     "parent": "_axle_3"
+    },
+    {
+     "name": "_beacon",
+     "role": "light",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_detail_steel",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_detail_steel_dark",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_glass",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_headlights",
+     "role": "light",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_pipe",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_steel",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_steel_dark",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_tank",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    }
+   ],
+   "bounds": [
+    -4.95,
+    6.275,
+    -1.576,
+    1.576,
+    0.0,
+    4.42
+   ],
+   "root": ""
+  },
+  "yard": {
+   "kind": "yard",
+   "token": "KIT",
+   "name": "{id}",
+   "levels": {
+    "full": "yard.glb",
+    "lite": "yard.glb",
+    "bare": "yard.glb"
+   },
+   "triangles": {
+    "full": 632,
+    "lite": 632,
+    "bare": 632
+   },
+   "parts": [
+    {
+     "name": "_concrete",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_detail_steel",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_detail_steel_dark",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_detail_tank",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_glass",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_gravel",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_steel",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_steel_dark",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    }
+   ],
+   "bounds": [
+    -22.0,
+    22.0,
+    -12.0,
+    12.0,
+    0.0,
+    9.15
+   ],
+   "curb": {
+    "size": [
+     1.8,
+     0.25,
+     0.15
+    ],
+    "offset": [
+     6.8,
+     0.0,
+     0.2
+    ],
+    "rot_deg": 90.0
+   },
+   "root": ""
+  },
+  "loadout": {
+   "kind": "loadout",
+   "token": "LOADOUT_KIT",
+   "name": "LOADOUT_{n}",
+   "levels": {
+    "full": "loadout.glb",
+    "lite": "loadout.glb",
+    "bare": "loadout.glb"
+   },
+   "triangles": {
+    "full": 540,
+    "lite": 540,
+    "bare": 540
+   },
+   "parts": [
+    {
+     "name": "_concrete",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_pipe",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_rubber",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_steel",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_steel_dark",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    }
+   ],
+   "bounds": [
+    -0.925,
+    0.9,
+    -0.7,
+    0.8,
+    0.0,
+    1.6
+   ],
+   "root": ""
+  },
+  "pad": {
+   "kind": "pad",
+   "token": "PAD_KIT",
+   "name": "PAD_{n}",
+   "levels": {
+    "full": "pad.glb",
+    "lite": "pad_lite.glb",
+    "bare": "pad_lite.glb"
+   },
+   "triangles": {
+    "full": 836,
+    "lite": 404,
+    "bare": 404
+   },
+   "parts": [
+    {
+     "name": "_detail_rubber",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_detail_steel",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_detail_steel_dark",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_gravel",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_steel",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    }
+   ],
+   "bounds": [
+    -12.25,
+    12.0,
+    27.45,
+    58.0,
+    0.0,
+    2.172
+   ],
+   "root": ""
+  },
+  "tower": {
+   "kind": "tower",
+   "token": "KIT",
+   "name": "{name}",
+   "levels": {
+    "full": "tower.glb",
+    "lite": "tower.glb",
+    "bare": "tower.glb"
+   },
+   "triangles": {
+    "full": 196,
+    "lite": 196,
+    "bare": 196
+   },
+   "parts": [
+    {
+     "name": "_lamps",
+     "role": "light",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_tower_concrete",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_tower_steel",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_tower_steel_dark",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    }
+   ],
+   "bounds": [
+    -0.6,
+    0.6,
+    -1.0,
+    1.0,
+    0.0,
+    8.519
+   ],
+   "root": "_tower"
+  }
+ },
+ "glyphs": {
+  "file": "glyphs.glb",
+  "node": "GLYPH_<codepoint>",
+  "advance": {
+   " ": 0.278,
+   "A": 0.667,
+   "B": 0.563,
+   "C": 0.708,
+   "D": 0.75,
+   "E": 0.5,
+   "F": 0.469,
+   "G": 0.74,
+   "H": 0.729,
+   "I": 0.25,
+   "J": 0.25,
+   "K": 0.656,
+   "L": 0.49,
+   "M": 0.781,
+   "N": 0.781,
+   "O": 0.823,
+   "P": 0.51,
+   "Q": 0.823,
+   "R": 0.604,
+   "S": 0.458,
+   "T": 0.604,
+   "U": 0.708,
+   "V": 0.604,
+   "W": 1.042,
+   "X": 0.708,
+   "Y": 0.604,
+   "Z": 0.646,
+   "a": 0.427,
+   "b": 0.5,
+   "c": 0.438,
+   "d": 0.51,
+   "e": 0.479,
+   "f": 0.25,
+   "g": 0.427,
+   "h": 0.5,
+   "i": 0.219,
+   "j": 0.219,
+   "k": 0.479,
+   "l": 0.219,
+   "m": 0.771,
+   "n": 0.5,
+   "o": 0.552,
+   "p": 0.5,
+   "q": 0.5,
+   "r": 0.396,
+   "s": 0.385,
+   "t": 0.333,
+   "u": 0.5,
+   "v": 0.438,
+   "w": 0.719,
+   "x": 0.5,
+   "y": 0.438,
+   "z": 0.417,
+   "0": 0.5,
+   "1": 0.5,
+   "2": 0.5,
+   "3": 0.5,
+   "4": 0.5,
+   "5": 0.5,
+   "6": 0.5,
+   "7": 0.5,
+   "8": 0.5,
+   "9": 0.5,
+   "-": 0.323,
+   ".": 0.219,
+   "+": 0.584,
+   "/": 0.281,
+   "#": 0.584,
+   "&": 0.625,
+   "(": 0.323,
+   ")": 0.323,
+   "%": 0.68,
+   ":": 0.219,
+   ",": 0.219,
+   "'": 0.188
+  },
+  "line": 1.0,
+  "align": "each glyph is centered on its advance, vertically centered on the line",
+  "material": "M_STEEL_DARK",
+  "triangles": 2439
+ },
+ "palette": {
+  "file": "palette.glb",
+  "materials": [
+   "M_TANK",
+   "M_STEEL",
+   "M_STEEL_DARK",
+   "M_PIPE",
+   "M_CONCRETE",
+   "M_GRAVEL",
+   "M_GROUND",
+   "M_ROAD",
+   "M_BERM",
+   "M_BRINE",
+   "M_RUBBER",
+   "M_GLASS",
+   "M_LAMP",
+   "M_WOOD",
+   "M_WIRE"
+  ]
+ },
+ "files": {
+  "disposal_well.glb": 151580,
+  "disposal_well_lite.glb": 122052,
+  "disposal_well_mirror.glb": 151580,
+  "disposal_well_mirror_lite.glb": 122052,
+  "glyphs.glb": 152960,
+  "loadout.glb": 25060,
+  "pad.glb": 47748,
+  "pad_lite.glb": 23464,
+  "palette.glb": 20044,
+  "pump.glb": 102820,
+  "pump_lite.glb": 87076,
+  "tank.glb": 164360,
+  "tower.glb": 14048,
+  "truck.glb": 132208,
+  "valve_crossover.glb": 39448,
+  "valve_crossover_lite.glb": 23692,
+  "valve_discharge.glb": 39448,
+  "valve_discharge_lite.glb": 23692,
+  "well.glb": 73188,
+  "well_bare.glb": 40344,
+  "yard.glb": 36580
+ },
+ "kit_mb": 1.59,
+ "seconds": 1.5
+}
