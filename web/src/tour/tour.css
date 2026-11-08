@@ -43,6 +43,12 @@
 .gt-card.pill > :not(.gt-pillmsg) { display: none; }
 .gt-card.pill .gt-pillmsg { display: flex; align-items: center; gap: 10px; font-size: 13px; color: #d4d4d4; }
 
+/* No room left on a small screen: only the title and the buttons. */
+.gt-card.mini { padding: 8px 12px; }
+.gt-card.mini .gt-head, .gt-card.mini .gt-body, .gt-card.mini .gt-extra { display: none; }
+.gt-card.mini .gt-title { margin: 0 0 2px; font-size: 14px; }
+.gt-card.mini .gt-nav { margin-top: 4px; }
+
 .gt-ring { position: fixed; z-index: 47; pointer-events: none; box-sizing: border-box; border-radius: 16px !important;
   border: 2px solid rgba(64, 122, 255, .85); box-shadow: 0 0 0 5px rgba(64, 122, 255, .14);
   transition: left .25s ease, top .25s ease, width .25s ease, height .25s ease; animation: gt-breathe 2.6s ease-in-out infinite; }

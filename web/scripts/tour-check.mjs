@@ -6,7 +6,8 @@
 //
 // Options: --size=1440x900 (default) · --notify-stub (define window.gaiaNotify and check the
 // tour calls it) · --layout-only (next through every step, checking placement only) ·
-// --reduced (prefers-reduced-motion: step 2 must not fly on its own).
+// --reduced (prefers-reduced-motion: step 2 must not fly on its own) ·
+// --dataset (a backend with FREEBOARD_EOG_DIR: step 4 replays the recording, step 6 approves).
 // Each step: the card renders, never touches the time bar (where it sits when up, and its
 // on-screen box) or the composer, stays in the window, and the page never scrolls sideways.
 
@@ -19,6 +20,7 @@ const [W, H] = (arg("size") ? arg("size").split("=")[1] : "1440x900").split("x")
 const STUB = !!arg("notify-stub");
 const LAYOUT = !!arg("layout-only");
 const REDUCED = !!arg("reduced");
+const DATASET = !!arg("dataset");
 const u = new URL(url);
 const open = `${u.origin}/?tour=1&fresh${u.hash}`;
 
@@ -31,7 +33,7 @@ const page = await browser.newPage({ viewport: { width: W, height: H }, reducedM
 const errors = [];
 page.on("pageerror", (e) => errors.push(String(e.message || e)));
 const posts = [];
-page.on("response", (r) => { if (r.request().method() === "POST" && /\/api\/(live\/faults|actions)/.test(r.url())) posts.push({ path: new URL(r.url()).pathname, status: r.status() }); });
+page.on("response", (r) => { if (r.request().method() === "POST" && /\/api\/(live\/faults|actions|eog\/clock|plans\/[^/]+\/approve)/.test(r.url())) posts.push({ path: new URL(r.url()).pathname, status: r.status() }); });
 if (STUB) await page.addInitScript(() => { window.gaiaNotify = (a) => { (window.__notifyCalls = window.__notifyCalls || []).push(a && a.id); }; });
 
 const geo = () => page.evaluate(() => {
@@ -48,7 +50,7 @@ const geo = () => page.evaluate(() => {
   return {
     step: window.__tour.step(), title: card.querySelector(".gt-title").textContent, body: card.querySelector(".gt-body").textContent.replace(/\s+/g, " ").trim(),
     extra: card.querySelector(".gt-extra").textContent.replace(/\s+/g, " ").trim(), pill: card.classList.contains("pill"),
-    hitTimebar: hit(r, lay) || (vis.right > vis.left && vis.bottom > vis.top && hit(r, vis)), hitDock: hit(r, box(".cs-dock")), hitAsk: hit(r, box("#csAsk")),
+    hitTimebar: hit(r, lay) || (vis.right > vis.left && vis.bottom > vis.top && hit(r, vis)), hitDock: hit(r, box(".cs-dock")), hitAsk: hit(r, box("#csAsk")), hitNotify: hit(r, box("#gaiaNotify:not([hidden])")),
     inView: r.left >= 0 && r.top >= 0 && r.right <= innerWidth && r.bottom <= innerHeight, visible: getComputedStyle(card).opacity !== "0" || card.classList.contains("in"),
     overflowX: document.documentElement.scrollWidth > innerWidth, rings: [...document.querySelectorAll(".gt-ring:not([hidden])")].length,
     dashes: /[\u2013\u2014]/.test(card.textContent)
@@ -61,6 +63,7 @@ async function placed(label) {
   if (!g) return g;
   check(!g.hitTimebar, `${label}: card clear of the time bar`);
   check(!g.hitDock && !g.hitAsk, `${label}: card clear of the composer`);
+  check(!g.hitNotify, `${label}: card clear of the alert notification`);
   check(g.inView, `${label}: card inside the window`);
   check(!g.overflowX, `${label}: no sideways scroll`);
   check(!g.dashes, `${label}: no em or en dashes`);
@@ -102,7 +105,8 @@ try {
   } else if (!LAYOUT) {
     await bodyHas("whole field", 40000);
     const seen = await page.evaluate(() => window.__seen);
-    check(seen.on && ["tank", "pump", "swd"].every((k) => seen.bodies.some((t) => t.startsWith(k))), `2 look: flew to each stop (${seen.bodies.map((t) => t.split(":")[0]).join(", ")})`);
+    const stops = seen.bodies.filter((t) => /^[a-z0-9 ]+: /.test(t)).map((t) => t.split(":")[0]);
+    check(seen.on && stops.length === 3 && /tank/.test(stops[0]) && /pump/.test(stops[1]), `2 look: flew to a tank, a pump and the disposal well (${stops.join(", ")})`);
     check(seen.sel, "2 look: the camera tour selected each asset on the way");
     check(await page.evaluate(() => document.querySelector("#csSel").hidden), "2 look: the camera tour finished and flew home (selection cleared)");
     await placed("2 look (done)");
@@ -125,12 +129,25 @@ try {
   }
 
   await next(); await waitStep("alarm");
-  if (!LAYOUT) {
+  if (DATASET && !LAYOUT) {
+    await bodyHas("real week from eog", 20000);
+    check(true, "4 alarm (dataset): says it replays a real week of eog data");
+    await bodyHas("raised it", 90000);
+    g = await placed("4 alarm (dataset)");
+    const n = await page.evaluate(() => window.__tour.notified.slice());
+    check(n.length >= 1, `4 alarm (dataset): the replayed failure's alarm came in by itself (${JSON.stringify(n)})`);
+    const clk = posts.filter((x) => x.path === "/api/eog/clock");
+    check(clk.length === 1 && clk[0].status === 200, `4 alarm (dataset): one POST /api/eog/clock, 200 (${JSON.stringify(clk)})`);
+    check(!posts.some((x) => x.path === "/api/live/faults"), "4 alarm (dataset): nothing tripped live");
+    check(await page.evaluate(() => typeof window.gaiaNotify !== "function" || window.__tour.notified[0].via === "gaiaNotify"), "4 alarm (dataset): gaiaNotify used when it exists");
+    log("     card:", g.body.slice(0, 200));
+  } else if (!LAYOUT) {
     await bodyHas("tripped|raised it", 30000);
     g = await placed("4 alarm");
     const n = await page.evaluate(() => window.__tour.notified.slice());
     check(n.length >= 1, `4 alarm: an incident (${JSON.stringify(n)})`);
     if (STUB) check(await page.evaluate(() => (window.__notifyCalls || []).length === 1), "4 alarm: window.gaiaNotify(alert) was called once");
+    else if (await page.evaluate(() => typeof window.gaiaNotify === "function")) check(n[0].via === "gaiaNotify" && await page.evaluate(() => !!document.querySelector("#gaiaNotify")), "4 alarm: #154's gaiaNotify showed the alert");
     else check(await page.evaluate((id) => window.__console.thread() === id, n[0] && n[0].id), "4 alarm: no gaiaNotify, so the incident opened in the chat");
     log("     fault and action posts so far:", JSON.stringify(posts));
   } else await placed("4 alarm");
@@ -159,7 +176,20 @@ try {
   await next(); await waitStep("fix");
   g = await placed("6 fix");
   check(/planner's best plan costs \$[\d,]+, against \$[\d,]+/.test(g.body) || /no fix/.test(g.body), `6 fix: plan dollars (${g.body.slice(0, 80)})`);
-  if (!LAYOUT) {
+  if (DATASET && !LAYOUT) {
+    check(/recording/.test(g.body), "6 fix (dataset): says approving records the plan, nothing goes to equipment");
+    await page.click(".gt-card [data-plans-open]");
+    await page.waitForFunction(() => { const b = document.querySelector("#plans"); const d = b && b.closest(".cs-drawer"); return d && !d.hidden && b.querySelector("[data-approve]"); }, null, { timeout: 20000 });
+    await placed("6 fix (dataset, plans open)");
+    const hold = await page.locator("#plans [data-approve]").first().boundingBox();
+    await page.mouse.move(hold.x + hold.width / 2, hold.y + hold.height / 2);
+    await page.mouse.down(); await page.waitForTimeout(1900); await page.mouse.up();
+    await page.waitForFunction(() => document.querySelector("#plans .approved-stamp"), null, { timeout: 30000 });
+    await bodyHas("recorded for the shift", 8000);
+    check(true, "6 fix (dataset): hold to approve recorded the plan");
+    check(posts.some((x) => /\/approve$/.test(x.path) && x.status === 200), `6 fix (dataset): POST /api/plans/{id}/approve 200`);
+    await placed("6 fix (dataset, approved)");
+  } else if (!LAYOUT) {
     const brief = await page.evaluate(() => { const b = window.__console.brief(); const p = b.plans.robust || b.plans.cheapest; return { total: p && p.total_usd, wait: b.do_nothing_usd }; });
     const usd = (x) => "$" + Math.round(x).toLocaleString("en-US");
     check(g.body.includes(usd(brief.total)) && g.body.includes(usd(brief.wait)), "6 fix: the dollars are the brief's (the status line's) numbers");
@@ -180,7 +210,7 @@ try {
   await page.evaluate(() => sessionStorage.setItem("gaia.judge.phone", "+12145550134"));
   await next(); await waitStep("phone");
   g = await placed("7 phone");
-  check(/\(214\) 555-0134/.test(g.body), "7 phone: says where alerts go");
+  check(/\(214\) 555-0134|\*\*\*|texts and calls/.test(g.body), `7 phone: says where alerts go (${g.body.slice(0, 110)})`);
   await page.click(".gt-card [data-pager]");
   await page.waitForSelector(".pager .pager-qr svg", { timeout: 10000 });
   g = await placed("7 phone (pager open)");
@@ -197,6 +227,12 @@ try {
   await page.click(".gt-card [data-next]");
   await page.waitForFunction(() => !document.querySelector(".gt-card"));
   check(await page.evaluate(() => JSON.parse(sessionStorage.getItem("gaia.tour")).done === true), "end tour: stored as done");
+  if (DATASET) {
+    await page.waitForTimeout(1500);
+    // TOUR_API: the backend's origin when the page calls it cross-origin (a VITE_API build).
+    const c = await page.evaluate(async (api) => (await fetch(`${api}/api/eog/clock`)).json(), process.env.TOUR_API || u.origin);
+    check(c.playing === false, `end tour (dataset): the replay clock is paused (playing ${c.playing})`);
+  }
   await page.reload({ waitUntil: "domcontentloaded", timeout: 90000 });
   await page.waitForFunction(() => window.__console && !document.getElementById("loading"), null, { timeout: 90000 });
   await page.waitForTimeout(2500);

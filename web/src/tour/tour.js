@@ -5,16 +5,19 @@
 //   1 field   you are the night-shift operator: the 3D field, drag to look around
 //   2 look    a short camera tour: a tank, a pump, the disposal well (view.focus, then reset)
 //   3 gaia    the chat; one-click questions go through the real composer
-//   4 alarm   the pump trip the demo uses (POST /api/live/faults), or the incident already open;
-//             then window.gaiaNotify(alert) if #154 is in, else the incident opens in the chat
+//   4 alarm   demo backend: the pump trip the demo uses (POST /api/live/faults), or the incident
+//             already open. Dataset mode (EOG data, a recording): replay from 15 min before the
+//             first pump failure the backend found (eog.js), and the alarm arrives by itself.
+//             Then window.gaiaNotify(alert) if #154 is in, else the incident opens in the chat
 //   5 clock   the status line countdown and the time bar legend; drag the slider
-//   6 fix     the planner's best plan and its dollars; its first step becomes a PENDING
-//             proposal (POST /api/actions) and the judge holds to confirm on the fix card
-//   7 phone   the number from /start (sessionStorage gaia.judge.phone) and the console's pager QR
-//   8 done    a recap, and /dataset for any EOG folder, test/ included
+//   6 fix     the planner's best plan and its dollars. Demo: its first step becomes a PENDING
+//             proposal (POST /api/actions) and the judge holds to confirm on the fix card.
+//             Dataset mode: the judge holds to approve the plan in the console's plans panel
+//   7 phone   window.gaiaPhone (#163): real texts and calls, or the console's pager QR
+//   8 done    a recap, and /dataset for any EOG folder, test/ included; pauses the replay clock
 //
 // Progress is in sessionStorage (gaia.tour), so a reload resumes; ?tour=1 starts over.
-// The card never covers the time bar or the composer (place() below). window.__tour reports
+// The card never covers the time bar or the composer (place.js). window.__tour reports
 // the step for headless checks.
 
 import "./tour.css";
@@ -24,6 +27,8 @@ import { esc } from "../console/stream.js";
 import { usd, clock12, toMin, andList } from "../console/agents.js";
 import { highlight } from "../highlight.js";
 import { readPhone, prettyUsPhone } from "../start/phone.js";
+import { firstPumpFailure, setClock } from "./eog.js";
+import { visible, drawRings, placeCard } from "./place.js";
 
 const KEY = "gaia.tour";
 const reduced = typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -41,6 +46,7 @@ export function maybeTour() {
     const u = new URL(location.href);
     if (u.searchParams.get("tour") === "1") {
       save({ step: 0 });
+      replay(null);
       u.searchParams.delete("tour"); // a reload resumes instead of starting over
       history.replaceState(history.state, "", u.pathname + (u.searchParams.toString() ? `?${u.searchParams}` : "") + u.hash);
     }
@@ -75,9 +81,20 @@ function idsOf(kind, word, f) {
   return fromField.length ? fromField : fromModel;
 }
 const PRIO = { P1: 0, P2: 1, P3: 2 };
-async function openIncident() {
+// Dataset mode (#153): /api/field says mode "dataset" and the console shows the judge's EOG data.
+const isDataset = async () => { const f = await field(); return !!(f && f.mode === "dataset"); };
+// The failure this tab's tour replayed (so back and next never move the clock twice).
+const REPLAY = "gaia.tour.replay";
+function replay(v) {
+  try {
+    if (v === undefined) return JSON.parse(sessionStorage.getItem(REPLAY) || "null");
+    if (v) sessionStorage.setItem(REPLAY, JSON.stringify(v)); else sessionStorage.removeItem(REPLAY);
+  } catch { /* private mode */ }
+  return null;
+}
+async function openIncident(want) {
   const { alerts = [] } = await getJson("/api/alerts");
-  const roots = alerts.filter((a) => a.active !== false && (!a.root_id || a.root_id === a.id) && !a.shelved_until);
+  const roots = alerts.filter((a) => a.active !== false && (!a.root_id || a.root_id === a.id) && !a.shelved_until && (!want || want(a)));
   roots.sort((x, y) => (PRIO[x.priority] ?? 9) - (PRIO[y.priority] ?? 9) || (x.consequence_t ?? 1e9) - (y.consequence_t ?? 1e9));
   return roots[0] || null;
 }
@@ -100,18 +117,22 @@ function start(i) {
     <div class="gt-pillmsg"><span>tour paused while the pager is open</span><button type="button" class="gt-btn" data-unpager>back to the tour</button></div>`;
   document.body.appendChild(card);
   card.querySelector("[data-unpager]").onclick = () => { closePager(); frame(); };
-  card.querySelector("[data-skip]").onclick = () => end();
+  card.querySelector("[data-skip]").onclick = () => end("skip");
   card.querySelector("[data-back]").onclick = () => go(step - 1);
-  card.querySelector("[data-next]").onclick = () => (step === STEPS.length - 1 ? end() : go(step + 1));
+  card.querySelector("[data-next]").onclick = () => (step === STEPS.length - 1 ? end("end") : go(step + 1));
   addEventListener("resize", place);
   tick = setInterval(frame, 200);
   go(i);
 }
 let tick = 0;
 
-function end() {
+function end(how) {
   leave();
   save({ done: true });
+  // Dataset mode: "end tour" pauses the replay clock; skip pauses it only if this tour started it.
+  if (BASE && (how === "end" || (how === "skip" && replay()))) {
+    isDataset().then((on) => { if (on) setClock({ play: false }).catch(() => {}); });
+  }
   clearInterval(tick);
   removeEventListener("resize", place);
   for (const r of rings) r.remove();
@@ -164,89 +185,19 @@ function extra(html, bind) {
 
 // ------------------------------------------------------- highlighting ----
 function setTargets(list, sf) { targets = list; soft = sf; frame(); }
-function els() {
-  return targets.map((t) => (typeof t === "function" ? t() : $(t))).filter((el) => {
-    if (!el || !el.isConnected) return false;
-    const r = el.getBoundingClientRect();
-    return r.width > 2 && r.height > 2 && getComputedStyle(el).visibility !== "hidden";
-  });
-}
+const els = () => visible(targets);
 function frame() {
   if (!card) return;
-  const list = els();
-  while (rings.length < list.length) { const r = document.createElement("div"); r.className = "gt-ring"; r.setAttribute("aria-hidden", "true"); document.body.appendChild(r); rings.push(r); }
-  rings.forEach((ring, k) => {
-    const el = list[k];
-    ring.hidden = !el;
-    if (!el) return;
-    const r = clipToView(el.getBoundingClientRect());
-    Object.assign(ring.style, { left: `${r.left - 4}px`, top: `${r.top - 4}px`, width: `${r.width + 8}px`, height: `${r.height + 8}px` });
-  });
+  drawRings(rings, els());
   pill(!!$(".pager"));
   place();
 }
-const clipToView = (r) => { const left = Math.max(2, r.left), top = Math.max(2, r.top); return { left, top, width: Math.min(innerWidth - 2, r.right) - left, height: Math.min(innerHeight - 2, r.bottom) - top }; };
+const place = () => { if (card) placeCard(card, soft ? els() : []); };
 
 // The pager overlay covers the screen: the card folds to a small pill in the corner until it closes.
 function pill(on) { if (card) card.classList.toggle("pill", on); }
 // Through the pager's own close button, so it also drops its Escape listener (main.js).
 function closePager() { const p = $(".pager"); if (!p) return; const b = p.querySelector(".pager-card > button"); if (b) b.click(); else p.remove(); }
-
-// ------------------------------------------------------------ placing ----
-// Never on the time bar (where it sits when it is up, even while it is tucked away) or the
-// composer; preferably not on what this step points at.
-function hardRects() {
-  const out = [];
-  const tb = $(".timebar"), st = $("#stage");
-  if (tb && st) {
-    const s = st.getBoundingClientRect();
-    if (s.width > 0) {
-      out.push({ left: s.left + tb.offsetLeft, top: s.top + tb.offsetTop, right: s.left + tb.offsetLeft + tb.offsetWidth, bottom: s.top + tb.offsetTop + tb.offsetHeight });
-      const b = tb.getBoundingClientRect(); // its on-screen box, clipped to the stage it lives in
-      const c = { left: Math.max(b.left, s.left), top: Math.max(b.top, s.top), right: Math.min(b.right, s.right), bottom: Math.min(b.bottom, s.bottom) };
-      if (c.right > c.left && c.bottom > c.top) out.push(c);
-    }
-  }
-  for (const sel of [".cs-dock", "#csAsk"]) { const el = $(sel); if (el) { const r = el.getBoundingClientRect(); if (r.width > 0 && r.height > 0) out.push(r); } }
-  return out;
-}
-const hits = (a, b) => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
-
-function place() {
-  if (!card) return;
-  if (card.classList.contains("pill")) { Object.assign(card.style, { left: "8px", top: "8px", maxHeight: "" }); return; }
-  card.style.maxHeight = "none";
-  const w = card.offsetWidth, h = card.offsetHeight, vw = innerWidth, vh = innerHeight;
-  const hard = hardRects();
-  const softR = soft ? els().map((el) => el.getBoundingClientRect()).filter((r) => r.width * r.height < vw * vh * 0.3) : [];
-  const st = $("#stage") && $("#stage").getBoundingClientRect();
-  const chat = $("#csJarvis") && $("#csJarvis").getBoundingClientRect();
-  const spots = [];
-  if (st && st.width > w * 0.8) spots.push([st.right - w - 14, st.top + 58], [st.left + 14, st.top + 58]);
-  if (chat && chat.width > 0) spots.push([chat.left + (chat.width - w) / 2, chat.top + 56]);
-  spots.push([(vw - w) / 2, 10], [vw - w - 10, 10], [10, 10]);
-  let best = null;
-  for (const [x0, y0] of spots) {
-    const x = Math.max(8, Math.min(vw - w - 8, x0)), y = Math.max(8, Math.min(vh - 120, y0));
-    // Room down to the first hard box under this spot (or the bottom of the window).
-    let room = vh - 8 - y;
-    let blocked = false;
-    for (const r of hard) {
-      if (!(x < r.right && r.left < x + w)) continue;
-      if (r.top <= y && r.bottom > y) blocked = true;
-      else if (r.top > y) room = Math.min(room, r.top - 8 - y);
-    }
-    if (blocked || room < 110) continue;
-    const fits = room >= h;
-    const box = { left: x, top: y, right: x + w, bottom: y + Math.min(h, room) };
-    const clean = !softR.some((r) => hits(box, r));
-    const score = (fits ? 0 : 2) + (clean ? 0 : 1);
-    if (!best || score < best.score || (score === best.score && room > best.room && !fits)) best = { x, y, room, score };
-    if (score === 0) break;
-  }
-  if (!best) best = { x: Math.max(8, (vw - w) / 2), y: 8, room: Math.max(110, vh - 16) };
-  Object.assign(card.style, { left: `${Math.round(best.x)}px`, top: `${Math.round(best.y)}px`, maxHeight: `${Math.floor(Math.min(best.room, vh - 16))}px` });
-}
 
 // --------------------------------------------------------------- steps ----
 function sideOf() {
@@ -339,9 +290,30 @@ const STEPS = [
     async enter(ctx) {
       body("<p>at night a pump can trip with nobody watching. gaia's watch agent is.</p>");
       if (!BASE) { body("<p>this screen has no backend, so there are no live alarms to show. start it with npm run demo.</p>"); return; }
-      let a = await openIncident();
+      const dataset = await isDataset();
+      let a = dataset ? null : await openIncident();
       if (!ctx.alive()) return;
-      if (!a) {
+      if (dataset) {
+        // EOG's data is a recording: replay it from just before the first pump failure the backend found.
+        const lead = "<p>this is a real week from eog's field data. we're replaying it from just before a pump failed.</p>";
+        body(lead);
+        const was = replay();
+        const ev = was || await firstPumpFailure().catch((e) => { console.warn("tour eog events", e); return null; });
+        if (!ctx.alive()) return;
+        if (!ev) { body(`${lead}<p>the backend found no pump failure in this data, so there is nothing to replay. press next.</p>`); return; }
+        if (!was) {
+          const r = await setClock({ at: ev.onset_unix - 900, play: true, speed: 3 }).catch(() => null);
+          if (!ctx.alive()) return;
+          if (!r || !r.ok) { body(`${lead}<p>the replay clock didn't move (${r ? `http ${r.status}` : "no backend"}${r && r.status === 401 ? ": open the console with its #k= link" : ""}). press next to go on.</p>`); return; }
+          replay({ asset_id: ev.asset_id, facility_id: ev.facility_id, onset_unix: ev.onset_unix });
+        }
+        body(`${lead}<p>${esc(nice(ev.asset_id))}${ev.facility_id ? ` at ${esc(nice(ev.facility_id))}` : ""} is still running. watch the status line: the alarm comes in on its own.</p>`);
+        // The failure itself, not an earlier "wearing out" alert on the same pump.
+        const mine = (x) => !!x && (x.id === ev.event_id || (x.asset_id === ev.asset_id && /FAIL|TRIP/i.test(x.kind || "")));
+        for (let k = 0; k < 90 && !mine(a) && ctx.alive(); k++) { await sleep(500); a = await openIncident(mine).catch(() => null); }
+        if (!ctx.alive()) return;
+        if (!mine(a)) { body(`${lead}<p>no alarm for ${esc(nice(ev.asset_id))} yet. watch the status line, or press next.</p>`); return; }
+      } else if (!a) {
         const f = await field();
         const pumps = idsOf("pumps", "PUMP", f);
         const pump = pumps.includes("PUMP_3") ? "PUMP_3" : pumps[0];
@@ -366,13 +338,16 @@ const STEPS = [
         if (a.asset_id && ctx.alive()) fly(a.asset_id);
       }
       if (!ctx.alive()) return;
-      const when = a.clock ? clock12(toMin(a.clock)) : "";
-      body(`<p>${esc(lc(a.message || "an alarm came in."))}</p>
+      const when = !a.clock ? "" : dataset ? `${a.clock} utc` : clock12(toMin(a.clock));
+      body(`${dataset ? "<p>this is a real week from eog's field data, replayed from just before the pump failed.</p>" : ""}<p>${esc(lc(a.message || "an alarm came in."))}</p>
         <p>watch raised it as ${esc(lc(a.priority || a.severity || "an alarm"))}${when ? ` at ${esc(lc(when))}` : ""}. ${notify
           ? "this is how gaia alerts an operator: one big notification, then the whole incident in the chat."
           : "this is how gaia alerts an operator: the incident opens in the chat, and the phone pager buzzes."}</p>`);
-      ctx.targets(["#csWatch", latestWatch]);
+      ctx.targets(["#csWatch", latestWatch, "#gaiaNotify:not([hidden])"]);
+      ctx.every(500, () => extra($("#gaiaNotify:not([hidden])") ? `<span class="gt-note">“show me” on the alert flies to it. press next and the tour puts the alert away.</span>` : ""));
     },
+    // #154's alert card holds the time bar down while it is up: put it away with its own button.
+    leave() { const d = $("#gaiaNotify:not([hidden]) [data-gn=dismiss]"); if (d) d.click(); },
   },
   {
     id: "clock", title: "how long do we have", targets: ["#csForecast", ".timebar"],
@@ -403,6 +378,7 @@ const STEPS = [
     async enter(ctx) {
       const b = C().brief();
       const plan = (b && b.plans && (b.plans.robust || b.plans.cheapest)) || null;
+      if (await isDataset()) { if (ctx.alive()) fixDataset(ctx, b, plan); return; }
       // Late in the night the best plan can be "do nothing" (nothing saves the tank any more):
       // then the planner's cheapest plan that still has a step, from the same /api/plans list.
       let alt = null;
@@ -450,13 +426,22 @@ const STEPS = [
   },
   {
     id: "phone", title: "your phone", targets: [".pager-pill"],
-    enter(ctx) {
+    async enter(ctx) {
       const ph = prettyUsPhone(readPhone());
+      // #163: window.gaiaPhone says whether this server really texts and calls (provider "twilio").
+      const gp = window.gaiaPhone;
+      const sub = gp && typeof gp.subscription === "function" ? gp.subscription() : null;
+      const provider = (sub && sub.provider) || (ph && gp && typeof gp.status === "function" ? ((await gp.status().catch(() => null)) || {}).provider : null) || "none";
+      if (!ctx.alive()) return;
+      const where = provider === "twilio" && (sub && sub.masked || ph)
+        ? `gaia texts and calls ${esc(sub && sub.masked || ph)} when an alarm comes in. the phone pager works too.`
+        : ph ? `you left ${esc(ph)}. texts and calls aren't set up on this server, so tonight the phone pager does it.`
+          : "you didn't leave a number, so the phone pager is how alerts reach a phone tonight.";
       // The console's own pager (#161: the "phone pager" pill and window.__pager), else the classic Pager button.
       const btn = [...document.querySelectorAll("#side .brand-row button")].find((b) => /^pager$/i.test(b.textContent.trim()));
       const open = window.__pager && typeof window.__pager.open === "function" ? () => window.__pager.open() : btn ? () => btn.click() : null;
       const pill = !!$(".pager-pill");
-      body(`<p>${ph ? `tonight's alerts go to ${esc(ph)}. texts and calls are coming; for now the phone pager does it.` : "you didn't leave a number, so the phone pager is how alerts reach a phone tonight."}</p>
+      body(`<p>${where}</p>
         <p>open the pager${pill ? " (the “phone pager” button on the field)" : ""} and scan the code with your phone. it buzzes on every alert, and a fix can be confirmed from it with the same press and hold.</p>`);
       extra(open ? btns([["data-pager", "open the pager", "primary"]]) : `<span class="gt-note">the pager is not on this screen.</span>`, (x) => {
         const b = x.querySelector("[data-pager]");
@@ -474,6 +459,27 @@ const STEPS = [
     },
   },
 ];
+
+// Dataset mode's fix: the recording can't take commands, so the person holds to approve the
+// plan in the console's own plans panel (POST /api/plans/{id}/approve records it for the shift).
+function fixDataset(ctx, b, plan) {
+  body(`${plan ? `<p>the planner's best plan costs ${esc(usd(plan.total_usd))}, against ${esc(usd(b.do_nothing_usd))} if nobody acts: ${esc(lc(plan.summary))}</p>` : "<p>the planner has no plan to make right now.</p>"}
+    <p>gaia never moves equipment. it recommends a plan, and a person holds to approve it. this field is a recording, so approving records the plan for the shift; nothing is sent to equipment.</p>`);
+  // The planner's "all plans" button opens the panel, whichever thread its message is in.
+  const opener = () => [...document.querySelectorAll('#csStream li[data-agent="P"] [data-plans]')].pop() || null;
+  ctx.every(400, () => {
+    const box = $("#plans"), drawer = box && box.closest(".cs-drawer");
+    const shown = !!(box && !box.hidden && drawer && !drawer.hidden);
+    const stamp = $("#plans .approved-stamp");
+    let x;
+    if (stamp) x = `<span class="gt-note">${esc(lc(stamp.textContent))}. the plan is recorded for the shift; nothing was sent to equipment.</span>`;
+    else if (shown) x = `<span class="gt-note">press and hold “hold to approve” on a plan for a second and a half. the first one is the cheapest.</span>`;
+    else if (opener()) x = `${btns([["data-plans-open", "show the plans", "primary"]])}<span class="gt-note">nothing is recorded until a person approves.</span>`;
+    else x = `<span class="gt-note">${plan ? "the plans open from the planner's message in the chat." : "press next."}</span>`;
+    extra(x, (el) => { const o = el.querySelector("[data-plans-open]"); if (o) o.onclick = () => { const p = opener(); if (p) p.click(); }; });
+    ctx.targets(stamp || shown ? ["#csPlan", "#plans"] : ["#csPlan"]);
+  });
+}
 
 function ask(text) {
   const input = $("#csInput"), form = $("#csAsk");
