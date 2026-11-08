@@ -47,9 +47,19 @@ export function start(apiBase, as = "web") {
   connect();
 }
 
+// ?gauge=freeze:TANK_3 is a labeled drill: that tank's level stops moving after the first
+// reading, the way a stuck gauge does, so the frozen-gauge check can be rehearsed.
+const FREEZE = (() => { try { const m = /^freeze:([A-Z0-9_]+)$/.exec(new URLSearchParams(location.search).get("gauge") || ""); return m ? m[1] : null; } catch { return null; } })();
+export const gaugeDrill = () => FREEZE;
+let frozenAt = null;
+
 function mergeState(s) {
   if (!s) return;
   const now = Date.now();
+  if (FREEZE && s.assets && s.assets[FREEZE] && typeof s.assets[FREEZE].level_pct === "number") {
+    if (frozenAt == null) frozenAt = s.assets[FREEZE].level_pct;
+    s = { ...s, assets: { ...s.assets, [FREEZE]: { ...s.assets[FREEZE], level_pct: frozenAt } } };
+  }
   if (s.clock) { live.clock = s.clock; live.clockAt = now; }
   if (typeof s.t === "number") live.t = s.t;
   if (typeof s.speed === "number" && s.speed > 0) live.speed = s.speed; // live minutes (CF-7 consequence_t / shelved_until_t use it)

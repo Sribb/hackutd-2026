@@ -21,7 +21,7 @@ import { mountTwoNights } from "./twonights.js";
 import { mountScenery } from "./scenery.js";
 import { mountInspect } from "./inspect.js";
 import { mountAlarms, alarms } from "./alarms.js";
-import { startTrend, trendHtml, wireTrend } from "./trend.js";
+import { startTrend, trendHtml, wireTrend, frozen } from "./trend.js";
 import { mountRuns, runsSupported, execute as executeRun, peopleOut } from "./runs.js";
 
 const $ = (id) => document.getElementById(id);
@@ -600,11 +600,27 @@ function renderSelected(view) {
 // hidden by a lost signal, but the number under it is still old).
 const isBlind = (v) => !!v && (v.status === "NO_DATA" || v.status === "UNKNOWN" || v.stale === true);
 
-// Tanks with no level reading right now. The console never vouches for them.
+// Tanks whose gauge reads exactly the same value for 10+ live minutes (trend.js frozen()).
+const frozenLogged = new Set();
+function frozenTanks() {
+  return (field.tanks || []).map((t) => t.id).filter((id) => {
+    const f = frozen(id);
+    if (f && !frozenLogged.has(id)) {
+      frozenLogged.add(id);
+      shiftlog.add("alarm", `${liveFeed.gaugeDrill() === id ? "DRILL · " : ""}${nice(id)} gauge has read exactly ${f.v.toFixed(2)}% for ${f.minutes} min. A working gauge jitters; this one may be stuck. Check the level in person.`);
+      setTimeout(renderLog, 0);
+    }
+    if (!f) frozenLogged.delete(id);
+    return !!f;
+  });
+}
+
+// Tanks with no level reading right now, or a gauge that may be stuck. The console never vouches for them.
 function blindTanks() {
+  const frozenNow = frozenTanks();
   return (field.tanks || []).map((t) => t.id).filter((id) => {
     const s = (data.state.assets || {})[id], v = lastView[id];
-    return !s || s.level_pct == null || isBlind(v);
+    return !s || s.level_pct == null || isBlind(v) || frozenNow.includes(id);
   });
 }
 
@@ -838,16 +854,20 @@ function renderTanks(view) {
   $("tanks").innerHTML = (field.tanks || []).map((t) => {
     const s = view[t.id] || { status: "NO_DATA" };
     const pct = s.level_pct;
+    const fz = tMin === 0 && !!frozen(t.id); // gauge may be stuck: never shown as a live number
     return `<div class="tank-row" data-id="${t.id}">
       <span class="name">${nice(t.id)}</span>
       <div class="bar"><div class="fill ${s.status}" style="width:${pct == null ? 0 : Math.min(100, pct)}%"></div>
         <div class="stop" style="left:${t.shutdown_pct}%"></div></div>
-      <span class="pct ${isBlind(s) ? "stale" : ""}">${pct == null ? "no data" : `${isBlind(s) ? "last " : ""}${pct.toFixed(1)}%`}${tMin === 0 && liveFeed.ageText(t.id) ? `<small class="age">${liveFeed.ageText(t.id)}</small>` : ""}</span></div>`;
+      <span class="pct ${isBlind(s) || fz ? "stale" : ""}">${pct == null ? "no data" : `${isBlind(s) ? "last " : ""}${pct.toFixed(1)}%`}${fz ? `<small class="age">stuck?</small>` : tMin === 0 && liveFeed.ageText(t.id) ? `<small class="age">${liveFeed.ageText(t.id)}</small>` : ""}</span></div>`;
   }).join("");
   const blind = (field.tanks || []).filter((t) => isBlind(view[t.id]) && (view[t.id] || {}).status !== "NO_DATA");
-  if (blind.length) {
-    $("tanks").insertAdjacentHTML("beforeend", `<div class="vouch">${blind.map((t) =>
-      `Can't vouch for ${nice(t.id)}: no reading for ${ago(liveFeed.staleMinutes(t.id))}. Its forecast starts from the last value we had.`).join("<br>")}</div>`);
+  const stuck = tMin === 0 ? frozenTanks().filter((id) => !blind.some((t) => t.id === id)) : [];
+  if (blind.length || stuck.length) {
+    $("tanks").insertAdjacentHTML("beforeend", `<div class="vouch">${[
+      ...blind.map((t) => `Can't vouch for ${nice(t.id)}: no reading for ${ago(liveFeed.staleMinutes(t.id))}. Its forecast starts from the last value we had.`),
+      ...stuck.map((id) => { const f = frozen(id); return `${liveFeed.gaugeDrill() === id ? "DRILL · " : ""}Can't vouch for ${nice(id)}: its gauge has read exactly ${f.v.toFixed(2)}% for ${f.minutes} min. A working gauge jitters; this one may be stuck. Check the level in person.`; }),
+    ].join("<br>")}</div>`);
   }
   for (const row of $("tanks").querySelectorAll(".tank-row")) row.onclick = () => select(row.dataset.id, true);
 }
@@ -1015,8 +1035,14 @@ function handoffText() {
 
   head(3, "BLIND SENSORS");
   const blindIds = Object.keys(nowView).filter((id) => isBlind(nowView[id]));
-  for (const id of blindTanks()) if (!blindIds.includes(id)) blindIds.push(id);
-  if (!blindIds.length) L.push("  None. Every monitored asset has a fresh reading.");
+  for (const id of frozenTanks()) {
+    if (blindIds.includes(id)) continue;
+    const f = frozen(id);
+    L.push(`  ${nice(id)}: gauge reads exactly ${f.v.toFixed(2)}% for ${f.minutes} min, may be stuck. Check the level in person.`);
+  }
+  const stuckIds = frozenTanks();
+  for (const id of blindTanks()) if (!blindIds.includes(id) && !stuckIds.includes(id)) blindIds.push(id);
+  if (!blindIds.length && !stuckIds.length) L.push("  None. Every monitored asset has a fresh reading.");
   for (const id of blindIds) {
     const age = liveFeed.staleMinutes(id);
     L.push(`  ${nice(id)}: no fresh reading${age != null ? ` for ${age} min` : ""}. Check it in person; Freeboard can't vouch for it.`);

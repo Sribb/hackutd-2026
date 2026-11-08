@@ -51,6 +51,29 @@ function record() {
   }
 }
 
+// Frozen gauge. A working level sensor jitters (the simulator's do too, about ±0.1 point a
+// reading). One that reads exactly the same value, reading after reading, for 10 live minutes is
+// the signature of a stuck gauge: at Buncefield (2005) the tank gauge flatlined while the tank
+// kept filling, and overflowed hours later on the night shift. Returns { v, minutes } or null.
+// It is a reason to check in person, not proof: the console stops vouching for that tank.
+export const FROZEN_MIN = 10;
+export function frozen(id) {
+  const list = hist.get(id) || [];
+  const L0 = liveFeed.live;
+  if (!list.length || typeof L0.t !== "number") return null;
+  const last = list[list.length - 1];
+  if (last.v == null || L0.t - last.t > 2) return null; // no fresh reading: already blind, not frozen
+  let since = last.t, n = 0;
+  for (let i = list.length - 1; i >= 0; i--) {
+    const p = list[i];
+    if (p.v == null || Math.abs(p.v - last.v) > 0.005) break;
+    since = p.t;
+    n++;
+  }
+  const minutes = L0.t - since;
+  return n >= 5 && minutes >= FROZEN_MIN ? { v: last.v, minutes: Math.floor(minutes) } : null;
+}
+
 // CF-14 GET /api/history (CONTRACT.md): timeline rows in the forecast's shape with
 // t_min <= 0 relative to the response's live minute `t`. Null is a stale period (a gap);
 // rows before `since_t_min` are before the live layer started, so they are left out.

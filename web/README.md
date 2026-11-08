@@ -236,3 +236,11 @@ With a backend that has `/api/runs`, Hold to approve starts a plan run (`POST /a
   - When a step that sends the rover to a manual valve is confirmed, the run card shows "People out" with a check-in time 20 field minutes ahead, plus Checked in and Back in.
   - A missed check-in turns red and is logged once. The handoff lists everyone still out.
   - Why: NIOSH/OSHA counted 9 deaths at production tanks in 2010–2015, and all were workers alone (OSHA 3843).
+
+## Frozen-gauge check (`frozen()` in `src/trend.js`)
+
+A working level gauge jitters; the simulator's move about ±0.1 point per reading. A gauge that reads exactly the same value for 10 live minutes may be stuck. At Buncefield (2005) the tank gauge flatlined while the tank kept filling, and it overflowed hours later on the night shift.
+
+- **What changes:** the console stops vouching for that tank. Its row says "stuck?", the tank list says "Can't vouch for Tank 4: its gauge has read exactly 55.34% for 14 min…", and the tank counts as blind in the what-if verdicts. The shift log gets one line and the handoff lists it.
+- **What it isn't:** proof of a fault. It is a reason to check the level in person.
+- **Rehearsal:** `?gauge=freeze:TANK_4` pins that tank's level after the first reading. It is a labeled DRILL.
