@@ -91,3 +91,13 @@ On this MacBook Air, the model loads in 2.5 s and runs at 8.7 ms a frame, so the
 - **Alerts** come from `GET /api/alerts` and live over `/ws` (`alert`, `proposal`, `ui` messages). The button blinks red on a new alert. The socket reconnects with backoff.
 - A **pinch** in hand control opens Jarvis on that asset and asks what's going on with it.
 - A 503 from Jarvis (no matching rule and no API key on the server) shows its `detail` in the chat. Without a backend, the panel says so.
+
+## Live IoT layer (#54)
+
+With a backend, `src/live.js` reads `GET /api/live/state` and keeps one `/ws` socket that the console, Jarvis, and the phone page share.
+
+- A live reading beats the snapshot from `/api/state` for status, level, position, and running.
+- **A stale sensor is UNKNOWN, never OK**, and never a stale alarm passed off as current. It shows hatched in the panel, dimmed in 3D with a slow gray lamp, and says "No reading for N min. Last known: ALARM at 71.2%." A tank with no reading gets "Can't vouch for Tank N" under the tank levels, because its forecast starts from an old value.
+- The connector badge under the clock lists each connector (sim, mqtt, modbus, opcua, webhook) and marks any that are unavailable. It reads `connectors` from `/api/live/state`, then from `/api/health`. If neither has it, it shows `sim`.
+- If the socket is down for 4 s, the badge turns into **Live feed lost, m:ss ago**, and every OK value becomes UNKNOWN until the feed is back. REST polling runs every 3 s while the socket is down, and the socket reconnects with backoff.
+- A backend without `/api/live/state` (404) leaves the console as it was.

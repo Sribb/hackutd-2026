@@ -271,3 +271,14 @@ button { white-space: nowrap; }
 .jv-chat { display: block; } .jv-chat li + li { margin-top: 12px; }
 .jv-alerts { max-height: 96px; overflow-y: auto; }
 .jarvis { backdrop-filter: none; background: #070707; }
+
+/* ---- live IoT layer (#54) ---- */
+.status.UNKNOWN { color: var(--ink-2); }
+.status.UNKNOWN i { background: repeating-linear-gradient(45deg, var(--ink-2) 0 1.5px, transparent 1.5px 3px); border: 1px solid var(--ink-2); }
+.bar .fill.UNKNOWN { background: repeating-linear-gradient(45deg, #6b675f 0 3px, #2a2825 3px 6px); }
+.vouch { margin-top: 8px; font-size: 12px; color: var(--warning); line-height: 1.5; }
+.feed { font: 11px var(--mono); letter-spacing: .08em; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: -4px; }
+.feed .conn { text-transform: uppercase; border: 1px solid var(--line); padding: 1px 6px; }
+.feed .conn.ok { color: var(--good); border-color: rgba(143,163,107,.45); }
+.feed .conn.down { color: var(--alarm); border-color: rgba(255,75,31,.45); }
+.feed.lost { color: var(--alarm); border: 1px solid var(--alarm); padding: 6px 8px; animation: blink 1.4s steps(2) infinite; }

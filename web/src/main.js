@@ -11,6 +11,7 @@ import * as shiftlog from "./shiftlog.js";
 import { mountUpload } from "./upload.js";
 import { mountHands } from "./hands.js";
 import { mountJarvis, jarvisSelectionChanged } from "./jarvis.js";
+import * as liveFeed from "./live.js";
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
@@ -237,7 +238,7 @@ const movers = [];
 function animateMovers(dt, t) {
   for (const mv of movers) {
     const s = (lastView[mv.id] || {}).status;
-    const running = s !== "ALARM" && s !== "OFFLINE" && s !== "NO_DATA";
+    const running = s !== "ALARM" && s !== "OFFLINE" && s !== "NO_DATA" && s !== "UNKNOWN";
     if (mv.kind === "rotor" && running) mv.node.rotation.x += dt * 12;
     if (mv.kind === "crank" && running) mv.node.rotation.x += dt * 1.6;
     if (mv.kind === "beam") mv.node.rotation.x = mv.rest.x + (running ? 0.25 * Math.sin(t * 1.6) : 0);
@@ -258,9 +259,10 @@ const COLORS = {
   WARNING: new THREE.Color(0xc9a14a),
   ALARM: new THREE.Color(0xff4b1f),
   NO_DATA: new THREE.Color(0xc9a14a),
+  UNKNOWN: new THREE.Color(0x3a3936), // stale sensor: dimmed gray, never the OK look
 };
 const TRYING = new THREE.Color(0x8fb8c8);
-const LAMP = { OK: new THREE.Color(0x8fa36b), WARNING: new THREE.Color(0xc9a14a), ALARM: new THREE.Color(0xff4b1f), NO_DATA: new THREE.Color(0xc9a14a) };
+const LAMP = { OK: new THREE.Color(0x8fa36b), WARNING: new THREE.Color(0xc9a14a), ALARM: new THREE.Color(0xff4b1f), NO_DATA: new THREE.Color(0xc9a14a), UNKNOWN: new THREE.Color(0x9a968e) };
 const BEACON = new THREE.Color(0xff9a1f);
 const SELECTED = new THREE.Color(0x2a2f36);
 
@@ -288,7 +290,7 @@ function paint(id, status, t) {
     if (/_beacon$/.test(l.name)) e.copy(BEACON).multiplyScalar(v.on_job ? (Math.sin(t * 9) > 0 ? 2.5 : 0.1) : 0);
     else if (/_headlights$/.test(l.name)) e.setScalar(v.on_job ? 1.2 : 0);
     else if (status === "OFFLINE" || !LAMP[status]) e.setScalar(0);
-    else e.copy(LAMP[status]).multiplyScalar(status === "ALARM" ? 3 * pulse : status === "NO_DATA" ? (Math.sin(t * 3) > 0 ? 1.5 : 0) : 1.4);
+    else e.copy(LAMP[status]).multiplyScalar(status === "ALARM" ? 3 * pulse : status === "NO_DATA" || status === "UNKNOWN" ? (Math.sin(t * (status === "UNKNOWN" ? 1.5 : 3)) > 0 ? 1.2 : 0) : 1.4);
   }
 }
 
@@ -369,6 +371,17 @@ function viewAt(t) {
     const s = data.state.assets[id];
     // A yard has no sensor, so no reading is normal there. Anything else without one is NO DATA.
     view[id] = s ? { ...s } : /^YARD_/.test(id) ? { status: "OK" } : { status: "NO_DATA" };
+    // Live IoT reading (#54) beats the snapshot. Stale is UNKNOWN, never OK.
+    const r = liveFeed.reading(id);
+    if (r) {
+      view[id] = { ...view[id], status: r.status, live: true, stale: r.stale };
+      for (const k of ["position", "running"]) if (r[k] !== undefined) view[id][k] = r[k];
+      if (r.level_pct != null) view[id].level_pct = r.level_pct;
+      if (r.status === "UNKNOWN") {
+        const last = r.last_status && r.last_status !== "OK" ? ` Last known: ${r.last_status}${r.level_pct != null ? ` at ${r.level_pct.toFixed(1)}%` : ""}.` : "";
+        view[id].reason = `No reading for ${ago(liveFeed.staleMinutes(id))}${liveFeed.live.lostSince ? " (live feed lost)" : ""}. Not treated as safe.${last}`;
+      }
+    }
   }
   for (const a of actions) {
     const v = view[a.asset_id];
@@ -434,6 +447,7 @@ function toggle(opt) {
 // ------------------------------------------------------------------- UI ----
 function statusTag(s) {
   const label = s === "NO_DATA" ? "NO DATA" : s;
+  // (UNKNOWN = a stale live sensor. It renders hatched, never like OK.)
   return `<span class="status ${s}"><i></i>${label}</span>`;
 }
 
@@ -620,6 +634,11 @@ function renderTanks(view) {
         <div class="stop" style="left:${t.shutdown_pct}%"></div></div>
       <span class="pct">${pct == null ? "no data" : pct.toFixed(1) + "%"}</span></div>`;
   }).join("");
+  const blind = (field.tanks || []).filter((t) => (view[t.id] || {}).status === "UNKNOWN");
+  if (blind.length) {
+    $("tanks").insertAdjacentHTML("beforeend", `<div class="vouch">${blind.map((t) =>
+      `Can't vouch for ${nice(t.id)}: no reading for ${ago(liveFeed.staleMinutes(t.id))}. Its forecast starts from the last value we had.`).join("<br>")}</div>`);
+  }
   for (const row of $("tanks").querySelectorAll(".tank-row")) row.onclick = () => select(row.dataset.id, true);
 }
 
@@ -665,7 +684,27 @@ function render() {
   lastView = view;
 }
 
+const ago = (m) => (m == null ? "an unknown time" : m < 1 ? "under a minute" : `${m} min`);
+
+// Live feed badge: connectors, and a loud "live feed lost" with how long ago.
+function renderFeed() {
+  const el = $("feed");
+  if (!el) return;
+  const L = liveFeed.live;
+  if (!api.usingBackend || !L.available) { el.hidden = true; return; }
+  el.hidden = false;
+  if (L.lostSince) {
+    const s = Math.floor((Date.now() - L.lostSince) / 1000);
+    el.className = "feed lost";
+    el.innerHTML = `<b>Live feed lost</b> ${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")} ago. Every value is stale.`;
+    return;
+  }
+  el.className = "feed";
+  el.innerHTML = `<span class="muted">Live</span> ${liveFeed.connectorBadge().map((c) => `<span class="conn ${c.ok ? "ok" : "down"}">${c.kind}${c.ok ? "" : " unavailable"}</span>`).join(" ")}${L.connected ? "" : ` <span class="muted">(polling)</span>`}`;
+}
+
 function renderAll() {
+  renderFeed();
   renderLog();
   renderSources();
   renderIncident();
@@ -908,6 +947,9 @@ addEventListener("keydown", (e) => {
 });
 
 // ----------------------------------------------------------------- boot ----
+if (api.usingBackend) liveFeed.start(api.BASE);
+liveFeed.on("state", () => { if (data) { renderFeed(); render(); } });
+liveFeed.on("feed", () => { if (data) { renderFeed(); render(); } });
 mountUpload();
 mountJarvis({
   stage: $("stage"),
@@ -999,7 +1041,7 @@ renderer.setAnimationLoop(() => {
   if (data) {
     for (const id of ids) paint(id, (lastView[id] || {}).status || "NO_DATA", t);
     animateMovers(dt, t);
-    if ((t | 0) !== lastSec) { lastSec = t | 0; $("clock").textContent = shiftlog.clockNow(true); }
+    if ((t | 0) !== lastSec) { lastSec = t | 0; $("clock").textContent = shiftlog.clockNow(true); if (liveFeed.live.lostSince) renderFeed(); }
   }
   if (selBox) selBox.update();
   renderer.render(scene, camera);

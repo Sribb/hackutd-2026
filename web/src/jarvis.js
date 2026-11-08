@@ -12,6 +12,7 @@
 import { BASE } from "./api.js";
 import { holdButton, decode } from "./fx.js";
 import * as shiftlog from "./shiftlog.js";
+import * as liveFeed from "./live.js";
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
@@ -23,7 +24,6 @@ let busy = false;
 const chat = [];    // { who: "you"|"jarvis"|"note", text, source? }
 const proposals = new Map();
 const alerts = new Map();
-let ws = null, wsTries = 0;
 
 export function mountJarvis(h) {
   hooks = h;
@@ -43,7 +43,11 @@ export function mountJarvis(h) {
     show();
     if (id && e.detail.from === "pinch") ask(`What's going on with ${nice(id)}?`, [id]);
   });
-  if (BASE) connect();
+  // The socket is shared (live.js), so alerts, proposals and focus come from there.
+  liveFeed.on("alert", (msg) => onSocket(msg));
+  liveFeed.on("proposal", (msg) => onSocket(msg));
+  liveFeed.on("ui", (msg) => onSocket(msg));
+  liveFeed.on("feed", () => { if (open) draw(); });
 }
 
 function show() {
@@ -78,34 +82,21 @@ async function refresh() {
   } catch { /* the panel still works for chat; the badge shows the backend is missing */ }
 }
 
-function connect() {
-  try {
-    ws = new WebSocket(BASE.replace(/^http/, "ws") + "/ws");
-  } catch { return; }
-  ws.onopen = () => { wsTries = 0; draw(); };
-  ws.onmessage = (m) => {
-    let msg;
-    try { msg = JSON.parse(m.data); } catch { return; }
-    if (msg.type === "alert" && msg.alert) {
-      const isNew = !alerts.has(msg.alert.id);
-      alerts.set(msg.alert.id, msg.alert);
-      if (isNew) {
-        shiftlog.add("alert", `${msg.alert.severity}: ${msg.alert.message}`);
-        hooks.logged();
-        $("jarvisBtn").classList.add("ping");
-      }
-    } else if (msg.type === "proposal" && msg.proposal) {
-      proposals.set(msg.proposal.id, msg.proposal);
-    } else if (msg.type === "ui" && msg.action === "focus" && msg.asset_id) {
-      hooks.focus(msg.asset_id);
+function onSocket(msg) {
+  if (msg.type === "alert" && msg.alert) {
+    const isNew = !alerts.has(msg.alert.id);
+    alerts.set(msg.alert.id, msg.alert);
+    if (isNew) {
+      shiftlog.add("alert", `${msg.alert.severity}: ${msg.alert.message}`);
+      hooks.logged();
+      $("jarvisBtn").classList.add("ping");
     }
-    if (open) draw();
-  };
-  ws.onclose = () => {
-    ws = null;
-    if (open) draw();
-    setTimeout(connect, Math.min(15000, 1000 * 2 ** wsTries++));
-  };
+  } else if (msg.type === "proposal" && msg.proposal) {
+    proposals.set(msg.proposal.id, msg.proposal);
+  } else if (msg.type === "ui" && msg.action === "focus" && msg.asset_id) {
+    hooks.focus(msg.asset_id);
+  }
+  if (open) draw();
 }
 
 async function ask(message, ids, withView = false) {
@@ -162,7 +153,7 @@ function draw() {
   const typed = $("jvIn") ? $("jvIn").value : "";
   const typing = document.activeElement === $("jvIn");
   $("jarvis").innerHTML = `
-    <header class="jv-head"><b>Jarvis</b><span class="muted">${BASE ? (ws && ws.readyState === 1 ? "live" : "connecting") : "no backend"}</span><button id="jvClose">Close</button></header>
+    <header class="jv-head"><b>Jarvis</b><span class="muted">${!BASE ? "no backend" : liveFeed.live.connected ? "live" : liveFeed.live.lostSince ? "feed lost" : "connecting"}</span><button id="jvClose">Close</button></header>
     ${live.length ? `<div class="jv-alerts">${live.map((a) => `<div class="jv-alert ${a.severity}" data-id="${esc(a.asset_id)}"><span class="status ${a.severity}"><i></i>${esc(a.kind.replace(/_/g, " "))}</span> ${esc(a.message)}</div>`).join("")}</div>` : ""}
     <ol class="jv-chat" id="jvChat">${chat.map((m, i) => `<li class="m-${m.who}">${m.who === "you" ? "<b>You</b>" : m.who === "jarvis" ? `<b>Jarvis</b>${m.source ? ` <span class="muted">${esc(m.source)}</span>` : ""}` : ""}
         <p ${m.who === "jarvis" && i === chat.length - 1 ? `data-decode="jv${i}"` : ""}>${esc(m.text)}</p></li>`).join("")}
