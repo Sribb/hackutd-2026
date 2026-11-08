@@ -17,7 +17,7 @@ WELLS_PER_TANK, PUMPS_PER_TANK, XO_PER_TANK = 8, 2, 4   # generator limits (blen
 
 def _ids(bp):
     out = {}
-    for key in ("tanks", "pumps", "valves", "wells", "disposal_wells", "trucks", "yards"):
+    for key in ("tanks", "pumps", "valves", "wells", "disposal_wells", "trucks", "yards", "equipment"):
         for a in bp.get(key) or []:
             if isinstance(a, dict) and isinstance(a.get("id"), str):
                 out.setdefault(a["id"], []).append(key)
@@ -75,6 +75,10 @@ def cross_checks(bp):
         vid = p.get("valve_id")
         if vid and owner.get(p.get("id")) not in (None, vid):
             out.append(f"{p.get('id')} valve_id is {vid}, but {owner[p['id']]} names this pump.")
+    for e in bp.get("equipment") or []:
+        must(f"{e.get('id')} tank_id", e.get("tank_id"), "tanks")
+        for c in e.get("connects") or []:
+            must(f"{e.get('id')} connects", c, None)
     for tr in bp.get("trucks") or []:
         must(f"{tr.get('id')} home_id", tr.get("home_id"), "yards")
         for t in (tr.get("minutes_to") or {}):

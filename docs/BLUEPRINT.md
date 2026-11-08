@@ -33,7 +33,7 @@ A blueprint is `scenario/field.json` plus four optional additions: `x` and `y` p
 
 IDs follow [CONTRACT.md](CONTRACT.md): capital letters, digits, and underscores, unique across the whole file. The prefix gives the type:
 
-`TANK_` · `PUMP_` · `VALVE_D_` (discharge) · `VALVE_XO_` (crossover) · `WELL_` · `SWD_` · `TRUCK_` · `YARD_` · `CONN_` (connector)
+`TANK_` · `PUMP_` · `VALVE_D_` (discharge) · `VALVE_XO_` (crossover) · `WELL_` · `SWD_` · `TRUCK_` · `YARD_` · `CONN_` (connector) · equipment: `SEP_` `HT_` `FLARE_` `COMP_` `LACT_` `METER_` `EQ_`
 
 The generator names 3D nodes after these IDs, and derived names (`<tank>_LEVEL`, `STOP_<tank>`, and so on) follow CONTRACT.md. The console never invents an ID. It takes the list from `/api/field`.
 
@@ -70,6 +70,8 @@ The generator names 3D nodes after these IDs, and derived names (`<tank>_LEVEL`,
 
 **`connections`** (optional): pipes or links as `["FROM", "TO"]` or `{"from", "to", "kind": WATER/OIL/GAS/POWER/SIGNAL}`. The generator checks that both ends exist but doesn't draw them, because piping follows `tank_id`, pumps, and valves. Use it for anything the plan shows that those fields don't.
 
+**`equipment`** (optional, used by #47): other equipment the generator draws, like separators, heater treaters, flares, compressors, LACT units, and meter runs. It's display and context only, so the forecast ignores it. `{id, type, label?, tank_id?, connects?, x?, y?}`. `type` is `SEPARATOR`, `HEATER_TREATER`, `FLARE`, `COMPRESSOR`, `LACT`, `METER_RUN`, or `OTHER`. IDs start `SEP_`, `HT_`, `FLARE_`, `COMP_`, `LACT_`, `METER_`, or `EQ_`. A type with no model yet builds as a labeled placeholder, so a blueprint never fails over a missing model.
+
 **`connectors`** (optional, used by #38): where live signals come from and where confirmed commands go. **With no connectors, the backend simulates every asset**, so the demo never depends on real hardware.
 
 ```json
@@ -105,6 +107,6 @@ The generator names 3D nodes after these IDs, and derived names (`<tank>_LEVEL`,
 
 ## Known gaps between the readers (found while writing this)
 
-1. **Truck `minutes_to`:** the backend requires it, but ingest doesn't put it on the review list (`REQUIRED_NUMBERS` only has `capacity_bbl` for trucks). A plan with trucks passes review, then fails on load. Fix in `ingest/schema.py`.
+1. **Truck `minutes_to`** (fixed by #65): the backend requires it, but ingest didn't put it on the review list (`REQUIRED_NUMBERS` only has `capacity_bbl` for trucks). A plan with trucks passes review, then fails on load. Fix in `ingest/schema.py`.
 2. **Discharge valve ends:** the backend needs `connects: [PUMP, SWD]`. The generator accepts the pump alone, and ingest writes the pump alone when the plan doesn't show the disposal well. Ingest already flags it for review. The schema makes it required.
 3. **Crossover `manual`:** the forecast's lead time depends on it, and ingest asks about it in a review note. The schema makes it required, so the review can't skip it.
