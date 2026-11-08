@@ -1,4 +1,5 @@
 import "@fontsource/gloock/400.css";
+import "./phonealerts.js"; // window.gaiaPhone: text and voice alerts to the judge's phone (#160)
 import "@fontsource/azeret-mono/400.css";
 import "@fontsource/azeret-mono/600.css";
 import * as THREE from "three";
@@ -96,7 +97,49 @@ addEventListener("resize", resize);
 resize();
 
 // ---------------------------------------------------------------- model ----
-async function loadModel() {
+// Dataset mode (#147 item 16): when the backend serves EOG's sponsor data, /api/field says
+// mode "dataset" and the 3D is that network, one system at a time, built by ingest.eog_field
+// and served per system at /api/dataset/field.glb. Its nodes keep the generator's names
+// (TANK_A) and carry the sponsor ID in extras.source_id (S2_TANK_A), which is the asset ID.
+let dataset = null; // { id, system, systems: [ids], ids: field_ids doc or null }
+const systemOf = (f, id) => {
+  if (!f || !id) return null;
+  const all = ["tanks", "pumps", "wells", "pipelines", "disposal_wells", "trucks"].flatMap((k) => f[k] || []);
+  const a = all.find((x) => x.id === id);
+  if (!a) return null;
+  if (a.system_id) return a.system_id;
+  const t = a.tank_id && (f.tanks || []).find((x) => x.id === a.tank_id);
+  return (t && t.system_id) || null;
+};
+function datasetSystems(f) {
+  const list = (f.systems || []).map((s) => (typeof s === "string" ? s : s && s.id)).filter(Boolean);
+  if (list.length) return list;
+  return [...new Set((f.tanks || []).map((t) => t.system_id).filter(Boolean))];
+}
+async function loadDatasetModel(f, state) {
+  const systems = datasetSystems(f);
+  const want = new URLSearchParams(location.search).get("system");
+  const system = systems.includes(want) ? want
+    : systemOf(f, state && state.incident && state.incident.root_asset_id) || systems[0];
+  dataset = { id: f.dataset || null, system, systems, ids: null };
+  if (!system) return { root: buildPlaceholder(), from: "placeholder" };
+  const q = `?system=${encodeURIComponent(system)}`;
+  try {
+    const [gltf, doc] = await Promise.all([
+      gltfLoader().loadAsync(`${api.BASE}/api/dataset/field.glb${q}`),
+      fetch(`${api.BASE}/api/dataset/field_ids${q}`).then((r) => (r.ok ? r.json() : null)).catch(() => null),
+    ]);
+    dataset.ids = doc;
+    return { root: gltf.scene, from: `${f.dataset || "the sponsor dataset"}, system ${system}` };
+  } catch (e) {
+    console.warn("dataset field.glb:", e);
+    return { root: buildPlaceholder(), from: "placeholder" };
+  }
+}
+
+async function loadModel(fieldP, stateP) {
+  const f = await fieldP.catch(() => null);
+  if (f && f.mode === "dataset") return loadDatasetModel(f, await stateP.catch(() => null));
   // A field built from an uploaded blueprint (upload.js) wins over the repo's model.
   let built = null;
   try { built = sessionStorage.getItem("freeboard.glb"); } catch { /* storage blocked */ }
@@ -129,6 +172,8 @@ function idFor(obj) {
   for (let o = obj; o; o = o.parent) {
     // field.glb puts the ID in glTF extras, which three.js loads into userData.
     if (o.userData && ids.has(o.userData.asset_id)) return o.userData.asset_id;
+    if (o.userData && ids.has(o.userData.source_id)) return o.userData.source_id; // dataset mode: the sponsor ID
+    if (dataset && ids.has(`${dataset.system}_${o.name}`)) return `${dataset.system}_${o.name}`; // TRUCK_1 -> S1_TRUCK_1
     if (ids.has(o.name)) return o.name;
     if (/^(PIPE|STOP|ROAD|PAD|SITE|CAM)_/.test(o.name)) return null; // scenery, never an asset
     const m = o.name.match(/^([A-Z]+(?:_[A-Z]+)*_\d+)(?:_.*)?$/);
@@ -182,21 +227,27 @@ function indexModel(root) {
     assets.set(id, a);
   });
   root.updateMatrixWorld(true);
+  // Dataset mode: node name -> sponsor ID (extras.source_id), so moving parts follow the asset.
+  const src = new Map();
+  root.traverse((o) => { if (o.userData && o.userData.source_id) src.set(o.name, o.userData.source_id); });
+  const as = (n) => (n && src.get(n)) || (n && dataset && ids.has(`${dataset.system}_${n}`) ? `${dataset.system}_${n}` : n);
   root.traverse((o) => {
     if (/^(STOP|ROAD)_/.test(o.name)) waypoints.set(o.name, o.getWorldPosition(new THREE.Vector3()));
     if (assets.has(o.name)) assets.get(o.name).root = o;
+    else if (o.userData && assets.has(o.userData.source_id)) assets.get(o.userData.source_id).root = o;
+    else if (dataset && assets.has(`${dataset.system}_${o.name}`)) assets.get(`${dataset.system}_${o.name}`).root = o;
     // Moving parts from CONTRACT.md "What's in field.glb".
-    const m = o.name.match(/^(PUMP_\d+)_rotor$|^(VALVE_[A-Z0-9_]+?)_wheel$|^(WELL_\d+)_(beam|crank|pitman|bridle)$/);
-    if (m) movers.push({ node: o, id: m[1] || m[2] || m[3], kind: m[1] ? "rotor" : m[2] ? "wheel" : m[4], rest: o.rotation.clone() });
-    const g = o.name.match(/^(TANK_\d+)_gauge$/);
-    if (g) movers.push({ node: o, id: g[1], kind: "gauge", rest: o.rotation.clone() });
+    const m = o.name.match(/^(PUMP_[A-Z0-9]+)_rotor$|^(VALVE_[A-Z0-9_]+?)_wheel$|^(WELL_[A-Z0-9]+)_(beam|crank|pitman|bridle)$/);
+    if (m) movers.push({ node: o, id: as(m[1] || m[2] || m[3]), kind: m[1] ? "rotor" : m[2] ? "wheel" : m[4], rest: o.rotation.clone() });
+    const g = o.name.match(/^(TANK_[A-Z0-9]+)_gauge$/);
+    if (g) movers.push({ node: o, id: as(g[1]), kind: "gauge", rest: o.rotation.clone() });
     const ax = o.name.match(/^(TRUCK_\d+)_axle_\d$/);
-    if (ax) movers.push({ node: o, id: ax[1], kind: "axle", rest: o.rotation.clone() });
+    if (ax) movers.push({ node: o, id: as(ax[1]), kind: "axle", rest: o.rotation.clone() });
   });
   for (const a of assets.values()) if (!a.root) a.root = a.meshes[0] || a.levelMesh;
   buildJacks();
   for (const a of assets.values()) {
-    if (!/^TRUCK_/.test(a.id) || !a.root) continue;
+    if (!/(^|_)TRUCK_\d+$/.test(a.id) || !a.root) continue; // TRUCK_1, or S1_TRUCK_1 in dataset mode
     a.home = { pos: a.root.position.clone(), quat: a.root.quaternion.clone() };
     // The truck's long axis is its forward axis. Used to point it along the road.
     const size = new THREE.Box3().setFromObject(a.root).getSize(new THREE.Vector3());
@@ -1400,31 +1451,61 @@ addEventListener("keydown", (e) => {
 
 // ---------------------------------------------------------------- pager ----
 // A QR code for /phone. A judge scans it and their own phone becomes the night pager.
+// Classic has a Pager button in its side panel; the gaia console a "phone" pill on the 3D
+// (#147 item 15). The judges tour opens it with ?pager=1 or window.__pager.open().
+let pagerOpening = false;
+async function openPager() {
+  if (pagerOpening || document.querySelector(".pager")) return;
+  pagerOpening = true;
+  try { await showPager(); } finally { pagerOpening = false; }
+}
+async function showPager() {
+  const gaia = layout === "console";
+  // The phone token rides in the fragment, only if this console was opened with one (#104).
+  const pt = phoneToken();
+  const url = (import.meta.env.VITE_PHONE_URL || `${location.origin}/phone`) + (pt ? `#k=${encodeURIComponent(pt)}` : "");
+  const QR = (await import("qrcode")).default;
+  const svg = await QR.toString(url, { type: "svg", margin: 1, color: { dark: "#e8e2d6", light: "#050505" } });
+  const local = /^(127\.0\.0\.1|localhost)$/.test(new URL(url).hostname);
+  const box = document.createElement("div");
+  box.className = `pager${gaia ? " pager-gaia" : ""}`;
+  box.setAttribute("role", "dialog");
+  box.setAttribute("aria-label", "phone pager");
+  box.innerHTML = `<div class="pager-card"><div class="kicker">The night pager</div>
+    <div class="pager-qr">${svg}</div>
+    <p>Scan with your phone. It buzzes on every alert, and a fix can be confirmed from it with a press and hold. Nothing moves until a person holds to confirm.</p>
+    <code>${esc(url.split("#")[0])}</code>
+    ${local ? `<p class="note">This address only works on this laptop. Start with <b>npm run demo:lan</b> (same Wi-Fi) or <b>npm run demo:tunnel</b> (a public link).</p>` : ""}
+    ${pt ? `<p class="muted">This QR carries a phone token (never shown as text): that phone can confirm, reject and acknowledge, nothing else.</p>`
+      : `<p class="muted">No control token: anyone on this network can confirm. Start with npm run demo to get one.</p>`}
+    <button type="button">Close</button></div>`;
+  const close = () => { box.remove(); removeEventListener("keydown", onKey, true); };
+  const onKey = (e) => { if (e.key === "Escape") { e.stopPropagation(); close(); } };
+  box.onclick = (e) => { if (e.target === box || e.target.tagName === "BUTTON") close(); };
+  addEventListener("keydown", onKey, true);
+  document.body.appendChild(box);
+  box.querySelector("button").focus();
+}
 function mountPager() {
-  const btn = document.createElement("button");
-  btn.className = "upload-open";
-  btn.textContent = "Pager";
-  document.querySelector(".brand-row").appendChild(btn);
-  btn.onclick = async () => {
-    // The phone token rides in the fragment, only if this console was opened with one (#104).
-    const pt = phoneToken();
-    const url = (import.meta.env.VITE_PHONE_URL || `${location.origin}/phone`) + (pt ? `#k=${encodeURIComponent(pt)}` : "");
-    const QR = (await import("qrcode")).default;
-    const svg = await QR.toString(url, { type: "svg", margin: 1, color: { dark: "#e8e2d6", light: "#050505" } });
-    const local = /^(127\.0\.0\.1|localhost)$/.test(new URL(url).hostname);
-    const box = document.createElement("div");
-    box.className = "pager";
-    box.innerHTML = `<div class="pager-card"><div class="kicker">The night pager</div>
-      <div class="pager-qr">${svg}</div>
-      <p>Scan with a phone on this Wi-Fi. It buzzes on every alert, and a fix can be confirmed from it with a press and hold.</p>
-      <code>${esc(url.split("#")[0])}</code>
-      ${local ? `<p class="note">This address only works on this laptop. Start with <b>npm run demo:lan</b> to get a Wi-Fi address.</p>` : ""}
-      ${pt ? `<p class="muted">This QR carries a phone token (never shown as text): that phone can confirm, reject and acknowledge, nothing else.</p>`
-        : `<p class="muted">No control token: anyone on this network can confirm. Start with npm run demo to get one.</p>`}
-      <button>Close</button></div>`;
-    box.onclick = (e) => { if (e.target === box || e.target.tagName === "BUTTON") box.remove(); };
-    document.body.appendChild(box);
-  };
+  window.__pager = { open: openPager };
+  const row = document.querySelector(".brand-row");
+  if (row) {
+    const btn = document.createElement("button");
+    btn.className = "upload-open";
+    btn.textContent = "Pager";
+    btn.onclick = openPager;
+    row.appendChild(btn);
+  }
+  if (layout === "console") {
+    const pill = document.createElement("button");
+    pill.type = "button";
+    pill.className = "pager-pill";
+    pill.textContent = "phone pager";
+    pill.title = "Get alerts on your phone and confirm fixes from it";
+    pill.onclick = openPager;
+    document.body.appendChild(pill);
+  }
+  if (new URLSearchParams(location.search).get("pager") === "1") openPager();
 }
 
 // ----------------------------------------------------------------- boot ----
@@ -1582,8 +1663,26 @@ const inspect = mountInspect({
   fuse: (id) => { const f = fuses.get(id); return f && f.burn.visible && data.lc.assets[id] ? data.lc.assets[id].useful_until_clock : null; },
   staleMin: (id) => liveFeed.staleMinutes(id),
 });
+// Dataset mode: one button per system. A switch reloads the console on that system, so
+// every panel, highlight and route starts clean on the new network.
+function mountSystemSwitch() {
+  if (!dataset || dataset.systems.length < 2 || document.querySelector(".sys-switch")) return;
+  const bar = document.createElement("nav");
+  bar.className = "sys-switch";
+  bar.setAttribute("aria-label", "system");
+  bar.innerHTML = dataset.systems.map((s) => `<button type="button" data-s="${esc(s)}" class="${s === dataset.system ? "on" : ""}" aria-pressed="${s === dataset.system}">${esc(s.toLowerCase())}</button>`).join("");
+  for (const b of bar.querySelectorAll("button")) b.onclick = () => {
+    if (b.dataset.s === dataset.system) return;
+    const u = new URL(location.href);
+    u.searchParams.set("system", b.dataset.s);
+    location.href = u.toString();
+  };
+  document.body.appendChild(bar);
+}
+
 async function boot() {
-  const [f, state, model] = await Promise.all([api.getField(), api.getState(), loadModel()]);
+  const fieldP = api.getField(), stateP = api.getState();
+  const [f, state, model] = await Promise.all([fieldP, stateP, loadModel(fieldP, stateP)]);
   field = f;
   ids = new Set(api.assetIds(field));
   const [baseline, lc, plans] = await Promise.all([api.forecast([]), api.lastCall(), api.plans()]);
@@ -1607,14 +1706,19 @@ async function boot() {
   flow = mountFlow(model.root); // stripes along pipes that carry water right now
   mountIot3d({ root: model.root, field, live: liveFeed, base: api.BASE }); // #80: sensor and RTU lights, alert and run highlights
 
-  const missing = [...ids].filter((id) => !assets.has(id));
+  // Dataset mode shows one system: only its own assets can be missing from the model.
+  const inView = (id) => !dataset || (dataset.ids && dataset.ids.assets ? id in dataset.ids.assets : systemOf(field, id) === dataset.system);
+  const missing = [...ids].filter((id) => inView(id) && !assets.has(id) && !(dataset && /^YARD_/.test(id)));
   const notes = [...(baseline.warnings || [])];
   if (api.usingBackend && Object.values(api.sources).includes("fake")) notes.unshift("Some endpoints are not on the backend yet. The badge says which.");
   if (missing.length) notes.push(`Not in the model: ${missing.join(", ")}`);
   $("warnings").innerHTML = notes.map((n) => `<div>${esc(n)}</div>`).join("");
   const note = $("modelNote");
   note.hidden = false;
-  note.textContent = model.from === "placeholder" ? "Placeholder geometry until blender/field.glb lands" : `Model: ${model.from}`;
+  note.textContent = model.from === "placeholder"
+    ? (dataset ? `No 3D for ${dataset.system || "this dataset"} yet: the backend has no /api/dataset/field.glb` : "Placeholder geometry until blender/field.glb lands")
+    : `Model: ${model.from}`;
+  if (dataset) mountSystemSwitch();
   mountScenery(model.root, note, renderer); // #88 scenery toggle, plus a 45 fps guard (pixels first, then scenery)
   // Compile every shader behind the loading screen, so the first frames do not stall
   // (0.4 to 1.6 s measured). Never hold the console longer than 4 s for it.
