@@ -13,6 +13,7 @@ import { mountHands } from "./hands.js";
 import { mountJarvis, jarvisSelectionChanged } from "./jarvis.js";
 import * as liveFeed from "./live.js";
 import { mountTwoNights } from "./twonights.js";
+import { mountInspect } from "./inspect.js";
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
@@ -284,7 +285,6 @@ function paint(id, status, t) {
   const a = assets.get(id);
   if (!a) return;
   const pulse = 0.55 + 0.45 * Math.sin(t * 4);
-  const trying = actions.some((x) => x.asset_id === id);
   for (const m of a.meshes) {
     const base = m.userData.base;
     m.material.color.copy(base.color);
@@ -294,8 +294,7 @@ function paint(id, status, t) {
       m.material.color.lerp(COLORS[status], status === "ALARM" ? 0.85 : 0.6);
       if (m.material.emissive) m.material.emissive.copy(COLORS[status]).multiplyScalar(status === "ALARM" ? 0.5 * pulse : 0.25);
     }
-    if (trying && m.material.emissive) m.material.emissive.add(TRYING.clone().multiplyScalar(0.35));
-    if (id === selectedId && m.material.emissive) m.material.emissive.add(SELECTED);
+    // The trying (TRYING x 0.35) and selected (SELECTED) lifts now come from highlight.js (#86), after paint().
   }
   for (const l of a.lights || []) {
     const e = l.material.emissive;
@@ -949,17 +948,10 @@ function select(id, focus = false) {
 }
 
 // --------------------------------------------------------------- picking ----
-const ray = new THREE.Raycaster();
-const ptr = new THREE.Vector2();
+// inspect.js (#86) does the picking: part-level hits, small parts by their asset's bounds,
+// and scenery, ground and roads never pickable. It still resolves IDs with idFor() above.
 function pick(ev) {
-  const r = canvas.getBoundingClientRect();
-  ptr.set(((ev.clientX - r.left) / r.width) * 2 - 1, -((ev.clientY - r.top) / r.height) * 2 + 1);
-  ray.setFromCamera(ptr, camera);
-  for (const hit of ray.intersectObjects(scene.children, true)) {
-    const id = idFor(hit.object);
-    if (id) return id;
-  }
-  return null;
+  return inspect.pick(ev.clientX, ev.clientY);
 }
 let downAt = null;
 canvas.addEventListener("pointerdown", (e) => { downAt = [e.clientX, e.clientY]; fly = null; });
@@ -970,25 +962,9 @@ canvas.addEventListener("pointerup", (e) => {
 });
 canvas.addEventListener("pointermove", (e) => hoverAt(e.clientX, e.clientY));
 // Hover at a screen point. The mouse and hand control (hands.js) both come through here.
+// The tooltip (asset, part, status, live number, Last Call fuse) and hover highlight are in inspect.js.
 function hoverAt(clientX, clientY) {
-  const tag = $("hoverTag");
-  if (clientX == null) { tag.hidden = true; canvas.classList.remove("pointing"); return null; }
-  const e = { clientX, clientY };
-  const id = pick(e);
-  canvas.classList.toggle("pointing", !!id);
-  if (!id) { tag.hidden = true; return null; }
-  const r = canvas.getBoundingClientRect();
-  tag.hidden = false;
-  tag.style.left = `${e.clientX - r.left}px`;
-  tag.style.top = `${e.clientY - r.top}px`;
-  const s = lastView[id] || {};
-  const parts = [id];
-  if (equipment.has(id)) parts.push((EQUIPMENT_NAMES[equipment.get(id).type] || "equipment").toLowerCase() + ", not monitored");
-  else if (s.status && s.status !== "OK") parts.push(s.status === "NO_DATA" ? "NO DATA" : s.status);
-  const f = fuses.get(id);
-  if (f && f.burn.visible) parts.push(`can help until ${data.lc.assets[id].useful_until_clock}`);
-  tag.textContent = parts.join(" · ");
-  return id;
+  return inspect.hover(clientX, clientY);
 }
 canvas.addEventListener("pointerleave", () => { $("hoverTag").hidden = true; });
 
@@ -1053,7 +1029,7 @@ mountTwoNights({
 mountJarvis({
   stage: $("stage"),
   selected: () => selectedId,
-  focus: (id) => { if (ids.has(id)) select(id, true); },
+  focus: (id) => { if (ids.has(id)) { select(id, true); inspect.pointed(id); } },
   logged: () => renderLog(),
   // A picture of the 3D view for "what am I looking at", at most 640 px wide (about 0.5 MB).
   snapshot() {
@@ -1091,6 +1067,14 @@ mountHands({
     camera.position.copy(controls.target).add(off.setLength(len));
   },
 });
+// Highlight and part-level picking (#86). Every highlight source goes through highlight.js.
+const inspect = mountInspect({
+  scene, camera, renderer, canvas, controls, tag: $("hoverTag"), assets, idFor, select,
+  ids: () => ids, view: () => lastView, field: () => field, selected: () => selectedId, actions: () => actions,
+  equipment: (id) => { const e = equipment.get(id); return e ? { name: EQUIPMENT_NAMES[e.type] || "Equipment", label: e.label } : null; },
+  fuse: (id) => { const f = fuses.get(id); return f && f.burn.visible && data.lc.assets[id] ? data.lc.assets[id].useful_until_clock : null; },
+  staleMin: (id) => liveFeed.staleMinutes(id),
+});
 async function boot() {
   const [f, state, model] = await Promise.all([api.getField(), api.getState(), loadModel()]);
   field = f;
@@ -1120,6 +1104,7 @@ async function boot() {
   $("loading").remove();
   frame(model.root);
   buildFuses();
+  inspect.ready(model.root);
   renderAll();
   window.__freeboard = { assets, select, viewAt: (t) => viewAt(t), missing, setActions, get actions() { return actions; } };
 }
@@ -1143,7 +1128,9 @@ renderer.setAnimationLoop(() => {
     if ((t | 0) !== lastSec) { lastSec = t | 0; $("clock").textContent = shiftlog.clockNow(true); if (liveFeed.live.lostSince) renderFeed(); }
   }
   if (selBox) selBox.update();
+  inspect.update(); // highlight lifts and dimming, after paint()
   renderer.render(scene, camera);
+  inspect.overlay(t); // outlines on top of the frame
 });
 
 boot().catch((e) => {
