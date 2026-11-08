@@ -166,7 +166,7 @@ except ImportError:
 try:
     from .live_api import install as install_live
 
-    LIVE = install_live(app, SCENARIO)
+    LIVE = install_live(app, SCENARIO, plans=_plans)
 except ImportError as e:
     LIVE = None
     log.warning("Live layer not mounted: %s", e)

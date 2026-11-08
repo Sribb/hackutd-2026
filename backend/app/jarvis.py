@@ -11,7 +11,10 @@ Two engines share the same tools:
 JARVIS_MODE: auto (default: rules first, Claude for the rest), rules, or llm.
 
 Jarvis never changes equipment. propose_action stores a PENDING proposal; a person
-confirms it with POST /api/actions/{id}/confirm. Every number comes from a tool result.
+confirms it with POST /api/actions/{id}/confirm. execute_plan ("fix it") starts a plan
+run (runs.py) whose every step is such a proposal. When a run hits a problem, Jarvis
+picks the re-plan (choose_plan): the rules pick, or Claude's pick among the planner's
+plans when a key is set. Every number comes from a tool result.
 """
 from __future__ import annotations
 
@@ -37,7 +40,11 @@ COMPLEX = re.compile(r"\b(what if|why|instead|compare|versus|vs\.?|explain|shoul
 NUM_WORDS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8,
              "nine": 9, "ten": 10, "eleven": 11, "twelve": 12}
 HELP = ("I can show and explain assets, report what's failing, give the time to shutdown, find the "
-        "cheapest plan, and propose fixes like 'open the crossover' or 'send truck 1 to tank 3'.")
+        "cheapest plan, run it step by step when you say 'fix it', and propose fixes like 'open the "
+        "crossover' or 'send truck 1 to tank 3'.")
+FIX_IT = re.compile(r"\b(fix (it|this|that|the field|everything|tank \d+)|make it so|"
+                    r"(run|execute|start) (the |a )?(cheapest |best )?plan)\b")
+REPLAN_TIMEOUT_S = 20.0
 
 
 class JarvisUnavailable(Exception):
@@ -104,6 +111,17 @@ TOOLS = [
                          "properties": {**ACTION_PROPS, "reason": {
                              "type": "string", "description": "One sentence: why, citing the tool result"}}},
     },
+    {
+        "name": "execute_plan",
+        "description": "Run a whole plan to fix the field. Each step becomes a proposal at its time and waits "
+                       "for a person to confirm it on the console; after each one the effect is checked in the "
+                       "live readings, and the run pauses and re-plans if it isn't seen. plan_id comes from "
+                       "get_plans; null runs the cheapest plan that keeps every tank below shutdown (robust if "
+                       "one is). Tell the operator every step waits for their confirmation.",
+        "strict": True,
+        "input_schema": {"type": "object", "additionalProperties": False, "required": ["plan_id"],
+                         "properties": {"plan_id": {"type": ["string", "null"]}}},
+    },
 ]
 
 
@@ -116,12 +134,16 @@ class Jarvis:
         self.model = os.environ.get("JARVIS_MODEL", DEFAULT_MODEL)
         self.effort = os.environ.get("JARVIS_EFFORT", "low")
         self._client = None
+        self.runs = None  # runs.RunManager, set by live_api.install
         self.system = self._system_prompt()
 
     # ---------- entry point ----------
     @staticmethod
     def has_key() -> bool:
         return bool(os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN"))
+
+    def llm_ready(self) -> bool:
+        return self.has_key() and os.environ.get("JARVIS_MODE", "auto").lower() != "rules"
 
     def status(self) -> dict:
         mode = os.environ.get("JARVIS_MODE", "auto").lower()
@@ -133,7 +155,7 @@ class Jarvis:
         selected = [s.upper() for s in selected or [] if isinstance(s, str)]
         mode = os.environ.get("JARVIS_MODE", "auto").lower()
         key = self.has_key()
-        ctx: dict = {"ui": [], "proposals": []}
+        ctx: dict = {"ui": [], "proposals": [], "runs": []}
         rules_first = mode == "rules" or (mode != "llm" and not (key and (COMPLEX.search(text.lower()) or
                                                                            (image_png_base64 and not selected))))
         reply, source = None, "rules"
@@ -146,7 +168,8 @@ class Jarvis:
                 raise JarvisUnavailable(NO_KEY)
             else:
                 reply, source = await self._claude(text, selected, image_png_base64, ctx), "claude"
-        return {"reply": reply, "source": source, "ui": ctx["ui"], "proposals": ctx["proposals"]}
+        return {"reply": reply, "source": source, "ui": ctx["ui"], "proposals": ctx["proposals"],
+                "runs": ctx["runs"]}
 
     # ---------- tools (both engines) ----------
     async def run_tool(self, tool: str, args: dict, ctx: dict) -> Any:
@@ -175,7 +198,9 @@ class Jarvis:
                     "cost": fc.get("cost"), "warnings": fc.get("warnings", [])}
         if tool == "get_plans":
             res = await asyncio.to_thread(self.plans_fn, live.live_scenario())
-            return {"plans": [{"id": p["id"], "summary": p["summary"], "actions": p["actions"],
+            if self.runs is not None:  # so POST /api/plans/{id}/execute finds them
+                self.runs.remember(res.get("plans", []))
+            return {"plans":[{"id": p["id"], "summary": p["summary"], "actions": p["actions"],
                                "total_usd": p.get("cost", {}).get("total_usd"),
                                "keeps_running": p.get("keeps_running"), "robust": p.get("robust"),
                                "cannot_save": p.get("cannot_save", [])} for p in res.get("plans", [])]}
@@ -188,7 +213,70 @@ class Jarvis:
             self._note_ui(p["action"]["asset_id"], ctx)
             return {"proposal_id": p["id"], "status": p["status"], "text": p["text"],
                     "note": "Waiting for a person to confirm on the console." if p["status"] == "PENDING" else p.get("result")}
+        if tool == "execute_plan":
+            if self.runs is None:
+                return {"error": "Plan runs aren't available on this server."}
+            try:
+                pid = args.get("plan_id")
+                if pid:
+                    run, plan = await self.runs.execute_id(str(pid), source="jarvis"), None
+                else:
+                    run, choice = await self.runs.execute_best(source="jarvis")
+                    plan = choice["plan"]
+            except ActionError as e:
+                return {"error": e.detail}
+            if run is None:
+                return {"run_id": None, "note": (plan or {}).get("summary") or "No plan needed right now."}
+            ctx["runs"].append(run)
+            await self._focus(run["steps"][0]["action"]["asset_id"], ctx)
+            return {"run_id": run["id"], "plan_id": run["plan_id"], "summary": run["summary"],
+                    "total_usd": run["cost_usd"], "robust": run["robust"], "status": run["status"],
+                    "steps": [{"n": s["n"], "text": s["text"], "at": s["release_clock"], "status": s["status"]}
+                              for s in run["steps"]],
+                    "note": "Each step goes to the console at its time and waits for a person to confirm it."}
         return {"error": f"Unknown tool {tool}."}
+
+    # ---------- re-plan for a paused run ----------
+    async def choose_plan(self, plans: list[dict], exclude: set, why: str) -> dict:
+        """Pick the re-plan: {plan, source, reason}. The rules pick unless Claude is
+        available; Claude may only choose among the planner's plans, never invent one."""
+        from .runs import pick_plan, touches
+
+        rules = pick_plan(plans, exclude)
+        out = {"plan": rules, "source": "rules", "reason": ""}
+        usable = [p for p in plans if p.get("actions") and not touches(p, exclude)]
+        if rules is None or not self.llm_ready() or len(usable) < 2:
+            return out
+        try:
+            chosen = await asyncio.wait_for(self._claude_choose(usable, exclude, why), REPLAN_TIMEOUT_S)
+        except Exception as e:  # noqa: BLE001 - the rules pick stands
+            log.warning("Jarvis re-plan fell back to rules: %s", e)
+            return out
+        plan = next((p for p in usable if p["id"] == chosen.get("plan_id")), None)
+        if plan is None:
+            return out
+        return {"plan": plan, "source": "claude", "reason": str(chosen.get("reason") or "")[:400]}
+
+    async def _claude_choose(self, plans: list[dict], exclude: set, why: str) -> dict:
+        client = self._anthropic()
+        live = self.live
+        brief = [{"id": p["id"], "summary": p["summary"], "actions": p["actions"],
+                  "total_usd": p.get("cost", {}).get("total_usd"), "keeps_running": p.get("keeps_running"),
+                  "robust": p.get("robust"), "cannot_save": p.get("cannot_save", [])} for p in plans]
+        text = (f"[Live clock {live.fmap.clock(live.t)}.] A plan run was paused: {why} "
+                f"Don't use: {', '.join(sorted(exclude)) or 'nothing'}. These plans were simulated from the current "
+                f"readings: {json.dumps(brief)}. Choose the one to offer the operator: keep every tank running "
+                "first, then hold if inflow runs high, then cheapest. Answer with only JSON: "
+                '{"plan_id": "<id from the list>", "reason": "<one plain sentence for the operator>"}')
+        kwargs: dict = {"model": self.model, "max_tokens": 4000,
+                        "system": [{"type": "text", "text": self.system, "cache_control": {"type": "ephemeral"}}],
+                        "output_config": {"effort": self.effort}}
+        if self.model in FALLBACK_MODELS:
+            kwargs.update(betas=["server-side-fallback-2026-07-01"], fallbacks="default")
+        resp = await client.beta.messages.create(messages=[{"role": "user", "content": text}], **kwargs)
+        out = " ".join(b.text for b in resp.content if b.type == "text")
+        m = re.search(r"\{.*\}", out, re.S)
+        return json.loads(m.group(0)) if m else {}
 
     def _note_ui(self, aid: str, ctx: dict) -> None:
         d = {"type": "ui", "action": "focus", "asset_id": aid}
@@ -235,6 +323,8 @@ class Jarvis:
             "- For 'what if' use get_forecast; for the cheapest fix use get_plans.\n"
             "- To fix something, call propose_action. It only creates a proposal; tell the operator it is "
             "waiting for their confirmation on the console. Never claim equipment has changed.\n"
+            "- When the operator asks you to fix the whole problem ('fix it', 'run the plan'), call execute_plan. "
+            "Every step of the run still waits for their confirmation.\n"
             "- Name assets like a person would ('Tank 3', 'the Tank 3 to 4 crossover'), not by ID.\n\n"
             f"Asset IDs: {json.dumps(ids)}\nTanks: {json.dumps(tanks)}"
         )
@@ -350,6 +440,19 @@ class Jarvis:
             on, n = ((m.group(1), m.group(2)) if m.group(1) else (m.group(4), m.group(3)) if m.group(3)
                      else ("on" if m.group(5) == "start" else "off", m.group(6)))
             return await self._propose({"type": "SET_PUMP", "asset_id": f"PUMP_{n}", "value": on.upper()}, text, ctx)
+
+        # "Fix it": run the cheapest robust plan, one confirmed step at a time.
+        if FIX_IT.search(t):
+            res = await self.run_tool("execute_plan", {"plan_id": None}, ctx)
+            if "error" in res:
+                return f"I can't start a run: {res['error']}"
+            if not res.get("run_id"):
+                return f"Nothing to run. {res['note']}"
+            first = res["steps"][0]
+            kind = "cheapest plan that holds" if res.get("robust") else "cheapest plan that keeps the wells running"
+            return (f"Started {res['run_id']}, the {kind} (${res['total_usd']:,.0f}): {res['summary']} "
+                    f"Step 1 of {len(res['steps'])}, {first['text'][0].lower() + first['text'][1:-1]}, comes to the "
+                    f"console at {first['at']}. Every step waits for your confirmation.")
 
         # What am I looking at.
         if re.search(r"looking at|what is this|what's this|whats this|this (asset|thing|one)|selected|what is that", t):

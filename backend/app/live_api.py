@@ -12,7 +12,10 @@
     POST /api/actions/{id}/confirm        send it through the asset's connector
     POST /api/actions/{id}/reject
     POST /api/jarvis                      ask Jarvis
-    WS   /ws                              state, alert, proposal, ui
+    POST /api/plans/{id}/execute          run a plan: one confirmed proposal per step (#63)
+    GET  /api/runs, GET /api/runs/{id}
+    POST /api/runs/{id}/pause | resume | cancel
+    WS   /ws                              state, alert, proposal, ui, run
 """
 from __future__ import annotations
 
@@ -31,6 +34,7 @@ from .forecast import forecast
 from .jarvis import Jarvis, JarvisUnavailable
 from .live import ActionError, LiveField
 from .planner import make_plans
+from .runs import RunManager
 
 log = logging.getLogger("freeboard.live_api")
 
@@ -77,8 +81,9 @@ def _raw(scenario: dict) -> dict:
         return {}
 
 
-def build_router(live: LiveField, jarvis: Jarvis) -> APIRouter:
+def build_router(live: LiveField, jarvis: Jarvis, runs: Optional[RunManager] = None) -> APIRouter:
     r = APIRouter()
+    runs = runs or RunManager(live, jarvis)
 
     def fail(e: ActionError):
         raise HTTPException(e.status, e.detail)
@@ -163,6 +168,35 @@ def build_router(live: LiveField, jarvis: Jarvis) -> APIRouter:
         except JarvisUnavailable as e:
             raise HTTPException(503, e.detail)
 
+    # ---------- plan runs (#63) ----------
+    @r.post("/api/plans/{plan_id}/execute")
+    async def execute_plan(plan_id: str, body: Optional[DecideIn] = None) -> dict:
+        try:
+            return await runs.execute_id(plan_id, source="console", by=body.by if body else "")
+        except ActionError as e:
+            fail(e)
+
+    @r.get("/api/runs")
+    def get_runs() -> dict:
+        return {"runs": runs.list()}
+
+    @r.get("/api/runs/{run_id}")
+    def get_run(run_id: str) -> dict:
+        try:
+            return runs.get(run_id)
+        except ActionError as e:
+            fail(e)
+
+    @r.post("/api/runs/{run_id}/{verb}")
+    async def run_control(run_id: str, verb: str, body: Optional[DecideIn] = None) -> dict:
+        fn = {"pause": runs.pause, "resume": runs.resume, "cancel": runs.cancel}.get(verb)
+        if fn is None:
+            raise HTTPException(404, f"Unknown run action {verb!r}. Use pause, resume, or cancel.")
+        try:
+            return await fn(run_id, by=body.by if body else "")
+        except ActionError as e:
+            fail(e)
+
     @r.websocket("/ws")
     async def ws(websocket: WebSocket, role: str = "web", name: str = "") -> None:
         client = await live.hub.connect(websocket, role, name)
@@ -185,12 +219,15 @@ def build_router(live: LiveField, jarvis: Jarvis) -> APIRouter:
     return r
 
 
-def install(app: FastAPI, scenario: dict) -> LiveField:
-    """Mount the live layer. main.py's lifespan starts and stops app.state.live."""
+def install(app: FastAPI, scenario: dict, plans: Optional[dict] = None) -> LiveField:
+    """Mount the live layer. main.py's lifespan starts and stops app.state.live.
+    `plans` is main.py's cache of POST /api/plans results, so those ids can be executed."""
     live = LiveField(scenario, _raw(scenario))
     jarvis = Jarvis(live, forecast_fn=lambda sc, actions: forecast(sc, actions),
                     plans_fn=lambda sc: make_plans(sc))
-    app.include_router(build_router(live, jarvis))
+    runs = RunManager(live, jarvis, plans=plans)
+    jarvis.runs = runs
+    app.include_router(build_router(live, jarvis, runs))
     extra = [o.strip() for o in os.environ.get("CORS_ORIGINS", "").split(",") if o.strip()]
     if extra:  # e.g. a phone or tunnel origin; localhost is already allowed by main.py
         app.add_middleware(CORSMiddleware, allow_origins=extra,
@@ -198,4 +235,5 @@ def install(app: FastAPI, scenario: dict) -> LiveField:
                            allow_methods=["*"], allow_headers=["*"])
     app.state.live = live
     app.state.jarvis = jarvis
+    app.state.runs = runs
     return live
