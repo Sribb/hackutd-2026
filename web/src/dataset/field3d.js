@@ -326,12 +326,14 @@ export function mountField3d(host, { onPick, glbUrl } = {}) {
     const c = sp.userData.canvas, x = c.getContext("2d");
     x.clearRect(0, 0, c.width, c.height);
     x.fillStyle = "rgba(5,5,5,0.72)";
-    x.fillRect(0, 8, c.width, 48);
-    x.font = "600 28px 'Azeret Mono', ui-monospace, monospace";
+    x.beginPath();
+    if (x.roundRect) x.roundRect(0, 8, c.width, 48, 24); else x.rect(0, 8, c.width, 48);
+    x.fill();
+    x.font = "500 28px ui-sans-serif, -apple-system, 'Segoe UI', sans-serif"; // gaia style: lowercase, minimal
     x.textAlign = "center";
     x.textBaseline = "middle";
     x.fillStyle = tone === "alarm" ? "#ff4b1f" : tone === "warning" ? "#c9a14a" : "#e8e2d6";
-    x.fillText(text, c.width / 2, 33);
+    x.fillText(text.toLowerCase(), c.width / 2, 33);
     sp.userData.tex.needsUpdate = true;
   }
 

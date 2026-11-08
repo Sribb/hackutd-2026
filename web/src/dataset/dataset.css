@@ -243,3 +243,40 @@ body.travelling .ds-travel input[type=range] { accent-color: var(--warning); }
 .ds-sys-head .ds-tag { margin-left: auto; }
 .ds-sys-head .ds-tag ~ .ds-compare { margin-left: 6px; }
 .ds-detail-head .ds-win { flex-wrap: wrap; }
+
+/* ---- gaia style (lead decision, 2026-11-08) ----
+   No uppercase anywhere, minimal and quiet, "gaia" in lowercase cursive. Text the operator
+   copies (handoff, events.json) keeps its own case: only the screen is lowercased. */
+:root {
+  --sans: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  --script: "Snell Roundhand", "Apple Chancery", "Segoe Script", "Brush Script MT", cursive;
+  --radius: 14px;
+}
+html, body { font: 14px/1.5 var(--sans); }
+#ds, .ds-dialog { text-transform: lowercase; }
+.ds-dialog pre, input, select, option { text-transform: none; }
+.ds-sys text, .chart .grid text, .chart .ref-label, .chart .mark-label, .chart .empty { font-family: var(--sans); }
+.kicker, .ds-unknown b, .ds-resolved summary { letter-spacing: 0; text-transform: lowercase; font-size: 12px; }
+.ds-back { font: 400 34px/1 var(--script); letter-spacing: 0; }
+.ds-detail-head h2 { font: 500 20px/1.2 var(--sans); }
+.ds-count-big b { font: 600 24px/1.1 var(--sans); }
+button, select, input { border-radius: 999px; }
+button { padding: 5px 14px; }
+input[type=number] { border-radius: 8px; }
+button:hover { background: #1b1a17; }
+.card { border-radius: var(--radius); border-color: transparent; background: var(--surface); padding: 14px 16px; }
+.ds-head { border-bottom: 0; }
+.ds-status, .ds-whatif, .ds-unknown, .ds-clear, .ds-wi-verdict, .ds-sys, .ds-3d-host, .ds-3d-tip, .ds-dialog { border-radius: 12px; }
+.ds-alert, .ds-fault { border-radius: 12px; border-left-width: 1px; }
+.ds-alert.alarm, .ds-fault { border-left-color: var(--line); box-shadow: inset 3px 0 0 var(--alarm); }
+.ds-alert.warning { border-left-color: var(--line); box-shadow: inset 3px 0 0 var(--warning); }
+.ds-alert.on, .ds-fault.on { border-color: var(--ink-2); border-left-width: 1px; }
+.ds-res { border-radius: 10px; }
+.ds-tag { letter-spacing: 0; border-radius: 999px; padding: 0 7px; font-size: 11px; }
+.ds-win button { margin-left: 0; margin-right: 4px; }
+.ds-win button.on { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+.ds-3d-host { overflow: hidden; }
+.chart { border-top-color: transparent; }
+.ds-foot { border-top: 0; }
+button { text-transform: lowercase; } /* browsers reset text-transform on buttons */
+.ds-back { display: inline-block; padding: 2px 4px 0 2px; }
