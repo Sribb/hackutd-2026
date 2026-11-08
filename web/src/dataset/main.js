@@ -689,9 +689,17 @@ function renderDetail() {
 const COMPARE = [
   { key: "level", label: "Tank level", unit: "% full", get: (f) => [[f.tank.id, "level_pct"]], yMin: 0, yMax: 100, limits: true },
   { key: "out", label: "Water out vs arriving", unit: "bbl/day", get: (f) => [[f.pump.id, "flow_bpd", "pump flow"], [f.pipeline.id, "receive_flow_bpd", "arriving at disposal"]], yMin: 0 },
+  { key: "lost", label: "Lost in pipeline", unit: "bbl/day, pump running", derived: "lost" },
   { key: "in", label: "Water in", unit: "bbl/day", get: (f) => [[f.id, "inflow_bpd"]], yMin: 0 },
   { key: "psi", label: "Pressure", unit: "psi", get: (f) => [[f.pump.id, "discharge_psi", "pump discharge"], [f.pipeline.id, "pressure_psi", "pipeline at disposal"]] },
 ];
+function lostSeries(f, from, to) {
+  const R = (a, k) => state.store.range(a, k, from, to);
+  const recv = new Map(R(f.pipeline.id, "receive_flow_bpd"));
+  const run = new Map(R(f.pump.id, "status"));
+  return R(f.pump.id, "flow_bpd").filter(([t, v]) => run.get(t) === 1 && v > 0 && recv.has(t)).map(([t, v]) => [t, v - recv.get(t)]);
+}
+
 function compare(box, systemId) {
   const sys = state.network.systems.find((x) => x.id === systemId);
   if (!sys) { box.innerHTML = `<p class="ds-hint">${esc(systemId)} is not in this dataset.</p>`; return; }
@@ -718,8 +726,10 @@ function compare(box, systemId) {
       const marks = al.filter((a) => a.onset).map((a) => ({ t: a.onset, label: categoryOf(a.category).short, tone: categoryOf(a.category).tone }));
       charts.push(lineChart(host, {
         title: f.id, unit: m.unit, from, to, height: 90, yMin: m.yMin, yMax: m.yMax, marks, onHover: hover,
-        series: m.get(f).map(([a, k, name]) => ({ name: name || a, points: state.store.range(a, k, from, to) })),
-        refs: m.limits ? [{ y: lim.warning, label: `warning ${lim.warning}%`, tone: "warning" }, { y: lim.shutdown, label: `shutdown ${lim.shutdown}%`, tone: "alarm" }] : [],
+        series: m.derived === "lost" ? [{ name: "pump flow − arriving", points: lostSeries(f, from, to) }]
+          : m.get(f).map(([a, k, name]) => ({ name: name || a, points: state.store.range(a, k, from, to) })),
+        refs: m.derived === "lost" ? [{ y: 0, label: "none lost" }] : undefined,
+        ...(m.limits ? { refs: [{ y: lim.warning, label: `warning ${lim.warning}%`, tone: "warning" }, { y: lim.shutdown, label: `shutdown ${lim.shutdown}%`, tone: "alarm" }] } : {}),
         format: m.limits ? (v) => v.toFixed(1) + "%" : undefined,
       }));
     }
@@ -752,6 +762,11 @@ function traces(f, alert) {
     add({ title: "Water out", unit: "bbl/day", yMin: 0, series: [
       { name: "pump flow", points: R(f.pump.id, "flow_bpd") },
       { name: "arriving at disposal", points: R(f.pipeline.id, "receive_flow_bpd") }] });
+    // Pump flow minus what arrives at disposal, while the pump runs. Normal is about 0 with
+    // noise; a leak holds it above 0. It reads the same two sensors as the chart above.
+    const lost = lostSeries(f, from, to);
+    add({ title: "Lost between pump and disposal", unit: "bbl/day, pump running", series: [{ name: "pump flow − arriving", points: lost }],
+      refs: [{ y: 0, label: "none lost" }], gapS: 1800, empty: "The pump did not run in this window" });
     add({ title: "Water in", unit: "bbl/day", yMin: 0, series: [{ name: "tank inflow", points: R(f.id, "inflow_bpd") }] });
     add({ title: "Pressure", unit: "psi", series: [
       { name: "pump discharge", points: R(f.pump.id, "discharge_psi") },
