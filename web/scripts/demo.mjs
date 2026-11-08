@@ -71,7 +71,7 @@ const mint = () => crypto.randomBytes(18).toString("base64url");
 const OP = process.env.FREEBOARD_TOKEN || mint();
 const PH = process.env.FREEBOARD_PHONE_TOKEN || mint();
 const base = `http://${host}:${WEB_PORT}`;
-console.log("\nFREEBOARD demo\n");
+console.log("\nGAIA demo\n");
 let backend = true;
 let ownTokens = true;
 if (await up(`${api}/api/health`, 300)) {

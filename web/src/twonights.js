@@ -111,7 +111,7 @@ export function mountTwoNights(h) {
     const L = [], R = [];
     const opening = inc ? `${inc.summary}` : "The night starts.";
     L.push({ t: 0, text: `${clock(0)} ${opening} Nobody hears it.` });
-    R.push({ t: 0, text: `${clock(0)} ${opening} Freeboard flags it and pages the on-call phone.`, good: true });
+    R.push({ t: 0, text: `${clock(0)} ${opening} Gaia flags it and pages the on-call phone.`, good: true });
     for (const e of none.events || []) {
       if (e.type !== "SHUTDOWN_LEVEL") continue;
       const n = (e.wells_lost || []).length;
@@ -289,7 +289,7 @@ export function mountTwoNights(h) {
         <ol class="tn-log">${r.events.L.map(li).join("")}</ol>
       </section>
       <section class="tn-col with">
-        <div class="kicker">With Freeboard</div>
+        <div class="kicker">With Gaia</div>
         <div class="tn-usd">$0</div>
         <div class="tn-wells"></div>
         <ol class="tn-log">${r.events.R.map(li).join("")}</ol>

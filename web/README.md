@@ -257,3 +257,15 @@ Every command to equipment needs the operator token. When the backend serves `GE
 - **Burst:** 3 or more refused writes in 10 minutes (deduped events add their counts) turns the card amber and writes one shift-log line. It never pages and never blocks anything. Nothing was sent by any of these requests, and the card says so.
 - **Privacy:** the server masks client addresses and never records tokens, PINs or query strings. The console only shows what the server returns.
 - **Handoff:** section 7 lists counts by kind and the latest refused write. A backend without the log says "Not on this backend". A failed read says "Not checked", never "none".
+
+## Dataset console (`/dataset`, EOG sponsor data)
+
+`web/dataset.html` runs the sponsor's "Beat the Shutdown" data: any folder holding `network.json`, `ops.json` and `telemetry.csv` (the history folders, the mock test, and `test/` at judging). "Now" is the last telemetry timestamp, never the system clock.
+
+- **Run it:** `EOG_DIR=/path/to/HackUTD-ZeroDay npm run dev`, then open `/dataset`. The dev server serves only those three files under `/eog/` (never `answer_key.json`), and `?folder=history/snapshot_2026-10-08T1200` picks a folder. `FREEBOARD_EOG_DIR` (the backend's name) works too.
+- **Alerts** come from the backend's dataset mode, in SPEC order: pump failures by `hours_to_limit`, ties to the higher lost revenue per hour, then leaks and worn pumps. Without a backend the page says **Not checked** (never an empty all-clear) and lists only pumps whose own status reads 2 (fault), each with its countdown and a cheapest plan.
+- **Plans** (`src/dataset/plan.js`): `replay()` runs a plan minute by minute under the SPEC rules (trucks arrive together, every trip before the repair ends, a load capped at what the tank holds, shut-ins until the repair) and prices it next to doing nothing. `cheapestJoint()` searches trucks, trips and late shut-ins per tank and splits a system's fleet across its tanks. It reproduces the README's EVENT_9 numbers ($905, $1,958, $5,016) and the three snapshot answer keys' plans. When the backend sends a plan, the card replays it and says if the replay disagrees or a cheaper plan exists.
+- **What-if:** change trucks, trips and which wells shut in when, and watch the tank line against the 85% and 92% limits. "What if this pump failed now?" works on any facility for practice.
+- **Time travel:** the slider replays any earlier moment as now, and `?at=<unix>` links to it.
+- **Trends:** click a facility for tank level, water in and out (pump flow next to the flow arriving at disposal shows a leak), pressures, and pump state on one shared crosshair.
+- **Handoff** and **events.json** buttons: the handoff never reads as all clear unless detection ran.

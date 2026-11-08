@@ -75,6 +75,60 @@ function dracoDecoder() {
   };
 }
 
+// The sponsor (EOG) datasets: each folder holds network.json, ops.json and telemetry.csv.
+// /eog/index.json lists the folders and /eog/<folder>/<file> serves those three files only,
+// so answer_key.json is never reachable from the page. EOG_DIR points at the data
+// (or FREEBOARD_EOG_DIR, the backend's name for it; default: ../eog, the repo-root folder). Not copied into dist/: a build reads the
+// backend's /api/dataset instead.
+const EOG_FILES = ["network.json", "ops.json", "telemetry.csv"];
+function eogDir() {
+  for (const d of [process.env.EOG_DIR, process.env.FREEBOARD_EOG_DIR, path.resolve(__dirname, "../eog"), path.resolve(__dirname, "../data/eog")]) {
+    if (d && fs.existsSync(d)) return path.resolve(d);
+  }
+  return null;
+}
+function eogFolders(root) {
+  const out = [];
+  const walk = (dir, rel, depth) => {
+    if (EOG_FILES.every((f) => fs.existsSync(path.join(dir, f)))) out.push(rel);
+    if (depth >= 3) return;
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (e.isDirectory() && !e.name.startsWith(".") && e.name !== "organizer") walk(path.join(dir, e.name), rel ? `${rel}/${e.name}` : e.name, depth + 1);
+    }
+  };
+  walk(root, "", 0);
+  return out.filter(Boolean);
+}
+function eogData() {
+  return {
+    name: "eog-data",
+    configureServer(server) {
+      server.middlewares.use("/eog", (req, res) => {
+        const root = eogDir();
+        const url = decodeURIComponent(req.url.split("?")[0]).replace(/^\/+/, "");
+        const send = (code, body, type = "application/json") => {
+          res.statusCode = code;
+          res.setHeader("Content-Type", type);
+          res.setHeader("Cache-Control", "no-store");
+          res.end(body);
+        };
+        if (!root) return send(404, JSON.stringify({ error: "No EOG data folder. Set EOG_DIR or add ../eog." }));
+        if (url === "index.json") return send(200, JSON.stringify({ root: path.basename(root), folders: eogFolders(root) }));
+        const name = path.posix.basename(url);
+        const folder = path.posix.dirname(url);
+        // Only the three dataset files. Anything else (answer_key.json included) is a 404.
+        if (!EOG_FILES.includes(name) || folder.split("/").some((p) => p === ".." || p.startsWith("."))) return send(404, JSON.stringify({ error: "not served" }));
+        const file = path.resolve(root, folder, name);
+        if (!file.startsWith(root + path.sep) || !fs.existsSync(file)) return send(404, JSON.stringify({ error: `${url} not found` }));
+        res.setHeader("Content-Type", name.endsWith(".csv") ? "text/csv" : "application/json");
+        res.setHeader("Content-Length", fs.statSync(file).size);
+        res.setHeader("Cache-Control", "no-store");
+        fs.createReadStream(file).pipe(res);
+      });
+    },
+  };
+}
+
 // The phone view (#55) lives at /phone.
 function phoneRoute() {
   return {
@@ -82,6 +136,7 @@ function phoneRoute() {
     configureServer(server) {
       server.middlewares.use((req, res, next) => {
         if (/^\/phone\/?(\?|$)/.test(req.url)) req.url = req.url.replace(/^\/phone\/?/, "/phone.html");
+        else if (/^\/dataset\/?(\?|$)/.test(req.url)) req.url = req.url.replace(/^\/dataset\/?/, "/dataset.html");
         next();
       });
     },
@@ -92,7 +147,7 @@ const SECRET_FILES = [".env", ".env.*", "*.{pem,key,crt,p12}", "**/.git/**", "**
 
 export default defineConfig({
   preview: { cors: false },
-  plugins: [fieldGlb(), mediapipeWasm(), dracoDecoder(), phoneRoute()],
+  plugins: [fieldGlb(), mediapipeWasm(), dracoDecoder(), eogData(), phoneRoute()],
   server: {
     host: "127.0.0.1",
     port: 5173,
@@ -108,6 +163,6 @@ export default defineConfig({
   },
   build: {
     chunkSizeWarningLimit: 1200,
-    rollupOptions: { input: { main: path.resolve(__dirname, "index.html"), phone: path.resolve(__dirname, "phone.html") } },
+    rollupOptions: { input: { main: path.resolve(__dirname, "index.html"), phone: path.resolve(__dirname, "phone.html"), dataset: path.resolve(__dirname, "dataset.html") } },
   },
 });

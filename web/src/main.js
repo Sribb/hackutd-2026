@@ -1090,7 +1090,7 @@ function handoffText() {
   const inc = data.state.incident;
   const base = shutdownOf(data.baseline);
   const nowView = viewAt(0);
-  L.push("FREEBOARD SHIFT HANDOFF", `Written ${shiftlog.clockNow()} for the next crew.`);
+  L.push("GAIA SHIFT HANDOFF", `Written ${shiftlog.clockNow()} for the next crew.`);
   if (inc) L.push(`Incident: ${inc.summary}`);
   if (base) {
     const wells = (field.wells || []).filter((w) => w.tank_id === base.asset_id).length;
@@ -1143,7 +1143,7 @@ function handoffText() {
   if (!blindIds.length && !stuckIds.length) L.push("  None. Every monitored asset has a fresh reading.");
   for (const id of blindIds) {
     const age = liveFeed.staleMinutes(id);
-    L.push(`  ${nice(id)}: no fresh reading${age != null ? ` for ${age} min` : ""}. Check it in person; Freeboard can't vouch for it.`);
+    L.push(`  ${nice(id)}: no fresh reading${age != null ? ` for ${age} min` : ""}. Check it in person; Gaia can't vouch for it.`);
   }
 
   head(4, "APPROVED PLAN");
@@ -1653,7 +1653,7 @@ boot().then(() => {
     // #104: never fall back to recorded numbers when a backend was asked for and failed.
     l.classList.add("down");
     $("clock").textContent = "--:--"; // no field clock without a backend
-    l.innerHTML = `<b>FREEBOARD</b><span class="down-head">The backend isn't answering</span>
+    l.innerHTML = `<b>GAIA</b><span class="down-head">The backend isn't answering</span>
       <span>${esc(e.message)} at ${esc(api.BASE)}</span>
       <span>Nothing on this screen would be live, so the console shows nothing rather than guess.</span>
       <span class="down-btns"><button type="button" data-retry>Retry</button><a href="?offline">Open the recorded demo instead (clearly marked)</a></span>`;
