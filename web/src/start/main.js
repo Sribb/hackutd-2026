@@ -172,11 +172,11 @@ async function toBuild() {
     await prefetchFilm();
     if (reduced) film.finish();
     else await film.play(caption);
-    $("sBuildH").textContent = "your 3D model is ready";
+    $("sBuildH").textContent = "your 3d model is ready";
     caption("tonight's shift starts in the console.");
   } catch (e) {
     filmErr = e;
-    caption("the 3D preview could not load on this screen. the console will open your field.");
+    caption("the 3d preview could not load on this screen. the console will open your field.");
   }
   const go = $("sConsole");
   go.hidden = false;
