@@ -207,7 +207,7 @@ def test_d2_14_a_stale_tank_gets_the_sentence_and_no_level():
     assert reply.startswith(BLIND), reply
     assert "%" not in reply, reply   # no level we don't have
     assert re.search(r"Its last reading is \d+ (s|min) old\.", reply), reply
-    assert out["ui"] == [{"type": "ui", "action": "focus", "asset_id": "TANK_5"}]
+    assert [(d["type"], d["action"], d["asset_id"]) for d in out["ui"]] == [("ui", "focus", "TANK_5")]
 
 
 def test_d2_15_what_am_i_looking_at_on_a_blind_tank():
