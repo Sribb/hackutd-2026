@@ -231,6 +231,36 @@ Every backend endpoint starts from the same moment (`backend/app/now.py`):
 - SpacetimeDB follows the live field: every change in status, level (0.1 %), position, or reason is pushed within
   `SPACETIME_MIRROR_S` (1 s). `asset_state.status` may be `UNKNOWN`.
 
+### `GET /api/history` (CF-14)
+
+Readings on a regular grid that ends now, on the same clock as `/api/state` and the forecast. Read only.
+
+`?minutes=60&step_min=1&asset_id=TANK_3,TANK_4&signal=level_pct` (all optional: 60, 1, every asset, `level_pct`).
+`asset_id` and `signal` take comma lists; `signal=all` is every signal recorded. At most 2000 points (422 otherwise);
+an unknown asset is 404.
+
+```json
+{
+  "clock": "02:10", "clock_source": "live", "t": 26.0,
+  "minutes": 60, "step_min": 1, "stale_after_min": 5, "since_t_min": -26,
+  "timeline": [{"t_min": -60, "clock": "01:10", "tanks": {"TANK_3": null, "TANK_4": null}},
+               {"t_min": 0, "clock": "02:10", "tanks": {"TANK_3": 80.4, "TANK_4": 61.2}}],
+  "series": [{"asset_id": "TANK_3", "signal": "level_pct", "points": [[-60, null], [0, 80.4]]}],
+  "gaps": [{"asset_id": "TANK_4", "signal": "level_pct", "from_t_min": -12, "to_t_min": 0}]
+}
+```
+
+- A point is what the console showed at that moment: the latest reading at or before it, while it was fresh (the live
+  layer's rule, stale after `stale_after_min`). **A stale period is `null`, never the last value carried forward**,
+  and so is any time before the first reading (`since_t_min` is where recording starts).
+- `gaps` lists the stale runs after recording started, for shading. Time before `since_t_min` is not a gap.
+- `timeline` is the tanks' `level_pct` in the forecast's timeline shape with `t_min <= 0`, so the past and the future
+  are one trend (CF-3): history's timeline, then the forecast's (its `t_min: 0` is the same moment). A blind tank is
+  still listed, all `null`.
+- Values are as read (numbers rounded to 0.01; `running` and `position` as the connector sends them).
+- Kept for `FREEBOARD_HISTORY_MIN` live minutes (720). Activating a blueprint starts it over.
+- No live layer (or `FREEBOARD_ONE_CLOCK=0`): `clock_source: "static"`, empty lists, and a `note`.
+
 ### Control token (#105, #103, CF-15)
 
 Reads (GET) are always open. One mechanism, `backend/app/auth.py`, checked per route:

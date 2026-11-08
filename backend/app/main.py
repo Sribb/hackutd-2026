@@ -24,7 +24,7 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from . import now, origin_guard, spacetime_sync
+from . import history, now, origin_guard, spacetime_sync
 from .auth import Caller, OPERATOR, require_role
 from .forecast import forecast
 from .planner import approve, make_plans
@@ -46,8 +46,10 @@ async def lifespan(_app: FastAPI):
     if live:
         live.start()
     mirror = asyncio.get_running_loop().create_task(_mirror(_app))
+    recording = asyncio.get_running_loop().create_task(history.run(_app))   # CF-14
     yield
     mirror.cancel()
+    recording.cancel()
     if live:
         await live.stop()
 
@@ -79,6 +81,7 @@ async def _mirror(_app: FastAPI) -> None:
 
 
 app = FastAPI(title="Freeboard backend", lifespan=lifespan)
+app.include_router(history.router)   # GET /api/history (CF-14)
 
 
 @app.exception_handler(Exception)
