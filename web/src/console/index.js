@@ -23,6 +23,7 @@ import { mountSidebar } from "./sidebar.js";
 import { makeDirectives } from "./directives.js";
 import { makeViewStub } from "./viewstub.js";
 import * as intents from "./intents.js";
+import { makeCharts } from "./chartask.js";
 import {
   normalizeBrief, fallbackBrief, toMin, clock12, minsUntil, usd, andList,
   countdownBar, planBars, dot, prioOf, levelOf, watchText, forecastText, plannerText,
@@ -144,6 +145,11 @@ export function mountConsole(H) {
   function view() {
     return H.view || (window.__console3d && window.__console3d.view) || stub;
   }
+  // Chart cards (chartask.js): drawn from the data in the browser, no AI. A click flies to the asset.
+  const charts = makeCharts({
+    BASE, data: H.data, hasId: H.hasId, nice, stream, say: (text, extra) => say(text, extra),
+    focus: (id) => { view().focus(id); highlight.flash("jarvis", [id], 8000); },
+  });
 
   // --------------------------------------------------------- helpers ----
   function nowMin() { return toMin(liveFeed.live.clock) ?? toMin(H.clockNow()); }
@@ -452,6 +458,7 @@ export function mountConsole(H) {
     const ctx = { hasId: H.hasId, ids: H.ids, selected: H.selected, opened: () => (view().state() || {}).open };
     const m = intents.match(text, ctx);
     if (m) {
+      if (m.chart) { askChain = askChain.then(() => charts.answer(m.chart)).catch(() => {}); return; }
       if (m.hands) { setHands(m.hands === "on"); say(m.hands === "on" ? "Hands on. Point to look, pinch to open, open palm to turn, fist to reset." : "Hands off. The mouse does everything."); return; }
       if (m.clearWhatif) { H.setActions([]); say("Cleared every what-if. Back to the do-nothing forecast."); return; }
       const said = directives.apply({ action: m.action, asset_id: m.asset_id, args: m.args });

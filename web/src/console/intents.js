@@ -2,8 +2,11 @@
 // match(text, ctx) -> null (send it to the backend: rules, then Claude) or
 //   { action, asset_id?, args?, ask?: true }   ask: also send the text to the backend for words
 //   { hands: "on" | "off" }  |  { clearWhatif: true }
+//   { chart: spec }  "plot tank 3 level", "compare tank 3 and tank 4" (chartcard.js; a card, no AI)
 // Equipment never moves from here: "open the crossover" or "close valve d 3" stays route R,
 // where it becomes one PENDING proposal that a person must hold to confirm.
+
+import { chartIntent } from "./chartcard.js";
 
 export const NUM_WORDS = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10,
   eleven: 11, twelve: 12, thirteen: 13, fourteen: 14, fifteen: 15, sixteen: 16, seventeen: 17, eighteen: 18,
@@ -70,6 +73,10 @@ export function match(text, ctx) {
   if (/\bwhich sensors\b|\bsensor ages?\b|\bstale sensors?\b|\bsensors? (?:are )?stale\b/.test(t)) return null;
   if (/\b(?:all|every) (?:the )?sensors?\b|^(?:show )?sensors$/.test(raw)) return { action: "show_sensors", asset_id: "ALL" };
   if (/\bsensors?\b/.test(t) && id) return { action: "show_sensors", asset_id: id };
+
+  // Charts: a card drawn from the data, before "show tank 3" can take it as a fly-to.
+  const chart = chartIntent(t, ctx);
+  if (chart) return { chart };
 
   // Isolate.
   if (/^(?:isolate|only|just)(?: show)?\b/.test(raw) && id) return { action: "isolate", asset_id: id };
