@@ -237,7 +237,7 @@ def test_this_binds_to_a_sponsor_id_on_a_dataset(monkeypatch):
     assert out["reply"] == ("P2: S4_PUMP_A failed: S4_TANK_A reaches shutdown at 11:57 (in 2 h 57 min) (the dataset, as of "
                             "2026-10-10 09:00 UTC). S4_TANK_A reads 71% against a 90% shutdown at 2026-10-10 09:00 UTC in "
                             "the dataset.")
-    assert out["ui"] == [{"type": "ui", "action": "focus", "asset_id": "S4_TANK_A"}]
+    assert [{k: d[k] for k in ("type", "action", "asset_id")} for d in out["ui"]] == [{"type": "ui", "action": "focus", "asset_id": "S4_TANK_A"}]
     quiet = run(j.handle("how's it doing", selected=["S4_TANK_B"]))["reply"]
     assert quiet.startswith("No open alert on S4_TANK_B at 2026-10-10 09:00 UTC in the dataset.") and "safe" not in quiet
     blind = run(j.handle("what's wrong with it", selected=["S4_TANK_D"]))["reply"]

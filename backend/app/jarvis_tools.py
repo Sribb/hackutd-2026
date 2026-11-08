@@ -97,6 +97,18 @@ def _clean_actions(live: LiveField, actions: Any) -> tuple[Optional[list], Optio
     return out, None
 
 
+DATASET_ID = re.compile(r"^S\d+_[A-Z0-9]+(?:_[A-Z0-9]+)*$")
+
+
+def _dataset_active() -> bool:
+    """True while an EOG sponsor dataset drives the console (backend/app/eog/gaia.py)."""
+    try:
+        from .eog import gaia
+        return bool(gaia.active())
+    except Exception:  # noqa: BLE001 - no dataset package or it failed to load: live field only
+        return False
+
+
 def check_directive(live: LiveField, d: Any) -> tuple[Optional[dict], Optional[str]]:
     """(clean directive, None) or (None, why not). The whitelist in JARVIS_CONSOLE.md section 5.
     Accepts {action, asset_id?, args?} with args also allowed at the top level (as a
@@ -112,15 +124,21 @@ def check_directive(live: LiveField, d: Any) -> tuple[Optional[dict], Optional[s
     aid = str(d.get("asset_id") or raw.get("asset_id") or "").upper()
     f = live.fmap
     args: dict = {}
+
+    def known(x: str) -> bool:
+        # The live field's ids, plus a sponsor dataset's ids (S1_PUMP_C, S4_TANK_A) while the
+        # EOG dataset drives the console. Screen directives only: nothing here reaches equipment.
+        return bool(f.kind_of(x)) or (_dataset_active() and bool(DATASET_ID.match(x)))
+
     if action in NEEDS_ASSET or (action == "show_sensors" and aid != "ALL"):
-        if not f.kind_of(aid):
+        if not known(aid):
             return None, f"Unknown asset {aid or '(none)'}."
     if action == "highlight":
         ids = raw.get("ids")
         if not isinstance(ids, list) or not ids:
             return None, "highlight needs ids."
         ids = [str(x).upper() for x in ids][:MAX_HIGHLIGHT]
-        bad = [x for x in ids if not (f.kind_of(x) or NODE.match(x))]
+        bad = [x for x in ids if not (known(x) or NODE.match(x))]
         if bad:
             return None, f"Unknown ids {', '.join(bad[:3])}."
         try:
@@ -640,8 +658,10 @@ async def compare_whatif(jarvis, actions: Any) -> dict:
                   f"({name(b['shutdown']['asset_id'])} would at {b['shutdown']['clock']}).")
     elif a["shutdown"] and b["shutdown"] and a["shutdown"]["asset_id"] == b["shutdown"]["asset_id"]:
         diff = int(round(gained))
-        effect = (f"{name(a['shutdown']['asset_id'])} still shuts down, at {a['shutdown']['clock']} instead of "
-                  f"{b['shutdown']['clock']}" + (f" ({diff} min more)." if diff > 0 else "."))
+        same = a["shutdown"]["clock"] == b["shutdown"]["clock"]
+        effect = (f"{name(a['shutdown']['asset_id'])} still shuts down at {a['shutdown']['clock']}"
+                  + ("" if same else f" instead of {b['shutdown']['clock']}")
+                  + (f" ({diff} min more)." if diff > 0 else "."))
     elif a["shutdown"]:
         effect = f"{name(a['shutdown']['asset_id'])} shuts down at {a['shutdown']['clock']}."
     else:

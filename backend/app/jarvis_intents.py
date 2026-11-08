@@ -101,7 +101,10 @@ async def _status(jarvis, ctx: dict) -> str:
     """jarvis.py's "What's failing?" (CF-11: P1 roots, related counts, blind tanks), plus the
     lost feeds it doesn't name yet. Never "all quiet" while a feed is lost."""
     live = jarvis.live
-    reply = await jarvis._status(ctx)
+    try:
+        reply = await jarvis._status(ctx)
+    except (KeyError, TypeError):
+        return None  # a dataset's alert shape (eog/gaia list_alerts): let jarvis.py / gaia answer it
     lost = [c for c in T.lost_feeds(live) if c["id"] not in reply]
     if lost:
         clock = live.fmap.clock_text(live.t)
@@ -252,6 +255,11 @@ async def match(jarvis, text: str, selected: Optional[list], ctx: dict) -> Optio
     selected = [x for x in (selected or []) if isinstance(x, str)]
     live = jarvis.live
     if not s:
+        return None
+    # "What's wrong with this?" with something selected is about the selection, not the field:
+    # leave it to jarvis.py's rules (#189 answers a dataset id from explain_asset).
+    if selected and re.search(r"\b(this|it|that|selected|these)\b", s) and re.search(
+            r"what'?s (wrong|up|going on|happening)|\b(status|why|explain|tell me about|how'?s|how is)\b", s):
         return None
 
     # Hands are a switch on this screen; the server can't turn a camera on.
