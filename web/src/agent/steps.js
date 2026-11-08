@@ -26,6 +26,7 @@ export function stepLabel(d, nice = (x) => x) {
     case "collapse": return "putting it back";
     case "reset_view": return "resetting the view";
     case "try_whatif": return "drawing the what-if";
+    case "chart": return "drawing the chart";
     default: return "working";
   }
 }
@@ -53,7 +54,11 @@ export function makeSteps({ stream, apply, nice, pause = 750 }) {
       if (me !== run) break; // a newer answer took over the screen
       rows[i].dataset.state = "now";
       let said = "";
-      try { said = apply(ds[i]) || ""; } catch (e) { console.warn("gaia step", e); rows[i].dataset.state = "skip"; }
+      try {
+        const r = apply(ds[i]);
+        said = (r && typeof r.then === "function" ? await Promise.race([r.catch(() => ""), new Promise((res) => setTimeout(() => res(""), 2500))]) : r) || "";
+      } catch (e) { console.warn("gaia step", e); rows[i].dataset.state = "skip"; }
+      if (typeof said !== "string") said = "";
       if (said && !first) first = said;
       await new Promise((res) => setTimeout(res, wait));
       if (rows[i].dataset.state === "now") rows[i].dataset.state = "done";
