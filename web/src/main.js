@@ -497,6 +497,11 @@ function minutesSinceData() {
   return d > 720 ? 0 : d; // a clock behind the data (just re-read): nothing to subtract
 }
 
+// A forecast minute the shift clock has already passed. Deadlines from an old forecast must
+// say they passed, not still read as ahead of the crew.
+const passed = (min) => Number.isFinite(min) && minutesSinceData() > min;
+const sinceRead = () => `forecast last read ${clockAt(0)}`;
+
 function renderIncident() {
   const inc = data.state.incident;
   const box = $("incident");
@@ -509,9 +514,10 @@ function renderIncident() {
     const range = ev.t_min_low != null
       ? ` <span class="muted">(${clockAt(ev.t_min_low)} to ${ev.t_min_high == null ? "later" : clockAt(ev.t_min_high)})</span>` : "";
     const left = Math.max(0, Math.round(ev.t_min - minutesSinceData()));
+    const late = Math.round(minutesSinceData() - ev.t_min);
     // data-decode on the headline only: decode() sets textContent, which would flatten the range's styling.
     countdown = `<div class="countdown"><span data-decode="countdown">${nice(ev.asset_id)} reaches shutdown at ${clockAt(ev.t_min)}</span>${range}</div>
-      <div class="sub">${left > 0 ? `${left} min from now if nobody acts.` : "Due now if nobody has acted."} ${wellsAtRisk} wells go down with it.</div>`;
+      <div class="sub">${left > 0 ? `${left} min from now if nobody acts.` : late >= 2 ? `That time passed ${late} min ago (${sinceRead()}). Check the tank in person.` : "Due now if nobody has acted."} ${wellsAtRisk} wells ${late >= 2 ? "depend on it" : "go down with it"}.</div>`;
   }
   const blind = blindTanks();
   if (blind.length) {
@@ -523,8 +529,14 @@ function renderIncident() {
   if (lc && lc.status === "INCIDENT" && lc.options && lc.options.length) {
     const best = lc.options[0];
     const hot = best.robust === false && !best.expires_clock_hot ? " It already falls short if inflow runs 15% high." : "";
-    last = `<div class="lastcall"><b>Last Call:</b> the cheapest plan (${usd(best.cost.total_usd)}) only works if you start by
-      <b>${best.expires_clock}</b>.${hot}${lc.point_of_no_return ? ` At the forecast inflow, nothing keeps every well online after ${lc.point_of_no_return.clock}.` : ""}</div>`;
+    const pnr = lc.point_of_no_return;
+    const pnrText = !pnr ? "" : passed(pnr.t_min)
+      ? ` The forecast said nothing keeps every well online after ${pnr.clock}, and that time has passed.`
+      : ` At the forecast inflow, nothing keeps every well online after ${pnr.clock}.`;
+    last = passed(best.expires_min)
+      ? `<div class="lastcall"><b>Last Call passed at ${best.expires_clock}:</b> the cheapest plan (${usd(best.cost.total_usd)}) no longer works as planned (${sinceRead()}). Read the plans again before choosing.${pnrText}</div>`
+      : `<div class="lastcall"><b>Last Call:</b> the cheapest plan (${usd(best.cost.total_usd)}) only works if you start by
+      <b>${best.expires_clock}</b>.${hot}${pnrText}</div>`;
   }
   box.hidden = false;
   box.innerHTML = `<div class="kicker">Incident</div>
@@ -1004,7 +1016,12 @@ function handoffText() {
   const nowView = viewAt(0);
   L.push("FREEBOARD SHIFT HANDOFF", `Written ${shiftlog.clockNow()} for the next crew.`);
   if (inc) L.push(`Incident: ${inc.summary}`);
-  if (base) L.push(`If nothing changes: ${nice(base.asset_id)} reaches shutdown at ${clockAt(base.t_min)}, and ${(field.wells || []).filter((w) => w.tank_id === base.asset_id).length} wells go down with it.`);
+  if (base) {
+    const wells = (field.wells || []).filter((w) => w.tank_id === base.asset_id).length;
+    L.push(passed(base.t_min)
+      ? `If nothing changed: ${nice(base.asset_id)} was forecast to reach shutdown at ${clockAt(base.t_min)}, taking ${wells} wells with it. That time has passed (${sinceRead()}): check the tank in person.`
+      : `If nothing changes: ${nice(base.asset_id)} reaches shutdown at ${clockAt(base.t_min)}, and ${wells} wells go down with it.`);
+  }
 
   const roots = alarms.roots();
   const open = roots.filter((a) => !a.shelved), shelf = roots.filter((a) => a.shelved);
@@ -1064,8 +1081,11 @@ function handoffText() {
   if (approved && approved.ended) L.push(`  The approved plan's run ended ${approved.ended} with ${approved.done} of ${approved.steps.length} steps done. Nothing more from it reaches equipment; choose a plan again.`);
   else if (approved) L.push(approved.done >= approved.steps.length ? "  Every step of the approved plan is done." : `  Finish the approved plan: ${approved.steps.length - approved.done} step${approved.steps.length - approved.done === 1 ? "" : "s"} still pending.`);
   if (lc && lc.options && lc.options.length) {
-    L.push(`  Last Call: the cheapest plan (${usd(lc.options[0].cost.total_usd)}) only works if started by ${lc.options[0].expires_clock}.`);
-    if (lc.point_of_no_return) L.push(`  After ${lc.point_of_no_return.clock}, nothing keeps every well online.`);
+    const o = lc.options[0], pnr = lc.point_of_no_return;
+    L.push(passed(o.expires_min)
+      ? `  Last Call passed at ${o.expires_clock}: the cheapest plan (${usd(o.cost.total_usd)}) no longer works as planned (${sinceRead()}). Read the plans again.`
+      : `  Last Call: the cheapest plan (${usd(o.cost.total_usd)}) only works if started by ${o.expires_clock}.`);
+    if (pnr) L.push(passed(pnr.t_min) ? `  The point of no return (${pnr.clock}) has passed: the forecast had no plan keeping every well online after it.` : `  After ${pnr.clock}, nothing keeps every well online.`);
   } else if (lc && lc.status) L.push(`  Last Call: ${lc.headline || lc.status}.`);
   else L.push("  No Last Call deadline on hand.");
   const now = shutdownOf(fc);
