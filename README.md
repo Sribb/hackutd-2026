@@ -20,7 +20,7 @@ FREEBOARD_EOG_DIR=/path/to/HackUTD-ZeroDay npm run demo:tunnel   # plus a public
 - `/` is the gaia console.
 - `/dataset` is any EOG folder.
 
-Text and voice alerts need `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN` and `TWILIO_FROM` in the server's `.env`. Without them, the phone pager stands in.
+Put this laptop's settings in a `.env` at the repo root, copying `.env.example`. The file is gitignored, and `npm run demo` loads it into the backend. Settings include `ANTHROPIC_API_KEY` for gaia's Claude engine and `FREEBOARD_EOG_DIR`. Text and voice alerts need `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN` and `TWILIO_FROM` there too. Without them, the phone pager stands in.
 
 **Start here, then go to your area:**
 - Backend: [docs/BACKEND.md](docs/BACKEND.md)

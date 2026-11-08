@@ -28,6 +28,7 @@ export const live = {
   t: null,              // live minute from the backend, when it sends one
   assets: {},           // ID -> { status, level_pct, running, position, stale, seenAt }
   connectors: [],       // [{ id, kind, status }]
+  dataset: null,        // the EOG dataset id when the backend serves one (#153): no /ws, see pollAlerts
 };
 
 export function on(type, fn) {
@@ -45,8 +46,9 @@ export function start(apiBase, as = "web") {
   if (base || !apiBase) return;
   base = apiBase.replace(/\/$/, "");
   role = as;
-  poll();
-  connect();
+  // Dataset mode (#153): /api/live/state says mode "dataset". The demo feed (/ws) is never
+  // opened; the state and the alerts are polled instead, so the console follows the dataset clock.
+  poll().then(() => { if (!live.dataset) connect(); });
 }
 
 // ?gauge=freeze:TANK_3 is a labeled drill: that tank's level stops moving after the first
@@ -77,6 +79,7 @@ function mergeState(s) {
     if (!staleNow) delete live.assets[id].stale;
   }
   if (Array.isArray(s.connectors)) live.connectors = s.connectors;
+  if (s.mode === "dataset") { live.dataset = s.dataset || "dataset"; live.clockTs = s.clock_ts || null; }
   live.available = true;
 }
 
@@ -93,6 +96,7 @@ async function poll() {
       if (!(stateStopped && !live.paused) || (typeof live.t === "number" && live.t !== pollT)) { stateStopped = false; markLost(false); }
       pollT = live.t;
       emit("state", live);
+      if (live.dataset) await pollAlerts();
     } else if (r.status === 404) {
       return; // this backend has no live layer yet; stay quiet and don't mark anything
     }
@@ -102,7 +106,33 @@ async function poll() {
     if (!live.connected || Date.now() - lastMsgAt > 6000) markLost(true);
   }
   // While the socket is up it carries state; poll slowly as a safety net, faster when it's down.
-  pollTimer = setTimeout(poll, live.connected ? 15000 : 3000);
+  pollTimer = setTimeout(poll, live.dataset ? 2000 : live.connected ? 15000 : 3000);
+}
+
+// Dataset mode: what /ws would push. GET /api/alerts every poll; a new, changed or gone alert
+// is emitted as an "alert" message ({alert, event}), the first answer only seeds the list (the
+// console reads /api/alerts itself at boot).
+let alertsSeen = null; // id -> JSON of the alert last emitted
+async function pollAlerts() {
+  try {
+    const r = await fetch(`${base}/api/alerts`);
+    if (!r.ok) return;
+    const list = (await r.json()).alerts || [];
+    const first = alertsSeen === null, ids = new Set();
+    alertsSeen = alertsSeen || new Map();
+    for (const a of list) {
+      ids.add(a.id);
+      const k = JSON.stringify(a), prev = alertsSeen.get(a.id);
+      if (prev === k) continue;
+      alertsSeen.set(a.id, k);
+      if (!first) emit("alert", { type: "alert", alert: a, event: prev === undefined ? "raised" : "updated" });
+    }
+    for (const [id, k] of alertsSeen) {
+      if (ids.has(id)) continue;
+      alertsSeen.delete(id);
+      emit("alert", { type: "alert", alert: { ...JSON.parse(k), active: false }, event: "resolved" });
+    }
+  } catch { /* the state poll says when the backend is gone */ }
 }
 
 async function healthConnectors() {

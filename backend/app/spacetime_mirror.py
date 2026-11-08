@@ -55,6 +55,7 @@ def _env_s(name: str, default: float) -> float:
 
 
 MIRROR_S = _env_s("SPACETIME_MIRROR_S", 1.0)
+HOLD = None   # dataset mode (#153): eog/legacy_api.py sets a callable; while it returns True nothing is sent
 RESYNC_S = _env_s("SPACETIME_RESYNC_S", 60.0)
 BACKOFF_MAX_S = 15.0
 LEVEL_SLACK_PCT = now.LEVEL_SLACK_PCT   # sensor noise past 0 or 100 that is clamped instead of dropped
@@ -329,4 +330,6 @@ async def run(app, period_s: Optional[float] = None) -> None:
     mirror = Mirror(period_s=period)
     while True:
         await asyncio.sleep(period)
+        if HOLD is not None and HOLD():
+            continue
         await mirror.tick(app)

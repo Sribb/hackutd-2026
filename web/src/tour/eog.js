@@ -6,6 +6,11 @@
 
 import { BASE } from "../api.js";
 import { withToken } from "../auth.js";
+import { esc } from "../console/stream.js";
+import { usd } from "../console/agents.js";
+
+const $ = (sel) => document.querySelector(sel);
+const lc = (s) => String(s ?? "").toLowerCase();
 
 async function get(path) {
   const r = await fetch(`${BASE}${path}`);
@@ -37,4 +42,25 @@ export async function firstPumpFailure() {
 // POST /api/eog/clock with the operator token: {at, play, speed} (speed in data-minutes a second).
 export function setClock(body) {
   return fetch(`${BASE}/api/eog/clock`, withToken({ method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }));
+}
+
+// Dataset mode's fix: the recording can't take commands, so the person holds to approve the
+// plan in the console's own plans panel (POST /api/plans/{id}/approve records it for the shift).
+export function fixDataset(ctx, b, plan, { body, extra, btns }) {
+  body(`${plan ? `<p>the planner's best plan costs ${esc(usd(plan.total_usd))}, against ${esc(usd(b.do_nothing_usd))} if nobody acts: ${esc(lc(plan.summary))}</p>` : "<p>the planner has no plan to make right now.</p>"}
+    <p>gaia never moves equipment. it recommends a plan, and a person holds to approve it. this field is a recording, so approving records the plan for the shift; nothing is sent to equipment.</p>`);
+  // The planner's "all plans" button opens the panel, whichever thread its message is in.
+  const opener = () => [...document.querySelectorAll('#csStream li[data-agent="P"] [data-plans]')].pop() || null;
+  ctx.every(400, () => {
+    const box = $("#plans"), drawer = box && box.closest(".cs-drawer");
+    const shown = !!(box && !box.hidden && drawer && !drawer.hidden);
+    const stamp = $("#plans .approved-stamp");
+    let x;
+    if (stamp) x = `<span class="gt-note">${esc(lc(stamp.textContent))}. the plan is recorded for the shift; nothing was sent to equipment.</span>`;
+    else if (shown) x = `<span class="gt-note">press and hold “hold to approve” on a plan for a second and a half. the first one is the cheapest.</span>`;
+    else if (opener()) x = `${btns([["data-plans-open", "show the plans", "primary"]])}<span class="gt-note">nothing is recorded until a person approves.</span>`;
+    else x = `<span class="gt-note">${plan ? "the plans open from the planner's message in the chat." : "press next."}</span>`;
+    extra(x, (el) => { const o = el.querySelector("[data-plans-open]"); if (o) o.onclick = () => { const p = opener(); if (p) p.click(); }; });
+    ctx.targets(stamp || shown ? ["#csPlan", "#plans"] : ["#csPlan"]);
+  });
 }

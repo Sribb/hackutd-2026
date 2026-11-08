@@ -27,7 +27,7 @@ import { makeNotifier } from "./notify.js";
 import * as intents from "./intents.js";
 import { makeCharts } from "./chartask.js";
 import {
-  normalizeBrief, fallbackBrief, toMin, clock12, minsUntil, usd, andList,
+  normalizeBrief, fallbackBrief, toMin, clock12, clockSpan, minsUntil, usd, andList,
   countdownBar, planBars, dot, prioOf, levelOf, watchText, forecastText, plannerText,
 } from "./agents.js";
 import "./console.css";
@@ -145,6 +145,10 @@ export function mountConsole(H) {
   const notifier = makeNotifier({
     stage: H.stage, nice, brief: () => computeBrief(), nowMin: () => nowMin(), unknown: () => unknownTanks(),
     alerts: () => [...alerts.values()], log,
+    // A plan belongs to an alert only if the plans were read after the console first saw it.
+    plansAt: () => plansAt, seenAt: (id) => alertSeenAt.get(id),
+    // Re-read the forecast and plans for it now: the backend raised it after the fault was in its state.
+    onNew: () => { clearTimeout(newPoll); newPoll = setTimeout(poll, 600); },
     // "show me": the field pane open, the 3D on the failed asset, and the incident open in the chat.
     showMe(a) {
       if (!layout.fieldOpen()) layout.field(true);
@@ -152,11 +156,12 @@ export function mountConsole(H) {
       threads.view(a.root_id && a.root_id !== a.id ? a.root_id : a.id);
       const ids = [a.asset_id, a.consequence_asset_id].filter((x) => H.hasId(x));
       if (ids.length) { view().focus(ids[0]); highlight.flash("jarvis", ids, 8000); }
-      requestAnimationFrame(() => scrollTo("W"));
+      // threads.view scrolls that thread to its newest line (scrollTo("W") could jump to another incident's).
     },
   });
-  const tourAt = new URLSearchParams(location.search).get("tour") === "1" ? Date.now() : 0;
-  let tourDone = !tourAt;
+  let plansAt = 0, newPoll = 0;
+  const alertSeenAt = new Map();               // alert id -> when the console first had it
+  const sawAlert = (id) => { if (id && !alertSeenAt.has(id)) alertSeenAt.set(id, Date.now()); };
 
   const stub = makeViewStub({
     nice, scene: H.scene, hasId: H.hasId, tanks: H.tanks, focus: H.focus, select: H.select, flyHome: H.flyHome,
@@ -183,7 +188,7 @@ export function mountConsole(H) {
 
   // --------------------------------------------------------- helpers ----
   function nowMin() { return toMin(liveFeed.live.clock) ?? toMin(H.clockNow()); }
-  function nowClock() { return liveFeed.live.clock ? clock12(toMin(liveFeed.live.clock)) : H.clockNow(); }
+  function nowClock() { return liveFeed.live.dataset && liveFeed.live.clock ? `${liveFeed.live.clock} utc` : liveFeed.live.clock ? clock12(toMin(liveFeed.live.clock)) : H.clockNow(); }
   function post(path, body, ms = 15000) { return authPost(`${BASE}${path}`, body, ms); }
   async function getJson(path) {
     const r = await fetch(`${BASE}${path}`);
@@ -239,7 +244,7 @@ export function mountConsole(H) {
     if (Date.now() >= briefNext) {
       try {
         const b = normalizeBrief(await getJson("/api/jarvis/brief"));
-        if (b) { brief = b; briefFromServer = true; }
+        if (b) { brief = b; briefFromServer = true; plansAt = Date.now(); }
       } catch (e) {
         briefFromServer = false;
         if (e.status === 404 || e.status === 405) briefNext = Date.now() + BRIEF_RETRY_MS;
@@ -252,7 +257,7 @@ export function mountConsole(H) {
           post("/api/plans", {}).then((r) => (r.ok ? r.json() : null)),
         ]);
         if (f && f.events) fbForecast = f;
-        if (p && p.plans) fbPlans = p;
+        if (p && p.plans) { fbPlans = p; plansAt = Date.now(); }
       } catch { /* keep the last good values; the feed segment says if the backend is down */ }
     }
     agentsTick();
@@ -263,7 +268,7 @@ export function mountConsole(H) {
     try {
       const [a, p] = await Promise.all([getJson("/api/alerts"), getJson("/api/actions")]);
       reach = "ok";
-      for (const x of a.alerts || []) { alerts.set(x.id, x); threads.alert(x); if (!seenPrio.has(x.id)) seenPrio.set(x.id, prioOf(x)); }
+      for (const x of a.alerts || []) { sawAlert(x.id); alerts.set(x.id, x); threads.alert(x); if (!seenPrio.has(x.id)) seenPrio.set(x.id, prioOf(x)); }
       for (const x of p.proposals || []) fix.take(x, true);
       fix.draw();
     } catch {
@@ -366,6 +371,7 @@ export function mountConsole(H) {
     if (!a0) return;
     const prev = alerts.get(a0.id);
     const a = { ...(prev || {}), ...a0 };
+    sawAlert(a.id);
     alerts.set(a.id, a);
     threads.alert(a);
     const ev = m.event || (prev ? "updated" : "raised");
@@ -378,8 +384,7 @@ export function mountConsole(H) {
     const news = ev !== "updated" || becameP1;
     stream.say("W", { text: watchText(a, ev, nice), visual: watchVisual(a), ids: [a.asset_id, a.consequence_asset_id].filter(Boolean), key: a.id, ...(ev === "resolved" ? {} : watchExtra(a)) }, { news, urgent: urgent || becameP1 });
     if (becameP1 && !autoOpened.has(a.id)) { autoOpened.add(a.id); setOpen(true); threads.view(a.id); }
-    // A new incident: re-read the forecast and plans soon, so the card's fix is this incident's.
-    if (notifier.consider(a, ev, becameP1)) setTimeout(poll, 2500);
+    notifier.consider(a, ev, becameP1); // #154: a new root alarm or warning, once per id
     agentsTick();
   }
 
@@ -738,7 +743,7 @@ export function mountConsole(H) {
     else ftext = cd ? cdText : vouchable() ? "no shutdown in 6 h" : "no shutdown forecast · not live";
     const src = b.source === "brief" ? "the live brief" : b.from === "alerts" ? "the backend's live forecast (alerts)" : "the shift forecast (/api/forecast, every 30 s)";
     const forecast = { text: ftext, unknown: unknown.length > 0,
-      title: cd ? `${nice(cd.asset_id)} shuts in at ${clock12(cd.at)}${cd.low != null && cd.high != null ? ` (${clock12(cd.low)} to ${clock12(cd.high)})` : ""}, from ${src}.` : `From ${src}.` };
+      title: cd ? `${nice(cd.asset_id)} shuts in at ${clock12(cd.at)}${cd.low != null && cd.high != null && clockSpan(cd.low, cd.high, clock12, cd.at) ? ` (${clockSpan(cd.low, cd.high, clock12, cd.at)})` : ""}, from ${src}.` : `From ${src}.` };
 
     const plan = b.plans.robust;
     const nothing = !cd && !unknown.length && vouchable();
@@ -757,7 +762,7 @@ export function mountConsole(H) {
         field: H.data().field, view: H.liveView(), unknown, nice: H.nice, down: alertsDown(),
         alerts: { n: roots.length, rel: act.length - roots.length, red: roots.length > 0 && red, amber: roots.length > 0 && amber },
         countdown: cd, left, src, vouch: vouchable() && !unknown.length,
-        asOf: liveFeed.live.available ? null : H.clockAt(0),
+        asOf: liveFeed.live.available ? null : H.clockAt(0), inSystem: H.inSystem,
       });
     }
   }
@@ -766,7 +771,7 @@ export function mountConsole(H) {
   liveFeed.on("alert", onAlert);
   liveFeed.on("proposal", (m) => { if (m.proposal) { const isNew = !fix.has(m.proposal.id); fix.take(m.proposal); if (isNew && m.proposal.status === "PENDING" && !open) unread = true; } });
   liveFeed.on("ui", (m) => { if (H.ready()) directives.apply({ ...m, type: "ui" }, { echo: true }); }); // not before the field is in
-  liveFeed.on("brief", (m) => { const b = normalizeBrief(m); if (b) { brief = b; briefFromServer = true; agentsTick(); } });
+  liveFeed.on("brief", (m) => { const b = normalizeBrief(m); if (b) { brief = b; briefFromServer = true; plansAt = Date.now(); agentsTick(); } });
   liveFeed.on("feed", (L) => { if (L && L.connected) refresh(); agentsTick(); });
   liveFeed.on("state", () => agentsTick());
 
@@ -804,12 +809,9 @@ export function mountConsole(H) {
       if (now - lastTick > 1000) {
         lastTick = now;
         agentsTick();
+        // #154: a new incident in /api/state notifies too (the demo's, or an EOG dataset's top alert).
+        if (started) notifier.incident((H.data() && H.data().state && H.data().state.incident) || null);
         notifier.tick();
-        // ?tour=1 (the judge tour): show the current top alert once it is in, after a beat.
-        if (!tourDone && started && Date.now() - tourAt > 1500) {
-          const a = notifier.top();
-          if (a) { tourDone = true; notifier.show(a, { via: "tour" }); } else if (Date.now() - tourAt > 20000) tourDone = true;
-        }
       }
     },
     reset() { const s = resetView(); if (s) say(s); },
@@ -827,7 +829,8 @@ export function mountConsole(H) {
     camera: () => (H.controls && H.controls.target ? H.controls.target.toArray().map((x) => +x.toFixed(2)) : null),
     notify: () => notifier.state(),
   };
-  // #154, for the judge tour: gaiaNotify() shows the current top alert; gaiaNotify(alert or id) a given one.
+  // #154, for the judge tour (#158 calls it): gaiaNotify() shows the current top alert;
+  // gaiaNotify(alert or id) a given one. A new one also goes to the judge's phone (gaiaPhone).
   window.gaiaNotify = (x) => {
     const a = x == null ? notifier.top() : typeof x === "string" ? alerts.get(x) : x && x.id && alerts.has(x.id) ? { ...alerts.get(x.id), ...x } : x;
     return a ? notifier.show(a, { via: "api" }) : { shown: false, reason: "no active alert" };

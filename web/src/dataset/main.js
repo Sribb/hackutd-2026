@@ -319,7 +319,12 @@ function alertCard(a, rank) {
   if (a.category === "pump_failure") {
     // The backend's trips_at is null when the repair comes first, even with an hours_to_limit.
     const when = a.tripsAt !== null ? fmtTime(a.tripsAt) : null;
-    const range = a.hoursP10 !== null && a.hoursP90 !== null ? ` <span class="ds-range">(${durationText(a.hoursP10)} to ${durationText(a.hoursP90)})</span>` : "";
+    // p10 to p90; one value when they print the same (EOG data often has p10 = p90), and none
+    // when that value is the "in ..." already shown.
+    const p10 = a.hoursP10 !== null ? durationText(a.hoursP10) : null, p90 = a.hoursP90 !== null ? durationText(a.hoursP90) : null;
+    const inText = a.tripsAt !== null ? durationText(Math.max(0, a.tripsAt - state.at) / 3600) : null;
+    const band = p10 === null || p90 === null ? "" : p10 !== p90 ? `${p10} to ${p90}` : p10 !== inText ? p10 : "";
+    const range = band ? ` <span class="ds-range">(${band})</span>` : "";
     body += a.tripped
       ? `<div class="ds-count-big"><span class="kicker">Tank at shutdown</span><b>Wells shut in</b><span>${a.tripsAt !== null ? `since ${esc(fmtTime(a.tripsAt))} UTC, ` : ""}until the repair${a.repairEnd ? ` at ${esc(fmtTime(a.repairEnd))} UTC` : ""}</span></div>`
       : a.tripsAt !== null
@@ -411,7 +416,7 @@ function renderMap() {
       const pump = L(f.pump.id, "status");
       const worst = al.find((a) => a.category === "pump_failure") || al[0];
       const tone = worst ? categoryOf(worst.category).tone : pump === 2 || (level !== null && level >= lim.shutdown) ? "alarm" : level !== null && level >= lim.warning ? "warning" : "";
-      const flag = worst ? categoryOf(worst.category).short : pump === 2 ? "FAULT" : "";
+      const flag = worst ? categoryOf(worst.category).short : pump === 2 ? "fault" : "";
       const sel = state.selected && (state.selected.id === f.id || al.some((a) => a.id === state.selected.id)) ? " on" : "";
       const n = f.wells.length;
       let g = `<g class="fac ${tone}${sel}" data-fac="${esc(f.id)}" tabindex="0" role="button" aria-label="${esc(f.id)}">`;
@@ -428,7 +433,7 @@ function renderMap() {
       g += `<rect class="tank" x="${tx}" y="${ty}" width="${tw}" height="${th}"/>`;
       if (level !== null) g += `<rect class="tank-fill" x="${tx}" y="${ty + th - fill}" width="${tw}" height="${fill}"/>`;
       for (const v of [lim.warning, lim.shutdown]) g += `<line class="tank-tick" x1="${tx - 2}" x2="${tx + tw + 2}" y1="${ty + th - (v / 100) * th}" y2="${ty + th - (v / 100) * th}"/>`;
-      g += `<circle class="pump s${pump ?? "x"}" cx="${fx + 11}" cy="${fy + 9}" r="4"><title>${esc(f.pump.id)} ${pump === 1 ? "running" : pump === 0 ? "stopped" : pump === 2 ? "FAULT" : "no reading"}</title></circle>`;
+      g += `<circle class="pump s${pump ?? "x"}" cx="${fx + 11}" cy="${fy + 9}" r="4"><title>${esc(f.pump.id)} ${pump === 1 ? "running" : pump === 0 ? "stopped" : pump === 2 ? "fault" : "no reading"}</title></circle>`;
       const short = f.id.replace(/^.*FACILITY_/, "");
       const lx = fx + (fx > W - 80 ? -16 : 16), anchor = fx > W - 80 ? "end" : "start";
       g += `<text class="fac-name" x="${lx}" y="${fy - 4}" text-anchor="${anchor}">${esc(short)}${flag ? ` · ${esc(flag)}` : ""}</text>`;
@@ -490,7 +495,7 @@ function tipFor(id) {
   if (!a) return id;
   const L = (m) => state.store.latest(id, m, state.at);
   if (a.kind === "tank") { const v = L("level_pct"); return `${id} · ${v === null ? "no reading" : v.toFixed(1) + "%"}`; }
-  if (a.kind === "pump") { const s = L("status"), f = L("flow_bpd"); return `${id} · ${s === 1 ? "running" : s === 2 ? "FAULT" : s === 0 ? "stopped" : "no reading"}${f !== null ? ` · ${Math.round(f)} bbl/d` : ""}`; }
+  if (a.kind === "pump") { const s = L("status"), f = L("flow_bpd"); return `${id} · ${s === 1 ? "running" : s === 2 ? "fault" : s === 0 ? "stopped" : "no reading"}${f !== null ? ` · ${Math.round(f)} bbl/d` : ""}`; }
   if (a.kind === "well") { const s = L("status"), w = L("water_bpd"); return `${id} · ${s === 0 ? "shut in" : s === 1 ? "producing" : "no reading"}${w !== null ? ` · ${Math.round(w)} bbl/d water` : ""}`; }
   if (a.kind === "pipeline") { const r = L("receive_flow_bpd"), p = L("pressure_psi"); return `${id} · ${r === null ? "no reading" : Math.round(r) + " bbl/d arriving"}${p !== null ? ` · ${Math.round(p)} psi` : ""}`; }
   return id;
@@ -674,7 +679,7 @@ function traces(f, alert) {
       { name: "pipeline at disposal", points: R(f.pipeline.id, "pressure_psi") }] });
     add({ title: "Pump state", unit: "0 stopped · 1 running · 2 fault", height: 70, step: true, yMin: 0, yMax: 2,
       series: [{ name: f.pump.id, points: R(f.pump.id, "status") }],
-      format: (v) => (v === 1 ? "running" : v === 2 ? "FAULT" : "stopped") });
+      format: (v) => (v === 1 ? "running" : v === 2 ? "fault" : "stopped") });
     pickedCharts(f, wrap, add, R);
   });
   return wrap;

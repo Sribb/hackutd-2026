@@ -39,6 +39,14 @@ export function minsUntil(at, now) {
   return d;
 }
 const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+// A time range as words: "2:40 to 2:56 AM". When both ends print the same time (EOG data often
+// has p10 = p50 = p90) it is that one time, and nothing at all when it is `main`, the time
+// already said ("at 11:57 AM", not "at 11:57 AM (11:57 AM to 11:57 AM)").
+export function clockSpan(lo, hi, fmt = clock12, main = null) {
+  const a = fmt(lo), b = fmt(hi);
+  if (a === b) return a === (main == null ? null : fmt(main)) ? "" : a;
+  return `${a} to ${b}`;
+}
 export const andList = (xs) => (xs.length < 2 ? xs.join("") : `${xs.slice(0, -1).join(", ")} and ${xs[xs.length - 1]}`);
 
 // ------------------------------------------------------------- brief ----
@@ -160,7 +168,9 @@ export function forecastText(cd, nowMin, unknown, feedLost, nice, fromAlerts) {
   if (!cd) {
     return short(`${blind}${fromAlerts ? "No live alert leads to a shutdown in the next 6 hours." : `No tank${unknown.length ? " with a reading" : ""} reaches shutdown in the next 6 hours if nothing changes.`}`);
   }
-  const band = cd.low != null && cd.high != null ? ` (${clock12(cd.low).replace(/ [AP]M$/, "")} to ${clock12(cd.high)})` : "";
+  const span = cd.low != null && cd.high != null ? clockSpan(cd.low, cd.high, clock12, cd.at) : "";
+  // "2:40 to 2:56 AM": the first time drops its AM/PM when both share it.
+  const band = span ? ` (${span.replace(/^(\d{1,2}:\d{2}) ([AP]M) to (.+ \2)$/, "$1 to $3")})` : "";
   const left = minsUntil(cd.at, nowMin);
   const when = left != null && left <= 0 ? `is at shutdown now (forecast ${clock12(cd.at)})` : `shuts in at ${clock12(cd.at)}${band} if nobody acts`;
   return short(`${blind}${nice(cd.asset_id)} ${when}.${cd.wells ? ` ${plural(cd.wells, "well")} go${cd.wells === 1 ? "es" : ""} down.` : ""}`, 180);

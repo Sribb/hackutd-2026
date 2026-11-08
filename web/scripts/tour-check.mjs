@@ -33,7 +33,8 @@ const page = await browser.newPage({ viewport: { width: W, height: H }, reducedM
 const errors = [];
 page.on("pageerror", (e) => errors.push(String(e.message || e)));
 const posts = [];
-page.on("response", (r) => { if (r.request().method() === "POST" && /\/api\/(live\/faults|actions|eog\/clock|plans\/[^/]+\/approve)/.test(r.url())) posts.push({ path: new URL(r.url()).pathname, status: r.status() }); });
+const t0 = Date.now();
+page.on("response", (r) => { if (r.request().method() === "POST" && /\/api\/(live\/faults|actions|eog\/clock|plans\/[^/]+\/approve)/.test(r.url())) posts.push({ path: new URL(r.url()).pathname, status: r.status(), ms: Date.now() - t0 }); });
 if (STUB) await page.addInitScript(() => { window.gaiaNotify = (a) => { (window.__notifyCalls = window.__notifyCalls || []).push(a && a.id); }; });
 
 const geo = () => page.evaluate(() => {
@@ -50,7 +51,7 @@ const geo = () => page.evaluate(() => {
   return {
     step: window.__tour.step(), title: card.querySelector(".gt-title").textContent, body: card.querySelector(".gt-body").textContent.replace(/\s+/g, " ").trim(),
     extra: card.querySelector(".gt-extra").textContent.replace(/\s+/g, " ").trim(), pill: card.classList.contains("pill"),
-    hitTimebar: hit(r, lay) || (vis.right > vis.left && vis.bottom > vis.top && hit(r, vis)), hitDock: hit(r, box(".cs-dock")), hitAsk: hit(r, box("#csAsk")), hitNotify: hit(r, box("#gaiaNotify:not([hidden])")),
+    hitTimebar: hit(r, lay) || (vis.right > vis.left && vis.bottom > vis.top && hit(r, vis)), hitDock: hit(r, box(".cs-dock")), hitAsk: hit(r, box("#csAsk")), hitNotify: hit(r, box("#gaiaNotify:not([hidden])")), hitStrip: getComputedStyle(document.querySelector(".gm-strip") || document.body).display !== "none" && hit(r, box(".gm-strip")),
     inView: r.left >= 0 && r.top >= 0 && r.right <= innerWidth && r.bottom <= innerHeight, visible: getComputedStyle(card).opacity !== "0" || card.classList.contains("in"),
     overflowX: document.documentElement.scrollWidth > innerWidth, rings: [...document.querySelectorAll(".gt-ring:not([hidden])")].length,
     dashes: /[\u2013\u2014]/.test(card.textContent)
@@ -64,6 +65,7 @@ async function placed(label) {
   check(!g.hitTimebar, `${label}: card clear of the time bar`);
   check(!g.hitDock && !g.hitAsk, `${label}: card clear of the composer`);
   check(!g.hitNotify, `${label}: card clear of the alert notification`);
+  check(!g.hitStrip, `${label}: card clear of the monitoring strip`);
   check(g.inView, `${label}: card inside the window`);
   check(!g.overflowX, `${label}: no sideways scroll`);
   check(!g.dashes, `${label}: no em or en dashes`);
@@ -128,6 +130,14 @@ try {
     await placed("3 gaia (answered)");
   }
 
+  // Count how many times #154's notification card slides in (a double alert would be two).
+  await page.evaluate(() => {
+    window.__shows = 0;
+    let was = true;
+    new MutationObserver(() => { const c = document.querySelector("#gaiaNotify"); const on = !!c && !c.hidden; if (on && !was) window.__shows++; was = on; })
+      .observe(document.body, { subtree: true, attributes: true, attributeFilter: ["hidden"], childList: true });
+    const c = document.querySelector("#gaiaNotify"); was = !!c && !c.hidden;
+  });
   await next(); await waitStep("alarm");
   if (DATASET && !LAYOUT) {
     await bodyHas("real week from eog", 20000);
@@ -139,7 +149,14 @@ try {
     const clk = posts.filter((x) => x.path === "/api/eog/clock");
     check(clk.length === 1 && clk[0].status === 200, `4 alarm (dataset): one POST /api/eog/clock, 200 (${JSON.stringify(clk)})`);
     check(!posts.some((x) => x.path === "/api/live/faults"), "4 alarm (dataset): nothing tripped live");
-    check(await page.evaluate(() => typeof window.gaiaNotify !== "function" || window.__tour.notified[0].via === "gaiaNotify"), "4 alarm (dataset): gaiaNotify used when it exists");
+    const nt = await page.evaluate(() => ({ via: window.__tour.notified[0].via, at: window.__tour.notified[0].at, n: window.__console.notify ? window.__console.notify() : null, now: Date.now() }));
+    const clockAt = clk[0] && clk[0].ms;
+    const alarmAt = nt.at - (nt.now - (Date.now() - t0));
+    log(`     clock POST at +${(clockAt / 1000).toFixed(1)} s, alarm on screen at +${(alarmAt / 1000).toFixed(1)} s (${((alarmAt - clockAt) / 1000).toFixed(1)} s after), shown by ${nt.via}; notifier ${JSON.stringify(nt.n && { shown: nt.n.shown, id: nt.n.id, seen: nt.n.seen })}`);
+    check(alarmAt > clockAt, "4 alarm (dataset): the alarm arrived after the clock POST");
+    await page.waitForTimeout(2000);
+    const shows = await page.evaluate(() => window.__shows);
+    check(shows === 1, `4 alarm (dataset): the big notification slid in once, not twice (${shows})`);
     log("     card:", g.body.slice(0, 200));
   } else if (!LAYOUT) {
     await bodyHas("tripped|raised it", 30000);
@@ -147,7 +164,7 @@ try {
     const n = await page.evaluate(() => window.__tour.notified.slice());
     check(n.length >= 1, `4 alarm: an incident (${JSON.stringify(n)})`);
     if (STUB) check(await page.evaluate(() => (window.__notifyCalls || []).length === 1), "4 alarm: window.gaiaNotify(alert) was called once");
-    else if (await page.evaluate(() => typeof window.gaiaNotify === "function")) check(n[0].via === "gaiaNotify" && await page.evaluate(() => !!document.querySelector("#gaiaNotify")), "4 alarm: #154's gaiaNotify showed the alert");
+    else if (await page.evaluate(() => typeof window.gaiaNotify === "function")) check(["console", "gaiaNotify"].includes(n[0].via) && await page.evaluate(() => !!document.querySelector("#gaiaNotify")), `4 alarm: #154's notification showed the alert (via ${n[0].via})`);
     else check(await page.evaluate((id) => window.__console.thread() === id, n[0] && n[0].id), "4 alarm: no gaiaNotify, so the incident opened in the chat");
     log("     fault and action posts so far:", JSON.stringify(posts));
   } else await placed("4 alarm");

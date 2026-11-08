@@ -31,7 +31,7 @@ export function mountJarvis(h) {
   const btn = document.createElement("button");
   btn.id = "jarvisBtn";
   btn.className = "jarvis-btn";
-  btn.textContent = "Jarvis";
+  btn.textContent = "gaia";
   h.stage.appendChild(btn);
   const panel = document.createElement("section");
   panel.id = "jarvis";
@@ -102,7 +102,7 @@ function onSocket(msg) {
 
 async function ask(message, ids, withView = false) {
   if (!message.trim() || busy) return;
-  if (!BASE) { chat.push({ who: "note", text: "Jarvis needs the backend. Start it and set VITE_API." }); draw(); return; }
+  if (!BASE) { chat.push({ who: "note", text: "gaia needs the backend. Start it and set VITE_API." }); draw(); return; }
   const selected = ids || (hooks.selected() ? [hooks.selected()] : []);
   chat.push({ who: "you", text: message, about: selected });
   busy = true;
@@ -115,7 +115,7 @@ async function ask(message, ids, withView = false) {
     for (const u of r.ui || []) if (u.action === "focus" && u.asset_id) hooks.focus(u.asset_id);
     for (const p of r.proposals || []) proposals.set(p.id, p);
   } catch (e) {
-    chat.push({ who: "note", text: e.status === 503 ? `Jarvis can't answer that here: ${e.message}` : e.message });
+    chat.push({ who: "note", text: e.status === 503 ? `gaia can't answer that here: ${e.message}` : e.message });
   } finally {
     busy = false;
     draw();
@@ -157,11 +157,11 @@ function draw() {
   const typed = $("jvIn") ? $("jvIn").value : "";
   const typing = document.activeElement === $("jvIn");
   $("jarvis").innerHTML = `
-    <header class="jv-head"><b>Jarvis</b><span class="muted">${!BASE ? "no backend" : liveFeed.live.connected ? "live" : liveFeed.live.lostSince ? "feed lost" : "connecting"}</span><button id="jvClose">Close</button></header>
+    <header class="jv-head"><b>gaia</b><span class="muted">${!BASE ? "no backend" : liveFeed.live.connected ? "live" : liveFeed.live.lostSince ? "feed lost" : "connecting"}</span><button id="jvClose">Close</button></header>
     ${live.length ? `<div class="jv-alerts">${live.map((a) => `<div class="jv-alert ${a.severity}" data-id="${esc(a.asset_id)}"><span class="status ${a.severity}"><i></i>${esc(a.kind.replace(/_/g, " "))}</span> ${esc(a.message)}</div>`).join("")}</div>` : ""}
-    <ol class="jv-chat" id="jvChat">${chat.map((m, i) => `<li class="m-${m.who}">${m.who === "you" ? "<b>You</b>" : m.who === "jarvis" ? `<b>Jarvis</b>${m.source ? ` <span class="muted">${esc(m.source)}</span>` : ""}` : ""}
+    <ol class="jv-chat" id="jvChat">${chat.map((m, i) => `<li class="m-${m.who}">${m.who === "you" ? "<b>You</b>" : m.who === "jarvis" ? `<b>gaia</b>${m.source ? ` <span class="muted">${esc(m.source)}</span>` : ""}` : ""}
         <p ${m.who === "jarvis" && i === chat.length - 1 ? `data-decode="jv${i}"` : ""}>${esc(m.text)}</p></li>`).join("")}
-      ${busy ? `<li class="m-jarvis"><b>Jarvis</b><p class="jv-wait">reading the field</p></li>` : ""}
+      ${busy ? `<li class="m-jarvis"><b>gaia</b><p class="jv-wait">reading the field</p></li>` : ""}
       ${!chat.length && !busy ? `<li class="m-note"><p>Ask about the field. "Why is Tank 3 rising?" Select or pinch an asset to ask about it.</p></li>` : ""}</ol>
     ${pend.length ? `<div class="jv-props"><div class="kicker">Proposed fixes</div>${pend.map((p) => `
       <div class="jv-prop ${p.status}">
@@ -172,7 +172,7 @@ function draw() {
       </div>`).join("")}</div>` : ""}
     <form id="jvForm" class="jv-form">
       ${sel ? `<span class="jv-chip">${esc(sel)}</span>` : ""}
-      <input id="jvIn" placeholder="${sel ? `Ask about ${esc(nice(sel))}` : "Ask Jarvis"}" autocomplete="off" ${busy ? "disabled" : ""}>
+      <input id="jvIn" placeholder="${sel ? `Ask about ${esc(nice(sel))}` : "Ask gaia"}" autocomplete="off" ${busy ? "disabled" : ""}>
       <button type="button" id="jvView" title="Send a picture of the 3D view with the question">What am I looking at</button>
     </form>`;
   $("jvIn").value = typed;
