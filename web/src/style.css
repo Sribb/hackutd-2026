@@ -453,3 +453,12 @@ body.two-nights .sky-ctl { display: none; }
 .tank-row .pct .age { display: block; margin-left: 0; font-size: 9px; line-height: 1.2; }
 .tank-row { grid-template-columns: 56px 1fr 64px; }
 .tank-row .pct.stale { color: var(--muted); text-decoration: line-through; text-decoration-color: var(--warning); }
+
+/* ---- Storm check (weather.js) ---- */
+.wx { font-size: 12px; color: var(--ink-2); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; margin: 0 0 10px; line-height: 1.45; }
+.wx .wx-k { font: 600 10px var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--muted); margin-right: 4px; }
+.wx.hot { border-color: var(--warning); color: var(--ink); }
+.wx.hot .wx-k { color: var(--warning); }
+.wx .wx-pick { margin-top: 6px; color: var(--warning); font-weight: 600; }
+.stamp.who { color: var(--muted); }
+.stamp.who.safe { color: var(--good); }

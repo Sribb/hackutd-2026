@@ -5,7 +5,8 @@ import * as THREE from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { MeshoptDecoder } from "three/addons/libs/meshopt_decoder.module.js";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
-import { mountSky } from "./sky.js";
+import { mountSky, DEFAULT_SITE } from "./sky.js";
+import { startWeather, onWeather, hazards, exposure, remoteOnly, summary as wxSummary } from "./weather.js";
 import * as api from "./api.js";
 import { phoneToken } from "./auth.js";
 import { buildPlaceholder } from "./placeholder.js";
@@ -633,17 +634,62 @@ function renderPlans() {
   const list = (data.plans && data.plans.plans) || [];
   if (!list.length) { box.hidden = true; return; }
   box.hidden = false;
-  box.innerHTML = `<div class="kicker">Cheapest plans</div>` + list.map((p, i) => {
+  // Storm check (weather.js): who each plan sends outside, weighed against the real weather.
+  const hz = hazards();
+  const safe = hz.length ? remoteOnly(list, field) : null;
+  const wx = `<div class="wx ${hz.length ? "hot" : ""}" title="${esc(hz.map((h) => h.why).join(" "))}"><span class="wx-k">Storm check</span> ${esc(wxSummary())}
+    ${hz.length ? `<div class="wx-pick">${safe ? `Keeps everyone inside: plan ${safe.i + 1} (${usd(safe.p.cost.total_usd)}), remote only.`
+      : storm && storm.plan ? `Keeps everyone inside: ${esc(storm.plan.summary)} ${usd(storm.plan.cost.total_usd)}, checked with the forecast${data.baseline && data.baseline.cost ? ` (doing nothing: ${usd(data.baseline.cost.total_usd)})` : ""}. <button class="link" data-storm>Try it</button>`
+      : storm && storm.busy ? "Looking for a plan that keeps everyone inside…"
+      : storm && storm.none ? `No remote-only fix keeps every tank below shutdown (${esc(storm.none)}). Weigh the shutdown against sending people out.`
+      : "No plan on the list keeps everyone inside. Weigh the shutdown against sending people out."}</div>` : ""}</div>`;
+  box.innerHTML = `<div class="kicker">Cheapest plans</div>${wx}` + list.map((p, i) => {
     const stamp = p.expires_clock ? `Start by ${p.expires_clock}${p.robust === false ? " · fails if inflow runs 15% hot" : ""}` : "";
+    const out = exposure(p, field);
+    const who = out.length ? `Sends ${out.length} out: ${out.map((o) => `${o.who} (${nice(o.asset_id)})`).join(", ")}` : "Remote only: nobody goes out";
+    const risky = hz.length && out.length;
     return `<div class="plan">
       <div class="plan-top"><span class="rank">${i + 1}</span><span class="sum">${esc(p.summary)}</span><b>${usd(p.cost.total_usd)}</b></div>
       ${stamp ? `<div class="stamp ${p.robust === false ? "fragile" : ""}">${stamp}</div>` : ""}
       ${p.keeps_running === false ? `<div class="stamp fragile">Can't save: ${(p.cannot_save || []).map(nice).join(", ")}</div>` : ""}
-      <div class="plan-btns"><button data-try="${i}">Try it</button><button class="primary hold" data-approve="${i}" title="Press and hold to approve"><i></i><span>Hold to approve</span></button></div>
+      <div class="stamp who ${risky ? "fragile" : hz.length ? "safe" : ""}">${esc(who)}${risky ? ` · in ${esc(hz.map((h) => h.key).join(", "))}` : ""}</div>
+      <div class="plan-btns"><button data-try="${i}">Try it</button><button class="primary hold" data-approve="${i}" title="Press and hold to approve"><i></i><span>${risky ? `Hold to approve · ${out.length} out` : "Hold to approve"}</span></button></div>
     </div>`;
   }).join("");
   box.querySelectorAll("[data-try]").forEach((b) => { b.onclick = () => setActions(list[Number(b.dataset.try)].actions.map((a) => ({ ...a }))); });
+  const sb = box.querySelector("[data-storm]");
+  if (sb) sb.onclick = () => setActions(storm.plan.actions.map((a) => ({ ...a })));
+  if (hz.length && !safe && !storm) findStormPlan();
   box.querySelectorAll("[data-approve]").forEach((b) => holdButton(b, () => startWalk(list[Number(b.dataset.approve)])));
+}
+
+// When the weather makes on-site work risky and no listed plan is remote only, look for one
+// with the real forecast: shut in the threatened tank's wells from the console, the most water
+// per dollar of lost oil first, until no tank reaches shutdown. Only against a live forecast:
+// fake data would make up the answer. A what-if, not an approval: the planner owns approvals.
+let storm = null; // { busy } | { plan } | { none: why }
+async function findStormPlan() {
+  if (storm) return;
+  storm = { busy: true };
+  const done = (x) => { storm = x; renderPlans(); };
+  if (api.sources.forecast !== "live") return done({ none: "needs the live forecast" });
+  const tank = incidentTank();
+  const wells = (field.wells || []).filter((w) => w.tank_id === tank)
+    .sort((a, b) => b.water_bbl_hr / (b.lost_usd_hr || 1) - a.water_bbl_hr / (a.lost_usd_hr || 1));
+  const at = lead("CHOKE_WELL");
+  for (let k = 1; k <= wells.length; k++) {
+    for (const value of [0.5, 0]) {
+      const acts = wells.slice(0, k).map((w) => ({ type: "CHOKE_WELL", asset_id: w.id, value, at_min: at }));
+      let f;
+      try { f = await api.forecast(acts); } catch { return done({ none: "the forecast didn't answer" }); }
+      if (f.unknown) return done({ none: "the forecast didn't answer" });
+      if (!shutdownOf(f)) {
+        const names = andList(wells.slice(0, k).map((w) => nice(w.id)));
+        return done({ plan: { summary: `${value === 0 ? "Shut in" : "Choke to 50%"} ${names} from the console. Every tank stays below shutdown.`, actions: acts, cost: f.cost || { total_usd: 0 } } });
+      }
+    }
+  }
+  done({ none: `even shutting in every well on ${nice(tank || "the tank")} isn't enough` });
 }
 
 function renderWalk() {
@@ -891,6 +937,12 @@ function handoffText() {
   const now = shutdownOf(fc);
   L.push(`  On screen${actions.length ? ` (with ${actions.map(describe).join(" + ")})` : ""}: ${now ? `${nice(now.asset_id)} reaches shutdown at ${clockAt(now.t_min)}.` : noShutdownText(blindTanks())}`);
 
+  L.push(`  Weather: ${wxSummary()}`);
+  if (approved && hazards().length) {
+    const out = exposure(approved.plan, field);
+    if (out.length) L.push(`  The approved plan sends ${out.length} out (${out.map((o) => `${o.who}, ${nice(o.asset_id)}`).join("; ")}) in ${hazards().map((h) => h.text).join(", ")}.`);
+  }
+
   head(6, "WHAT-IFS TRIED");
   const tried = shiftlog.entries().filter((e) => e.kind === "whatif");
   if (!tried.length) L.push("  None.");
@@ -1104,6 +1156,7 @@ async function refreshData() {
     try {
       const [state, baseline, lc, plans] = await Promise.all([api.getState(), api.forecast([]), api.lastCall(), api.plans()]);
       Object.assign(data, { state, baseline, lc, plans });
+      if (storm && !storm.busy) storm = null; // the field moved: look again with the new forecast
       if (!actions.length && !document.body.classList.contains("two-nights")) fc = baseline;
       dataAt = shiftlog.clockNow();
     } catch (e) {
@@ -1223,6 +1276,15 @@ async function boot() {
   buildFuses();
   inspect.ready(model.root);
   renderAll();
+  // Storm check: the real NWS weather at the site, read in the browser (no key, no backend).
+  let hadHazard = false;
+  onWeather(() => {
+    const hz = hazards();
+    if (hz.length && !hadHazard) { shiftlog.add("alarm", `Storm check: ${hz.map((h) => h.text).join(", ")}. Plans that send people out are flagged.`); renderLog(); }
+    hadHazard = hz.length > 0;
+    if (data) renderPlans();
+  });
+  startWeather(field.site || DEFAULT_SITE, { offline: api.OFFLINE });
   // CF-1 alarm list: all of it lives in alarms.js. These hooks are its only door in.
   mountAlarms($("alarms"), {
     base: api.usingBackend ? api.BASE : "",

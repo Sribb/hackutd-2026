@@ -185,3 +185,24 @@ After the field loads, the console measures its own frame rate. Under 45 fps it 
   - The shutdown line, with the crossing time marked.
   - A what-if moves only the dashed part. Hover any minute to read its level.
 - **Handoff** has six fixed sections: open alarms, shelved alarms, blind sensors, the approved plan, the next deadline, and the what-ifs tried. Tank levels and the full log come after. `window.__freeboard.handoff()` returns the text.
+
+## Storm check (real weather, `src/weather.js`)
+
+The cheapest fix usually sends people out to the tank battery at night: truck drivers to the loadout, and the rover to a manual valve. The Plans card reads the real NWS forecast for the site (`api.weather.gov`, which needs no key, runs in the browser, and caches for 10 min). It checks thunder odds, wind gusts, visibility, and active warnings for the next 4 hours.
+
+- **What each plan shows:** who it sends out ("Sends 3 out: rover at the valve (Valve XO 34), truck driver (Truck 1), …") or "Remote only: nobody goes out". Remote valves (`manual: false`), chokes and pumps count as remote.
+- **When it flags a hazard:**
+  - lightning: a thunderstorm or tornado alert, or thunder odds of 25% or more;
+  - visibility: a dust or fog alert, or under 1 mi;
+  - wind: a wind alert, or gusts of 46 mph or more;
+  - flooding: any flood alert.
+- **When a hazard is flagged:**
+  - Plans that send people out are marked, and their approve button says how many go out.
+  - The card names the cheapest plan that keeps everyone inside. If no listed plan does, it finds one against the live forecast by choking or shutting in the threatened tank's wells from the console, with the most water per dollar of lost oil first. It shows the cost next to doing nothing. "Try it" applies it as a what-if.
+  - The shift log and the handoff record the hazard.
+- **Why it matters:**
+  - Lightning ignites saltwater tanks, and losing one tank can take out the battery.
+  - OSHA/NOAA guidance (OSHA 3863) is to stop outdoor work until 30 min after the last thunder.
+  - NWS Midland tells drivers in blowing dust to pull off and park.
+- **When it can't check:** offline, or with no answer from NWS, it says "Weather not checked. Look outside before sending anyone." It never says clear.
+- **Rehearsal:** `?wx=storm` runs a labeled DRILL, a made-up Severe Thunderstorm Warning.
