@@ -182,6 +182,9 @@ async def post_plans(req: PlansRequest = PlansRequest()) -> dict:
     out = await run_in_threadpool(make_plans, n.scenario, req.horizon_minutes, req.top_n, list(n.actions), n.plant)
     for p in out["plans"]:
         _plans[p["id"]] = p
+    runs = getattr(app.state, "runs", None)
+    if runs is not None and n.source == "live":  # executable by id, planned at this live minute (#63)
+        runs.remember(out["plans"], t=n.t)
     out["clock"], out["clock_source"] = n.plant.start_clock, n.source
     out.setdefault("warnings", [w[:1].upper() + w[1:] for w in dict.fromkeys(n.plant.warnings)])
     return out

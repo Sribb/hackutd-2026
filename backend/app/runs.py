@@ -34,10 +34,19 @@ cancels the run it replaces. Only one re-plan is in flight per run: a problem ra
 while one is running is folded into the next one. A tank reaching shutdown during a run
 fails the run.
 
+The re-plan never leans on what went wrong: the asset of a failed or mismatched step, and
+the asset (and exact action) of a step a person rejected, are excluded for the rest of the
+run and every re-plan after it. When nothing left keeps every tank below shutdown, the
+offer says so plainly ("Without Truck 1, no plan keeps Tank 3 below shutdown; the best
+remaining plan delays it to 3:10 AM.") instead of offering the rejected asset again.
+
 Before a run starts, its plan is scored again on the live state (clock, levels, what's
 already been applied, trucks on the road). If its first step's lead time has passed, a
 step can't apply any more, or it no longer keeps every tank below shutdown, the start is
-refused with 409, offering the current cheapest robust plan.
+refused with 409, offering the current cheapest robust plan. An offered re-plan is
+instead re-timed when it is resumed: its steps keep the clock times they had when it was
+offered (`offered_t`), overdue ones go out now, and it starts if that still keeps every
+tank below shutdown; only otherwise is it refused with 409.
 
 Cancel never cuts off a step whose proposal is SENDING (a person confirmed it and the
 command is on its way): the run is CANCELLING, releases nothing more, and becomes
@@ -86,6 +95,21 @@ def cap(text: str) -> str:
     return text[:1].upper() + text[1:]
 
 
+def same_action(a: dict, b: dict) -> bool:
+    """The same command: type, asset, value, and target (timing aside)."""
+    return all(str(a.get(k) or "").upper() == str(b.get(k) or "").upper()
+               for k in ("type", "asset_id", "value", "target_id"))
+
+
+def repeats(plan: dict, rejected: list[dict]) -> bool:
+    """True when the plan contains an action a person already rejected."""
+    return any(same_action(a, r) for a in plan.get("actions", []) for r in rejected)
+
+
+def and_list(items: list[str]) -> str:
+    return items[0] if len(items) == 1 else ", ".join(items[:-1]) + " and " + items[-1]
+
+
 def pick_plan(plans: list[dict], exclude: set = frozenset()) -> Optional[dict]:
     """The rules pick, from plans cheapest first: the first that keeps every tank running
     and holds with inflow 15% high, else the first that keeps them running, else the
@@ -118,11 +142,13 @@ class RunManager:
         live.listeners.append(self._on_event)
 
     # ---------- plans ----------
-    def remember(self, plans: list[dict]) -> None:
-        """Keep plans computed from the live state now, so their ids can be executed."""
+    def remember(self, plans: list[dict], t: Optional[float] = None) -> None:
+        """Keep plans computed from the live state at live minute `t` (default now), so
+        their ids can be executed. POST /api/plans plans from the live clock (#42), so
+        main.py remembers its results here too."""
         for p in plans:
             self.plans[p["id"]] = p
-            self._origin[p["id"]] = self.live.t
+            self._origin[p["id"]] = self.live.t if t is None else float(t)
 
     def origin_of(self, plan_id: Optional[str]) -> float:
         """The live minute a plan was planned at: when it was remembered; minute 0 (the
@@ -236,15 +262,17 @@ class RunManager:
         acts = [dict(a) for a in plan.get("actions", [])]
         return self._score(plant, sc, pre, acts, note)
 
-    async def check_fresh(self, plan: dict, origin_t: float) -> None:
+    async def check_fresh(self, plan: dict, origin_t: float, exclude: set = frozenset(),
+                          rejected: list = ()) -> Optional[dict]:
         """Refuse (409) a plan the live field has moved past: its first step's lead time
         has passed, a step can't apply any more, or it no longer keeps every tank below
         shutdown. The 409 offers the current cheapest robust plan (`plan`, executable by
-        its id)."""
+        its id) that avoids `exclude` and the `rejected` actions. Returns the plan as
+        scored from the live state now (None when it wasn't scored)."""
         live, acts = self.live, plan.get("actions", [])
         if not acts:
-            return
-        why = None
+            return None
+        why, now = None, None
         first = min(float(a.get("at_min", 0) or 0) for a in acts)
         if live.t - origin_t > first + STALE_GRACE_MIN + 1e-9:
             why = (f"it was planned at {live.fmap.clock_text(origin_t)}, its first step was due by "
@@ -256,9 +284,9 @@ class RunManager:
             elif plan.get("keeps_running", True) and not now["keeps_running"]:
                 why = f"from the live state it no longer keeps every tank below shutdown. {now['summary']}"
         if why is None:
-            return
-        exclude = self.exclusions()
-        plans = await self.candidates(exclude)
+            return now
+        exclude = set(exclude) | self.exclusions()
+        plans = [p for p in await self.candidates(exclude) if not repeats(p, list(rejected))]
         offer = pick_plan(plans, exclude)
         msg = f"Plan {plan.get('id')} is out of date: {why}"
         if offer is None:
@@ -292,14 +320,17 @@ class RunManager:
     # ---------- start a run ----------
     async def execute(self, plan: dict, source: str = "console", by: str = "", start: bool = True,
                       replaces: Optional[str] = None, excluded: set = frozenset(), note: str = "",
-                      origin_t: Optional[float] = None) -> dict:
+                      origin_t: Optional[float] = None, rejected: list = ()) -> dict:
         """POST /api/plans/{id}/execute. 409 if another run is RUNNING or the plan is out of
         date (check_fresh); 422 if a step can't apply to this field. A run with start=False
-        is an offered re-plan (PAUSED). `source` is one of SOURCES."""
+        is an offered re-plan (PAUSED), stale only from when it was offered (`offered_t`).
+        `rejected` are actions a person already said no to. `source` is one of SOURCES."""
         if start and self.running():
             r = self.running()
             raise ActionError(409, f"{r['id']} is already running. Pause or cancel it first.")
         origin = self.origin_of(plan.get("id")) if origin_t is None else origin_t
+        if not start:
+            origin = self.live.t  # an offer goes stale from when it was offered, not planned
         steps = []
         order = sorted(enumerate(plan.get("actions", [])), key=lambda x: (float(x[1].get("at_min", 0) or 0), x[0]))
         for n, (_, a) in enumerate(order, start=1):
@@ -319,7 +350,8 @@ class RunManager:
                "created_t": now_iso(), "created_by": by or None, "started": False, "start_t": None,
                "start_clock": None, "steps": steps, "reason": None, "note": note or None,
                "replaces": replaces, "replan_run_id": None, "replan_source": None,
-               "excluded": sorted(excluded), "alert_id": None, "ended_t": None}
+               "excluded": sorted(excluded), "rejected": [dict(a) for a in rejected],
+               "offered_t": None if start else self.live.t, "alert_id": None, "ended_t": None}
         self.runs[run["id"]] = run
         self._ctx[run["id"]] = {"plant": None, "key": None, "levels": {}, "horizon": 0, "over": {}, "alert": None,
                                 "plan": plan, "origin_t": origin, "jobs": {}, "replanning": False,
@@ -392,9 +424,14 @@ class RunManager:
             raise ActionError(409, f"{other['id']} is already running. Pause or cancel it first.")
         if not run["started"]:
             ctx = self._ctx[run["id"]]
-            await self.check_fresh(ctx["plan"], ctx["origin_t"])
+            plan, origin = ctx["plan"], ctx["origin_t"]
+            if run.get("offered_t") is not None:  # an offer: re-timed to now, then scored
+                plan, origin = self._retimed(run), self.live.t
+            now = await self.check_fresh(plan, origin, exclude=set(run["excluded"]), rejected=run["rejected"])
             if run["status"] != "PAUSED" or self.running():
                 raise ActionError(409, f"{run_id} is {run['status']} and can't start now.")
+            if run.get("offered_t") is not None:
+                self._apply_retime(run, plan, now)
             await self._start(run)
             return run
         run.update(status="RUNNING", reason=None)
@@ -407,6 +444,25 @@ class RunManager:
         await self._finish_if_done(run)
         await self._broadcast(run)
         return run
+
+    def _retimed(self, run: dict) -> dict:
+        """An offered re-plan moved to the live clock: each step keeps the clock time it
+        had when the plan was offered, so its at_min (minutes from the start) shrinks by
+        the live time since then, and an overdue step goes out now (at_min 0)."""
+        elapsed = max(0.0, self.live.t - run["offered_t"])
+        plan = self._ctx[run["id"]]["plan"]
+        acts = [{**a, "at_min": round(max(0.0, float(a.get("at_min", 0) or 0) - elapsed), 3)}
+                for a in plan.get("actions", [])]
+        return {**plan, "actions": acts}
+
+    def _apply_retime(self, run: dict, plan: dict, now: Optional[dict]) -> None:
+        """Start an offer on its re-timed steps (check_fresh found they still work)."""
+        elapsed = max(0.0, self.live.t - run["offered_t"])
+        for s in run["steps"]:  # the shift keeps their order
+            s["at_min"] = round(max(0.0, s["at_min"] - elapsed), 3)
+        self._ctx[run["id"]].update(plan=plan, origin_t=self.live.t)
+        if now is not None and elapsed > 1e-9:
+            run.update(summary=now["summary"], robust=now["robust"], keeps_running=now["keeps_running"])
 
     async def cancel(self, run_id: str, by: str = "") -> dict:
         run = self.get(run_id)
@@ -650,9 +706,17 @@ class RunManager:
                 s["status"] = "CANCELLED"
                 return
             s.update(status="REJECTED", result=f"Rejected by {p.get('decided_by') or 'a person'}.")
-            if run["status"] == "RUNNING":
-                await self._problem(run, s["action"]["asset_id"],
-                                    f"Step {s['n']} ({s['text'][:-1]}) was rejected.", exclude=set())
+            # A person said no: no re-plan of this run (or of its re-plans) uses that asset again.
+            aid = s["action"]["asset_id"]
+            if not any(same_action(s["action"], r) for r in run["rejected"]):
+                run["rejected"].append(dict(s["action"]))
+            offer = self.runs.get(run.get("replan_run_id") or "")
+            stale_offer = (offer is not None and not offer["started"] and offer["status"] == "PAUSED"
+                           and touches(self._ctx[offer["id"]]["plan"], {aid}))
+            if run["status"] == "RUNNING" or stale_offer:
+                await self._problem(run, aid, f"Step {s['n']} ({s['text'][:-1]}) was rejected.", exclude={aid})
+            else:
+                run["excluded"] = sorted(set(run["excluded"]) | {aid})
         elif st == "FAILED":
             s.update(status="FAILED", result=p.get("result"))
             if run["status"] in ACTIVE:
@@ -843,11 +907,12 @@ class RunManager:
             if old and not old["started"] and old["status"] == "PAUSED":
                 await self._cancel(old, f"Superseded by a newer re-plan for {run['id']}.")
             exclude = set(run["excluded"]) | self.exclusions()
-            plans = await self.candidates(exclude)
+            plans = [p for p in await self.candidates(exclude) if not repeats(p, run["rejected"])]
             choice = await self.choose(plans, exclude, why)
+            short = await asyncio.to_thread(self._shortfall, run, exclude, choice["plan"])
         except Exception as e:  # noqa: BLE001 - the pause and alert stand even if planning fails
             log.exception("re-plan for %s failed", run["id"])
-            choice, plans = {"plan": None, "source": "rules", "reason": f"Re-plan failed: {e}"}, []
+            choice, plans, short = {"plan": None, "source": "rules", "reason": f"Re-plan failed: {e}"}, [], ""
         if run["status"] != "PAUSED":
             return  # resumed or cancelled while Jarvis was thinking
         if choice["plan"] is None:
@@ -855,17 +920,48 @@ class RunManager:
             offer = (idle["summary"] if idle else
                      choice.get("reason") or "Jarvis found no plan that avoids the failed equipment.")
             run.update(replan_run_id=None, replan_source=choice["source"])
-            msg = f"{why} {run['id']} is paused. Re-plan: {offer}"
+            msg = f"{why} {run['id']} is paused. Re-plan: {short or offer}"
         else:
             new = await self.execute(choice["plan"], source="replan", start=False, replaces=run["id"],
-                                     excluded=exclude, note=choice.get("reason") or "")
+                                     excluded=exclude, note=choice.get("reason") or "", rejected=run["rejected"])
             run.update(replan_run_id=new["id"], replan_source=choice["source"])
-            msg = (f"{why} {run['id']} is paused. Jarvis offers {new['id']}: {new['summary']} "
-                   f"Resume {new['id']} to start it (each step still waits for a person), or resume {run['id']}.")
+            if short:
+                new["reason"] = f"{short} {new['reason']}"
+            msg = (f"{why} {run['id']} is paused. {short + ' ' if short else ''}Jarvis offers {new['id']}: "
+                   f"{new['summary']} Resume {new['id']} to start it (each step still waits for a person), "
+                   f"or resume {run['id']}.")
         a = self._ctx[run["id"]]["alert"]
         if a and a.get("active"):
             await self._alert(run, a["asset_id"], "RUN_PAUSED", msg)
         await self._broadcast(run)
+
+    def _shortfall(self, run: dict, exclude: set, plan: Optional[dict]) -> str:
+        """'' when the re-plan keeps every tank below shutdown (or nothing is needed). Else
+        the plain sentence: "Without Truck 1, no plan keeps Tank 3 below shutdown; the best
+        remaining plan delays it to 3:10 AM." It never points back at an excluded asset."""
+        if plan is not None and plan.get("keeps_running"):
+            return ""
+        live = self.live
+        sc = self.planning_scenario(exclude)
+        plant, pre, _ = self._plant_now(sc)
+        nothing = simulate(plant, clean_actions(plant, pre)[0], PLAN_HORIZON).shutdowns
+        best = nothing if plan is None else simulate(
+            plant, clean_actions(plant, pre + [dict(a) for a in plan["actions"]])[0], PLAN_HORIZON).shutdowns
+        if not best:
+            return ""
+        tanks = sorted(best, key=lambda t: best[t])
+        gone = [name(a) for a in sorted(exclude) if a in live.fmap.all_ids()]
+        line = (f"Without {and_list(gone)}, no plan" if gone else "No plan") + \
+            f" keeps {and_list([name(t) for t in tanks])} below shutdown"
+        at = {t: live.fmap.clock_text(live.t + best[t]) for t in tanks}
+        if plan is None:
+            return f"{line}, and no remaining plan helps: " + and_list(
+                [f"{name(t)} reaches shutdown at {at[t]}" for t in tanks]) + "."
+        one = len(tanks) == 1
+        parts = [f"delays {'it' if one else name(t)} to {at[t]}" if best[t] > nothing.get(t, best[t]) + 1e-6
+                 else f"still reaches shutdown at {at[t]}" if one else f"leaves {name(t)} reaching shutdown at {at[t]}"
+                 for t in tanks]
+        return f"{line}; the best remaining plan {and_list(parts)}."
 
     async def settle(self) -> None:
         """Wait for background re-plans (Claude path). Tests use it."""

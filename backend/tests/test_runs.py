@@ -179,6 +179,79 @@ def test_stuck_valve_pauses_the_run_and_offers_a_replan():
     assert not any(live.registry.sim.tank_shutdown.values())
 
 
+def releases(run: dict) -> set[str]:
+    return {s["action"]["asset_id"] for s in run["steps"]}
+
+
+async def reject_step(live: LiveField, run: dict, asset_id: str, wait: float = 10) -> dict:
+    """Tick (confirming nothing) until the step on `asset_id` is PENDING, then a person rejects it."""
+    s = next(x for x in run["steps"] if x["action"]["asset_id"] == asset_id)
+    await advance(live, wait, confirm=False, until=lambda: s["status"] == "PENDING")
+    assert s["status"] == "PENDING"
+    await live.reject(s["proposal_id"], by="operator")
+    return s
+
+
+@needs_field
+def test_rejected_step_asset_is_not_in_the_replan_for_the_rest_of_the_run():
+    """Ronak: reject "Send Truck 1 to Tank 3" and the re-plan came back as "Send Truck 1 to
+    Tank 3, shut in Well 11, 12, 10". A person's no excludes that asset (and that exact
+    action) from this run's re-plan and every re-plan after it."""
+    live, runs, _ = field()
+    plan = cheapest(runs)
+    assert "TRUCK_1" in releases({"steps": [{"action": a} for a in plan["actions"]]})
+
+    async def go():
+        run = await runs.execute(plan)
+        s = await reject_step(live, run, "TRUCK_1")
+        assert s["status"] == "REJECTED" and run["status"] == "PAUSED"
+        new = runs.get(run["replan_run_id"])
+        # A second problem on the offered re-plan: its re-plan still avoids Truck 1.
+        await runs.resume(new["id"], by="operator")
+        first = min(new["steps"], key=lambda x: x["at_min"])
+        await reject_step(live, new, first["action"]["asset_id"])
+        return run, new, first
+
+    run, new, first = asyncio.run(go())
+    want = {"type": "SEND_TRUCK", "asset_id": "TRUCK_1", "value": None, "target_id": "TANK_3"}
+    assert "TRUCK_1" not in releases(new)
+    assert "TRUCK_1" in run["excluded"] and want in run["rejected"]
+    assert "TRUCK_1" in new["excluded"] and want in new["rejected"]
+    assert "Truck 1" not in new["summary"]
+    third = runs.get(new["replan_run_id"]) if new["replan_run_id"] else None
+    assert new["status"] == "PAUSED"
+    assert {"TRUCK_1", first["action"]["asset_id"]} <= set(new["excluded"])
+    if third is not None:
+        assert not releases(third) & {"TRUCK_1", first["action"]["asset_id"]}
+
+
+@needs_field
+def test_rejected_step_with_no_plan_left_says_so_plainly():
+    """Without the rejected truck nothing keeps every tank below shutdown: the offer says so
+    in one plain sentence and never brings the rejected truck back."""
+    live, runs, _ = field()
+    plan = cheapest(runs)
+
+    async def go():
+        run = await runs.execute(plan)
+        live.registry.sim.inject({"asset_id": "PUMP_4", "type": "TRIP"})  # Tank 4 starts filling too
+        await advance(live, 10, confirm=False)  # nobody answers the truck steps for 10 minutes
+        await reject_step(live, run, "TRUCK_1")
+        return run
+
+    run = asyncio.run(go())
+    assert run["status"] == "PAUSED" and "TRUCK_1" in run["excluded"]
+    new = runs.get(run["replan_run_id"])
+    assert "TRUCK_1" not in releases(new)
+    assert not new["keeps_running"]
+    line = "Without Truck 1, no plan keeps Tank 4 below shutdown; the best remaining plan delays it to "
+    assert new["reason"].startswith(line)
+    alert = next(a for a in live.alerts() if a["kind"] == "RUN_PAUSED" and a["id"] == run["alert_id"])
+    assert line in alert["message"]
+    clock = new["reason"][len(line):].split(".")[0]
+    assert clock.endswith(("AM", "PM")) and f"shutdown at {clock}" in new["summary"]
+
+
 @needs_field
 def test_tank_rising_faster_than_forecast_pauses_the_run():
     live, runs, _ = field()
@@ -261,7 +334,7 @@ def test_rehearsal_auto_confirm_never_reaches_real_equipment(monkeypatch):
     monkeypatch.setenv("JARVIS_CONFIRM", "0")
     seen = []
     live, runs, _ = field({"connectors": [{
-        "id": "CONN_HOOK", "kind": "webhook", "config": {"url": "http://gateway.local/cmd"},
+        "id": "CONN_HOOK", "kind": "webhook", "config": {"url": "http://127.0.0.1:9/cmd"},
         "commands": [{"asset_id": "VALVE_XO_34", "command": "SET_VALVE", "address": "xo34/cmd"}]}]})
     live.registry.get("CONN_HOOK").transport = httpx.MockTransport(
         lambda req: seen.append(req) or httpx.Response(200, json={"ok": True}))
@@ -316,7 +389,28 @@ def test_pick_plan_prefers_robust_and_skips_excluded():
 client = TestClient(app)
 
 
-def test_runs_over_http():
+@pytest.fixture
+def one_clock(monkeypatch):
+    """The main app on the one clock (#42), as it runs by default, on a freshly reloaded
+    field: other test modules move the shared live clock, and on the static clock
+    POST /api/plans results are planned at minute 0, so they'd be stale by then."""
+    from backend.app import main, now
+
+    monkeypatch.setenv("FREEBOARD_ONE_CLOCK", "1")
+    lv = app.state.live
+    app.state.live_reload(load_scenario())
+    for _ in range(8):
+        lv.step(0.5)                 # past the scenario's trip, so a fix is needed
+    yield lv
+    for r in app.state.runs.list():
+        if r["status"] in ("RUNNING", "PAUSED"):
+            asyncio.run(app.state.runs.cancel(r["id"]))
+    app.state.live_reload(load_scenario())
+    main._plans.clear()
+    now.set_static(main.SCENARIO)
+
+
+def test_runs_over_http(one_clock):
     plans = client.post("/api/plans").json()["plans"]
     pid = next(p["id"] for p in plans if p["actions"])
     assert client.post("/api/plans/plan_nope/execute").status_code == 404
@@ -335,6 +429,20 @@ def test_runs_over_http():
     assert client.post(f"/api/runs/{run['id']}/explode").status_code == 404
     assert client.post(f"/api/runs/{run['id']}/cancel", json={"by": "test"}).json()["status"] == "CANCELLED"
     assert client.post(f"/api/runs/{run['id']}/cancel").status_code == 409
+
+
+def test_plans_from_api_plans_count_from_when_they_were_planned(one_clock):
+    """POST /api/plans plans from the live clock (one clock, #42), so a plan it returns
+    can be executed at once however long the live field has been running."""
+    for _ in range(40):
+        one_clock.step(0.5)          # 20 more live minutes: well past any lead time from minute 0
+    body = client.post("/api/plans").json()
+    assert body["clock_source"] == "live"
+    pid = next(p["id"] for p in body["plans"] if p["actions"])
+    r = client.post(f"/api/plans/{pid}/execute")
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "RUNNING"
+    assert client.post(f"/api/runs/{r.json()['id']}/cancel").status_code == 200
 
 
 def test_jarvis_fix_it_over_http():
@@ -356,7 +464,7 @@ def hook_field():
 
     gate, seen = threading.Event(), []
     live, runs, _ = field({"connectors": [{
-        "id": "CONN_HOOK", "kind": "webhook", "config": {"url": "http://gateway.local/cmd"},
+        "id": "CONN_HOOK", "kind": "webhook", "config": {"url": "http://127.0.0.1:9/cmd"},
         "commands": [{"asset_id": "VALVE_XO_34", "command": "SET_VALVE", "address": "xo34/cmd"}]}]})
 
     def handler(req):
@@ -677,14 +785,63 @@ def test_stale_offered_replan_is_refused_on_resume():
         run = await runs.execute(plan)
         await advance(live, 60, until=lambda: run["status"] != "RUNNING")
         new = runs.get(run["replan_run_id"])
+        for pid in ("PUMP_4", "PUMP_1", "PUMP_2"):  # the field gets worse while nobody looks
+            live.registry.sim.inject({"asset_id": pid, "type": "TRIP"})
         await advance(live, 30, confirm=False)  # nobody looks at the offer for 30 minutes
         with pytest.raises(ActionError) as e:
             await runs.resume(new["id"])
-        return new, e.value
+        return run, new, e.value
 
-    new, err = asyncio.run(go())
+    run, new, err = asyncio.run(go())
+    # Even re-timed to now, the offer no longer keeps every tank below shutdown: 409 with
+    # the current plan, which still avoids the stuck valve.
     assert err.status == 409 and "out of date" in err.detail and err.extra["plan"]
+    assert "no longer keeps every tank below shutdown" in err.detail
+    assert xo not in {a["asset_id"] for a in err.extra["plan"]["actions"]}
     assert not new["started"] and new["status"] == "PAUSED"
+    assert all(s["status"] == "WAITING" and s["proposal_id"] is None for s in new["steps"])
+
+
+@needs_field
+def test_offered_replan_resumed_after_its_lead_time_is_retimed_not_refused():
+    """Ronak's phone and Jarvis paths: at demo speed an offer's 2-minute choke steps were
+    overdue within seconds, so resume got 409. Now the offer is re-timed to the live clock
+    and starts, because re-timed it still keeps every tank below shutdown."""
+    live, runs, _ = field()
+    plan = cheapest(runs)
+    xo = next(a for a in plan["actions"] if a["type"] == "SET_VALVE")["asset_id"]
+    live.registry.sim.inject({"asset_id": xo, "type": "STUCK_VALVE"})
+
+    async def go():
+        run = await runs.execute(plan)
+        await advance(live, 60, until=lambda: run["status"] != "RUNNING")
+        new = runs.get(run["replan_run_id"])
+        offered_t = live.t  # the rules pick offers it at once
+        before = {s["n"]: s["at_min"] for s in new["steps"]}
+        first = min(before.values())
+        # Past the first step's lead time plus the grace: the old check refused this.
+        await advance(live, first + 3, confirm=False)
+        elapsed = live.t - offered_t
+        assert elapsed > first + 1
+        out = await runs.resume(new["id"], by="phone")
+        return run, new, out, before, elapsed
+
+    run, new, out, before, elapsed = asyncio.run(go())
+    assert out is new and new["started"] and new["status"] == "RUNNING"
+    assert run["status"] == "CANCELLED"
+    assert new["offered_t"] == pytest.approx(live.t - elapsed) and new["start_t"] == live.t
+    for s in new["steps"]:  # each step keeps its clock time from the offer; overdue ones go now
+        assert s["at_min"] == pytest.approx(max(0.0, before[s["n"]] - elapsed), abs=1e-3)
+    overdue = [s for s in new["steps"] if before[s["n"]] <= elapsed]
+    assert overdue and all(s["status"] == "PENDING" and s["proposal_id"] for s in overdue)
+    assert new["keeps_running"]
+
+    async def finish():
+        await advance(live, 300)
+
+    asyncio.run(finish())
+    assert new["status"] == "DONE", new["reason"]
+    assert not any(live.registry.sim.tank_shutdown.values())
 
 
 def test_stale_plan_409_over_http_offers_the_current_plan():
