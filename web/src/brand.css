@@ -1,0 +1,41 @@
+/* Brand layer (Sriyan, 11:50 CT): DM Sans everywhere, normal capitalization, and no dots.
+   Loaded LAST on every page, so it wins over the older lowercase and Inter rules.
+   The cursive gaia logo keeps Great Vibes. Source strings should still be written in
+   sentence case; ::first-letter below only covers what hasn't been rewritten yet. */
+@import "@fontsource/dm-sans/400.css";
+@import "@fontsource/dm-sans/500.css";
+@import "@fontsource/dm-sans/600.css";
+@import "@fontsource/dm-sans/700.css";
+
+:root, body, body.fb-console, #upload, #ds, .ds-dialog {
+  --sans: "DM Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "DM Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --display: "DM Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+body, body :where(p, span, div, a, button, input, textarea, select, label, li, h1, h2, h3, h4, h5, h6,
+  small, b, strong, em, i, td, th, figcaption, summary, dt, dd, code, kbd, section, header, footer, nav) {
+  font-family: "DM Sans", system-ui, -apple-system, "Segoe UI", sans-serif !important;
+}
+/* The logo stays cursive. */
+#upload .up-mark, .s-mark, .gt-mark, .cs-rail-mark, .cs-mark.g, body.fb-console .loading b,
+.s-word text, .gaia-word text, [style*="--script"], .ds-mark, .gaia-mark {
+  font-family: "Great Vibes", "Snell Roundhand", cursive !important;
+}
+
+/* Normal capitalization: no forced lowercase, and sentence case for lines that start lowercase. */
+html body *, html body ::placeholder, html body.fb-console * { text-transform: none !important; }
+body :where(p, h1, h2, h3, h4, h5, button, label, li, summary, figcaption, dt, .kicker, .cs-kicker, .gn-k)::first-letter {
+  text-transform: uppercase !important;
+}
+
+/* No dots. The typing indicator becomes words and a thin progress line. */
+.typing .cs-dots i { display: none !important; }
+.typing .cs-dots { position: relative; padding-bottom: 6px; }
+.typing .cs-dots::before { content: "Working on it"; font-weight: 500; color: var(--g-mute, #8a8a8a); }
+.typing .cs-dots::after { content: ""; position: absolute; left: 0; bottom: 0; height: 2px; width: 120px; border-radius: 2px;
+  background: linear-gradient(90deg, transparent, var(--g-blue, #2f6fed), transparent); background-size: 60px 2px;
+  background-repeat: no-repeat; animation: brand-scan 1.1s linear infinite; }
+@keyframes brand-scan { from { background-position: -60px 0; } to { background-position: 120px 0; } }
+/* Status markers are short bars, not round dots. */
+.cs-dot { width: 4px !important; height: 14px !important; border-radius: 2px !important; }
+@media (prefers-reduced-motion: reduce) { .typing .cs-dots::after { animation: none; } }

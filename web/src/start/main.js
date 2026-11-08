@@ -17,6 +17,7 @@ import "../auth.js"; // a #k= console token opened here is kept for this tab, so
 import "./start.css";
 import { mountTree } from "./tree.js";
 import { parseUsPhone, prettyUsPhone, readPhone, savePhone } from "./phone.js";
+import "../brand.css"; // the brand layer, last: DM Sans, capitals, no dots
 
 const $ = (id) => document.getElementById(id);
 const reduced = typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;

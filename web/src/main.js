@@ -30,6 +30,7 @@ import { mountRuns, runsSupported, runsOn, execute as executeRun, peopleOut } fr
 import { mountSecurity, securityLines } from "./security.js";
 import "./console/auth.js"; // takes ?token= into auth.js (#104) before anything talks to the backend
 import { mountConsole } from "./console/index.js";
+import "./brand.css"; // the brand layer, last: DM Sans, capitals, no dots
 
 // Jarvis console (docs/JARVIS_CONSOLE.md) is the default screen; the old panels stay at ?layout=classic.
 const layout = new URLSearchParams(location.search).get("layout") === "classic" ? "classic" : "console";
