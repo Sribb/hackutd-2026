@@ -14,6 +14,7 @@ import { fileSource, backendFileSource, assetIndex, checkDataset, STEP_S } from 
 import { lineChart, fmtTime } from "./chart.js";
 import { normAlerts, sortAlerts, actionLines, durationText, categoryOf, money } from "./alerts.js";
 import { eogClient } from "./eog.js";
+import "../brand.css"; // the brand layer, last: DM Sans, capitals, no dots
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));

@@ -9,6 +9,7 @@ import "./phone.css";
 import * as liveFeed from "./live.js";
 import { authFetch, token } from "./auth.js";
 import { holdButton, afterHold, isHolding } from "./fx.js";
+import "./brand.css"; // the brand layer, last: DM Sans, capitals, no dots
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
