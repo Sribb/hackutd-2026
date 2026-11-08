@@ -4,14 +4,29 @@
 // serves /api/field and /api/state still works. The console shows which data is fake.
 // It never treats missing data as safe.
 
-export const BASE = (import.meta.env.VITE_API || "").replace(/\/$/, "");
+// VITE_API=same-origin (npm run demo): the Vite server proxies /api and /ws to the backend,
+// so the laptop and phones on the Wi-Fi use whatever host served the page.
+import { authFetch } from "./auth.js";
+const RAW_API = import.meta.env.VITE_API || "";
+export const BASE = (RAW_API === "same-origin" ? location.origin : RAW_API).replace(/\/$/, "");
 const fakeCache = new Map();
 
 async function getJson(url, init) {
-  const r = await fetch(url, init);
-  if (!r.ok) throw new Error(`${url}: HTTP ${r.status}`);
+  const r = await authFetch(url, init);
+  if (!r.ok) {
+    let detail = "";
+    try { const j = await r.json(); detail = typeof j.detail === "string" ? j.detail : ""; } catch { /* no body */ }
+    throw Object.assign(new Error(detail || `${url}: HTTP ${r.status}`), { status: r.status });
+  }
   return r.json();
 }
+
+// Recorded data only when there is no backend, when ?offline is in the URL, or when the
+// backend doesn't have that endpoint at all (404). A backend that is down, erroring, or
+// refusing (401/403/5xx, no answer) never gets silently replaced by recorded numbers (#104):
+// the call fails, and the screen says so.
+export const OFFLINE = new URLSearchParams(location.search).has("offline");
+export class BackendDown extends Error {}
 
 function fake(name) {
   if (!fakeCache.has(name)) fakeCache.set(name, getJson(`${import.meta.env.BASE_URL}fake/${name}.json`));
@@ -22,22 +37,26 @@ function fake(name) {
 export const sources = {};
 
 async function live(name, path, body) {
-  if (BASE) {
+  if (BASE && !OFFLINE) {
+    const init = body === undefined ? undefined
+      : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) };
     try {
-      const init = body === undefined ? undefined
-        : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) };
       const out = await getJson(`${BASE}${path}`, init);
       sources[name] = "live";
       return out;
-    } catch {
-      /* fall through to fake */
+    } catch (e) {
+      if (e.status !== 404) {
+        sources[name] = "down";
+        throw new BackendDown(`${path}: ${e.status ? `HTTP ${e.status}` : "no answer"}${e.status && e.message && !/HTTP/.test(e.message) ? ` (${e.message})` : ""}`);
+      }
+      /* 404: this backend doesn't have the endpoint yet, so recorded data, badged */
     }
   }
   sources[name] = "fake";
   return null;
 }
 
-export const usingBackend = !!BASE;
+export const usingBackend = !!BASE && !OFFLINE;
 
 export async function getField() {
   return (await live("field", "/api/field")) || fake("field");
@@ -55,7 +74,14 @@ export function actionKey(a) {
 
 export async function forecast(actions) {
   const body = { horizon_minutes: 360, step_minutes: 5, actions };
-  const out = await live("forecast", "/api/forecast", body);
+  let out;
+  try {
+    out = await live("forecast", "/api/forecast", body);
+  } catch (e) {
+    if (!(e instanceof BackendDown) || !actions.length) throw e;
+    // A what-if the backend can't answer has no forecast. Never a recorded one.
+    return { timeline: [], events: [], cost: null, unknown: true, warnings: [`The backend didn't answer (${e.message}), so this change has no forecast.`] };
+  }
   if (out) return out;
   const base = await fake("forecast");
   if (!actions.length) return base;

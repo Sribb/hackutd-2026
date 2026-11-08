@@ -154,6 +154,21 @@ def pose_pumpjacks(field, t=0.6):
             beam.rotation_euler.x = 0.25 * math.sin(1.7 * t + phase)
         if crank:
             crank.rotation_euler.x = 1.7 * t + phase
+        if beam and crank:
+            link_pumpjack(field, w.name, beam.rotation_euler.x, crank.rotation_euler.x)
+
+
+def link_pumpjack(field, well, b, c):
+    """CONTRACT.md "Moving parts": keep the pitman's foot on the crank's wrist pins and the
+    bridle plumb, so a mid-stroke beam never leaves the pitman hanging in the air."""
+    pitman, bridle = field.get(f"{well}_pitman"), field.get(f"{well}_bridle")
+    if pitman:
+        ey = 3.55 * math.cos(b) + 0.24 * math.sin(b)          # equalizer (y 3.55, z -0.24) turned by b
+        ez = 3.55 * math.sin(b) - 0.24 * math.cos(b) + 4.1
+        dy, dz = 2.7 + 0.85 * math.cos(c) - ey, 1.6 + 0.85 * math.sin(c) - ez
+        pitman.rotation_euler.x = math.atan2(dy, -dz) - b
+    if bridle:
+        bridle.rotation_euler.x = -b
 
 
 def set_level(field, tank, level):
@@ -274,7 +289,7 @@ def turntable(f, rig, scene, out, a):
         cam.keyframe_insert("rotation_euler", frame=i + 1)
         pose_pumpjacks(f, t=i / a.fps)
         for w in f.wells:
-            for part in ("beam", "crank"):
+            for part in ("beam", "crank", "pitman", "bridle"):
                 if f.get(f"{w.name}_{part}"):
                     f.get(f"{w.name}_{part}").keyframe_insert("rotation_euler", index=0, frame=i + 1)
     ff = shutil.which("ffmpeg")

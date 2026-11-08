@@ -131,7 +131,7 @@ def test_api_endpoints_end_to_end():
     t0 = time.monotonic()
     r = client.post("/api/forecast", json={"horizon_minutes": 360, "step_minutes": 5, "actions": [XO]})
     assert r.status_code == 200 and (time.monotonic() - t0) < 0.5
-    assert set(r.json()) == {"timeline", "events", "cost", "warnings"}
+    assert set(r.json()) == {"timeline", "events", "cost", "warnings", "clock", "clock_source"}
     assert client.post("/api/forecast", json={}).status_code == 200
     assert client.post("/api/forecast", json={"horizon_minutes": 0}).status_code == 422
 

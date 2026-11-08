@@ -8,78 +8,78 @@
    "name": "golden_hour",
    "rig": "golden",
    "file": "golden_hour.jpg",
-   "seconds": 6.9,
+   "seconds": 6.5,
    "jpeg_quality": 92,
-   "bytes": 192900
+   "bytes": 192834
   },
   {
    "name": "field_aerial",
    "rig": "afternoon",
    "file": "field_aerial.jpg",
-   "seconds": 7.2,
+   "seconds": 13.3,
    "jpeg_quality": 92,
-   "bytes": 240929
+   "bytes": 241248
   },
   {
    "name": "night_shift",
    "rig": "night",
    "file": "night_shift.jpg",
-   "seconds": 6.5,
+   "seconds": 10.5,
    "jpeg_quality": 92,
-   "bytes": 153704
+   "bytes": 155002
   },
   {
    "name": "blue_hour",
    "rig": "blue",
    "file": "blue_hour.jpg",
-   "seconds": 4.8,
+   "seconds": 8.5,
    "jpeg_quality": 92,
-   "bytes": 143470
+   "bytes": 142820
   },
   {
    "name": "pumpjack",
    "rig": "golden",
    "file": "pumpjack.jpg",
-   "seconds": 5.1,
+   "seconds": 10.6,
    "jpeg_quality": 92,
-   "bytes": 150610
+   "bytes": 178129
   },
   {
    "name": "tank_battery",
    "rig": "afternoon",
    "file": "tank_battery.jpg",
-   "seconds": 6.7,
+   "seconds": 11.9,
    "jpeg_quality": 92,
-   "bytes": 240958
+   "bytes": 246031
   },
   {
    "name": "disposal",
    "rig": "golden",
    "file": "disposal.jpg",
-   "seconds": 5.9,
+   "seconds": 12.2,
    "jpeg_quality": 92,
-   "bytes": 205003
+   "bytes": 209567
   },
   {
    "name": "night_alarm",
    "rig": "night",
    "file": "night_alarm.jpg",
-   "seconds": 8.1,
+   "seconds": 15.9,
    "jpeg_quality": 92,
-   "bytes": 155645
+   "bytes": 157652
   }
  ],
  "turntable": {
   "frames": 264,
   "fps": 24,
-  "render_seconds": 262.4,
+  "render_seconds": 432.2,
   "size": [
    1920,
    1080
   ],
   "file": "turntable.mp4",
   "encoded": true,
-  "bytes": 6645131
+  "bytes": 6636331
  },
- "seconds": 339.7
+ "seconds": 580.7
 }
