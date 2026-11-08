@@ -155,6 +155,9 @@ export default defineConfig({
   server: {
     host: "127.0.0.1",
     port: 5173,
+    // npm run demo:tunnel sets FREEBOARD_TUNNEL_HOST to its one *.trycloudflare.com name.
+    // Any other unknown Host still gets Vite's 403.
+    allowedHosts: process.env.FREEBOARD_TUNNEL_HOST ? [process.env.FREEBOARD_TUNNEL_HOST] : undefined,
     // #104: no cross-origin reads of the dev server, and it serves nothing outside web/
     // (Vite's own client and node_modules excepted). Secrets are denied by name even inside it.
     cors: false,
