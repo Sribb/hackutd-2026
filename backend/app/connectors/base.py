@@ -15,12 +15,61 @@ environment variable, and `secret()` reads it.
 """
 from __future__ import annotations
 
+import importlib
 import os
+from types import ModuleType
 from typing import Callable, Optional
 
 from ..fieldmap import FieldMap
 
 Reading = dict  # {"asset_id": str, "signal": str, "value": float | bool | str, "t": float}
+
+ANALOG = ("level_pct", "flow_bbl_hr", "pressure_psi", "motor_amps")
+
+
+def import_optional(module: str, package: str) -> tuple[Optional[ModuleType], Optional[str]]:
+    """(module, None), or (None, why) when the library is missing or broken."""
+    try:
+        return importlib.import_module(module), None
+    except Exception as e:  # noqa: BLE001 - ImportError, or a broken install
+        return None, f"{package} is not installed (pip install {package}): {e}"
+
+
+def _truthy(value) -> Optional[bool]:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    v = str(value).strip().upper()
+    if v in {"OPEN", "OPENED", "ON", "TRUE", "1", "RUNNING", "RUN"}:
+        return True
+    if v in {"CLOSED", "CLOSE", "OFF", "FALSE", "0", "STOPPED", "STOP", "TRIPPED"}:
+        return False
+    try:
+        return float(v) != 0
+    except ValueError:
+        return None
+
+
+def coerce(signal: str, value):
+    """A raw device value as the live layer's type for `signal`, or None if it makes no sense.
+
+    Analog signals are floats, `running` is a bool, `position` is "OPEN" or "CLOSED".
+    """
+    if signal in ANALOG:
+        if isinstance(value, bool):
+            return None
+        try:
+            x = float(value)
+        except (TypeError, ValueError):
+            return None
+        return x if x == x and abs(x) != float("inf") else None
+    on = _truthy(value)
+    if on is None:
+        return None
+    if signal == "position":
+        return "OPEN" if on else "CLOSED"
+    return on
 
 
 class Connector:
@@ -55,6 +104,13 @@ class Connector:
         """Release sockets and threads on shutdown."""
 
     # ---- helpers ----
+    def missing_env(self) -> Optional[str]:
+        """The first `*_env` variable the config names that isn't set, else None."""
+        for key, var in self.config.items():
+            if key.endswith("_env") and var and os.environ.get(var) is None:
+                return str(var)
+        return None
+
     def secret(self, key: str) -> Optional[str]:
         """config[key + '_env'] names an environment variable; return its value, or None."""
         var = self.config.get(f"{key}_env")

@@ -283,12 +283,32 @@ class LiveField:
         for (aid, _), r in self.latest.items():
             if aid not in last or r["t"] > last[aid]["t"]:
                 last[aid] = r
+        connectors = self.registry.status()
+        lost = self.lost_links(connectors)
         for aid, entry in assets.items():
             r = last.get(aid)
             entry["age_min"] = round(self.t - r["t"], 2) if r else None
             entry["last_reading_t"] = r["wall"] if r else None
+            if aid in lost:  # its feed is down: the last value can't be trusted, but never hide an ALARM
+                entry["stale"] = True
+                if entry["status"] != "ALARM":
+                    entry["status"] = "UNKNOWN"
+                entry["reason"] = " ".join(x for x in (lost[aid], entry.get("reason")) if x)
         return {"clock": f.clock(self.t), "t": round(self.t, 2), "assets": assets,
-                "connectors": self.registry.status(), "speed": self.speed, "paused": self.paused}
+                "connectors": connectors, "speed": self.speed, "paused": self.paused}
+
+    def lost_links(self, connectors: Optional[list] = None) -> dict[str, str]:
+        """asset id -> why, for assets with a signal from a connector that is unavailable."""
+        rows = {c["id"]: c for c in (connectors if connectors is not None else self.registry.status())}
+        out: dict[str, str] = {}
+        for c in self.registry.connectors[1:]:
+            row = rows.get(c.id)
+            if row is None or row["status"] != "unavailable":
+                continue
+            why = f"Lost the link to {c.id} ({c.kind}): {row['detail']}. Treat it as unknown, not safe."
+            for aid, _ in c.signals:
+                out.setdefault(aid, why)
+        return out
 
     def alerts(self) -> list[dict]:
         return list(self.detector.alerts)
@@ -298,8 +318,9 @@ class LiveField:
         A stale tank has no level, so the forecast warns instead of calling it safe."""
         sc = copy.deepcopy(self.scenario)
         sc["start_clock"] = self.fmap.clock(self.t)
+        lost = self.lost_links()
         sc["initial_levels_pct"] = {
-            tid: (None if self.detector.is_stale(tid, "level_pct") or self.value(tid, "level_pct") is None
+            tid: (None if tid in lost or self.detector.is_stale(tid, "level_pct") or self.value(tid, "level_pct") is None
                   else float(self.value(tid, "level_pct"))) for tid in self.fmap.tanks}
         sc["failures"] = [
             {"asset_id": a["asset_id"], "at_clock": a["clock"], "reason": a["message"],
