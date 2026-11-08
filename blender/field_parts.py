@@ -6,13 +6,21 @@ one child mesh per material. Moving parts are separate children whose origin is
 their pivot, so the web console can animate them with a single rotation or scale.
 """
 import math
+import sys
 
 import bmesh
 import bpy
 from mathutils import Matrix, Vector
 
 PI = math.pi
-SHARP = math.radians(35)
+SHARP = math.radians(35)        # scenery and other soft meshes, as before
+HARD_SHARP = math.radians(50)   # hard-surface parts: 8- to 12-sided pipes shade round, boxes stay crisp
+SOFT = {"M_GROUND", "M_ROAD", "M_BERM", "M_BRINE"}
+
+# The big assets live in their own modules and import from this one. When build_field.py
+# reloads this module in a live session, drop them so they re-import against the new LOD.
+for _stale in ("well_parts", "truck_parts", "swd_parts"):
+    sys.modules.pop(_stale, None)
 
 # Small detail the builder can drop to stay inside the triangle budget (see build_field.py).
 LOD = {"bolts": True, "small_labels": True, "posts": True, "trim": True}
@@ -61,14 +69,14 @@ def material(name):
     return mat
 
 
-def finish(bm, recalc=True):
-    """Outward normals, smooth curved faces, sharp creases (stands in for auto smooth)."""
+def finish(bm, recalc=True, sharp=SHARP):
+    """Outward normals, shade smooth, and sharp edges by angle (what set_sharp_from_angle does)."""
     if recalc:
         bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
     for f in bm.faces:
         f.smooth = True
     for e in bm.edges:
-        if not e.is_manifold or e.calc_face_angle(PI) > SHARP:
+        if not e.is_manifold or e.calc_face_angle(PI) > sharp:
             e.smooth = False
 
 
@@ -93,19 +101,29 @@ class Site:
         return obj
 
     def mesh(self, name, bm, mat, parent=None, loc=(0, 0, 0), recalc=True):
-        finish(bm, recalc)
+        """One mesh object. Hard-surface parts (not scenery, ground, road or brine) shade smooth
+        with sharp edges past 50 degrees and get a Weighted Normal modifier (keep sharp,
+        weight 50) that the exporter applies: flat faces stay flat, round parts read round,
+        and it adds no triangles."""
+        hard = mat not in SOFT and not name.startswith("SCENERY")
+        finish(bm, recalc, HARD_SHARP if hard else SHARP)
         me = bpy.data.meshes.new(name)
         bm.to_mesh(me)
         bm.free()
         me.materials.append(material(mat))
         obj = bpy.data.objects.new(name, me)
         obj.location = loc
+        if hard:
+            wn = obj.modifiers.new("WeightedNormal", "WEIGHTED_NORMAL")
+            wn.keep_sharp, wn.weight = True, 50
         if parent:
             obj.parent = parent
         self.col.objects.link(obj)
         return obj
 
     def pipe(self, name, points, radius, segs=10):
+        if radius >= 0.05:   # 4-inch pipe and up: 12 sides, so runs and elbows read round
+            segs = max(segs, 12)
         pts = []
         for p in points:
             if not pts or (Vector(p) - pts[-1]).length > 1e-3:

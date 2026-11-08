@@ -106,8 +106,8 @@
     "passes": [
       {
         "detail": "full",
-        "estimated": 151698,
-        "triangles": 148435
+        "estimated": 230958,
+        "triangles": 231635
       }
     ]
   },
@@ -125,28 +125,26 @@
     "fence_m": 1216.0,
     "cattle_guards": 2,
     "items": {
-      "boulder": 6,
-      "branch": 6,
-      "creosote": 2,
-      "grass": 110,
+      "boulder": 2,
+      "branch": 2,
+      "grass": 37,
       "lease_sign": 1,
-      "mesquite": 1,
-      "prickly_pear": 28,
-      "rock": 15,
-      "yucca": 65
+      "prickly_pear": 9,
+      "rock": 5,
+      "yucca": 22
     },
     "dropped": [],
-    "triangles": 114650,
-    "field_triangles": 148435,
-    "images_mb": 9.43
+    "triangles": 36082,
+    "field_triangles": 231635,
+    "images_mb": 5.5
   },
-  "triangles": 263085,
-  "glb_mb": 19.02,
-  "nodes": 1013,
-  "objects": 1014,
+  "triangles": 267717,
+  "glb_mb": 15.31,
+  "nodes": 988,
+  "objects": 989,
   "budget": {
     "triangles": 300000,
     "mb": 30.0
   },
-  "seconds": 8.73
+  "seconds": 9.94
 }

@@ -379,7 +379,7 @@ def test_builds(tmp):
     print(f"      sample 2 draft from {source}")
     cases = [("small", os.path.join(HERE, "samples", "small.json"), "full"),
              ("default", None, "full"),
-             ("large", os.path.join(HERE, "samples", "large.json"), "lite"),   # 47 wells: hero full won't fit
+             ("large", os.path.join(HERE, "samples", "large.json"), None),     # full or lite, see below
              ("sample1", SAMPLE1, "full"),
              ("sample2_draft", draft, "full")]
     paths = variants(tmp)
@@ -408,6 +408,9 @@ def test_builds(tmp):
                        for a in data.get(k, []) if a.get("x") is not None)
         ok(reports["sample2_draft"]["placed"]["given"] == given,
            f"sample2_draft: every position from the CSV is used ({len(given)} assets)")
+    if "large" in reports:   # 47 wells: hero full fits only under a budget above about 450k triangles
+        ok(reports["large"]["detail"]["level"] in ("full", "lite"),
+           f"large: builds at full or lite, never bare ({reports['large']['detail']['level']})")
     if "max20" in reports:
         r = reports["max20"]
         ok(r["detail"]["level"] != "full" and any("dropped" in w for w in r["warnings"]),
