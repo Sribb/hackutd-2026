@@ -2,6 +2,17 @@
   "ok": true,
   "errors": [],
   "warnings": [],
+  "timing": {
+    "plan": 0.0,
+    "field": 1.23,
+    "scenery": 0.64,
+    "checks": 0.0,
+    "look": 4.1,
+    "optimize": 0.85,
+    "export": 0.64,
+    "blend": 0.06,
+    "report": 0.01
+  },
   "blueprint": "scenario/field.json",
   "name": "Avon field - night shift",
   "counts": {
@@ -41,16 +52,16 @@
       "M_WOOD": 5
     },
     "styled": 755,
-    "looks": 285,
+    "looks": 280,
     "theirs": 46,
     "gaps_filled": 0,
     "ao_uv_meshes": 0,
     "seconds": {
-      "roles": 0.06,
-      "uvs": 0.24,
-      "weather": 0.05,
-      "ao": 7.92,
-      "total": 8.26
+      "roles": 0.02,
+      "uvs": 0.15,
+      "weather": 0.02,
+      "ao": 3.89,
+      "total": 4.1
     }
   },
   "outputs": {
@@ -182,12 +193,32 @@
     "images_mb": 3.59
   },
   "triangles": 274074,
-  "glb_mb": 21.85,
-  "nodes": 1006,
+  "glb_mb": 12.57,
+  "nodes": 998,
   "objects": 1007,
+  "draw_calls": 884,
+  "compressed": false,
+  "optimize": {
+    "baked_modifiers": 779,
+    "merged": 0,
+    "meshes_before": 884,
+    "meshes_after": 322,
+    "unshared": 0,
+    "instanced": {
+      "SCENERY_dry_grass_2_instances": 9
+    },
+    "instances": 9,
+    "no_shadow": 27,
+    "purged": 569,
+    "seconds": 0.85,
+    "glb_meshes": 322,
+    "instanced_nodes": 1
+  },
   "budget": {
     "triangles": 300000,
-    "mb": 30.0
+    "mb": 30.0,
+    "draw_calls": 1600
   },
-  "seconds": 15.98
+  "seconds": 7.52,
+  "cpu_seconds": 14.96
 }
