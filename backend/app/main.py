@@ -35,6 +35,9 @@ async def lifespan(_app: FastAPI):
     if live:
         live.start()
     yield
+    runs = getattr(_app.state, "runs", None)  # plan runs (#63): stop background re-plans first
+    if runs:
+        await runs.close()
     if live:
         await live.stop()
 

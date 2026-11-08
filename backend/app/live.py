@@ -43,10 +43,11 @@ TICK_S = 1.0
 class ActionError(Exception):
     """A proposal or confirmation that can't go ahead. `status` is the HTTP code."""
 
-    def __init__(self, status: int, detail: str) -> None:
+    def __init__(self, status: int, detail: str, extra: Optional[dict] = None) -> None:
         super().__init__(detail)
         self.status = status
         self.detail = detail
+        self.extra = extra or {}   # more fields for the HTTP body, beside `detail`
 
 
 def describe(a: dict) -> str:

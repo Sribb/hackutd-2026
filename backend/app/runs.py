@@ -11,7 +11,9 @@ After a step is confirmed, the run checks its effect in the live readings:
   SET_VALVE   the valve's `position` reads the commanded value
   SET_PUMP    the pump's `running` matches ON / OFF
   CHOKE_WELL  the well's `flow_bbl_hr` is within 10% of design x the choke
-  SEND_TRUCK  the truck is no longer IDLE
+  SEND_TRUCK  this step's own truck job (dispatched after the step was released, to the
+              step's target) exists and leaves within TRUCK_ON_TIME_MIN of the confirm,
+              not queued behind another job
 within VERIFY_MIN live minutes. It also replays what was actually confirmed, at the
 times it was confirmed, and watches every tank: one that runs TANK_TOL_PCT points
 above that replay for TANK_SUSTAIN_MIN is "rising faster than forecast".
@@ -20,9 +22,20 @@ Any of those, or a step that is rejected or fails at its connector, pauses the r
 raises a RUN_PAUSED alert, and asks Jarvis for a re-plan from the current state (the
 rules pick with no API key; Claude may pick among the planner's plans with one). The
 re-plan is offered as a new run, PAUSED and not started: resuming it starts it and
-cancels the run it replaces. A tank reaching shutdown during a run fails the run.
+cancels the run it replaces. Only one re-plan is in flight per run: a problem raised
+while one is running is folded into the next one. A tank reaching shutdown during a run
+fails the run.
 
-Statuses. Run: RUNNING, PAUSED, DONE, FAILED, CANCELLED. Step: WAITING (not released),
+Before a run starts, its plan is scored again on the live state (clock, levels, what's
+already been applied, trucks on the road). If its first step's lead time has passed, a
+step can't apply any more, or it no longer keeps every tank below shutdown, the start is
+refused with 409, offering the current cheapest robust plan.
+
+Cancel never cuts off a step whose proposal is SENDING (a person confirmed it and the
+command is on its way): the run is CANCELLING, releases nothing more, and becomes
+CANCELLED once those sends finish.
+
+Statuses. Run: RUNNING, PAUSED, CANCELLING, DONE, FAILED, CANCELLED. Step: WAITING (not released),
 PENDING (waiting for a person), VERIFYING (confirmed, effect not seen yet), DONE,
 MISMATCH (effect not seen in time), REJECTED, FAILED (connector refused), CANCELLED.
 """
@@ -52,6 +65,9 @@ VERIFY_MIN = {"SET_VALVE": 2.0, "SET_PUMP": 2.0, "CHOKE_WELL": 3.0, "SEND_TRUCK"
 TANK_TOL_PCT = 3.0       # points above the replay of what was confirmed
 TANK_SUSTAIN_MIN = 1.0   # for this long, so one noisy reading never pauses a run
 MAX_PLANS = 10           # candidates the re-plan chooses from
+STALE_GRACE_MIN = 1.0    # a plan may start this long after its first step's lead time
+TRUCK_ON_TIME_MIN = 1.0  # a confirmed truck must leave within this of the confirm
+SOURCES = ("console", "jarvis", "replan")   # who made a run (run["source"])
 
 
 def touches(plan: dict, assets: set) -> bool:
@@ -87,13 +103,27 @@ class RunManager:
         self.runs: dict[str, dict] = {}
         self._ctx: dict[str, dict] = {}                          # run id -> replay cache (not JSON)
         self._ids = itertools.count(1)
+        self._origin: dict[str, float] = {}                      # plan id -> live t it was planned at
+        self._failed: list[tuple[dict, dict]] = []               # (run, active RUN_FAILED alert)
         self._tasks: set[asyncio.Task] = set()
+        self._closed = False
         live.listeners.append(self._on_event)
 
     # ---------- plans ----------
     def remember(self, plans: list[dict]) -> None:
+        """Keep plans computed from the live state now, so their ids can be executed."""
         for p in plans:
             self.plans[p["id"]] = p
+            self._origin[p["id"]] = self.live.t
+
+    def origin_of(self, plan_id: Optional[str]) -> float:
+        """The live minute a plan was planned at: when it was remembered; minute 0 (the
+        scenario's start) for POST /api/plans results; else now."""
+        if plan_id in self.plans and plan_id in self._origin:
+            return self._origin[plan_id]
+        if plan_id in self.static_plans:
+            return 0.0
+        return self.live.t
 
     def find_plan(self, plan_id: str) -> Optional[dict]:
         return self.plans.get(plan_id) or self.static_plans.get(plan_id)
@@ -129,13 +159,10 @@ class RunManager:
         sim = self.live.registry.sim
         return [j for j in sim.truck_jobs if j["remaining"] > 0 and sim.t < j["load_end"]]
 
-    def rescore(self, sc: dict, plans: list[dict]) -> list[dict]:
-        """The planner can't see trucks already on the road (planning_scenario drops them so
-        it won't send them twice). Replay its candidates, plus doing nothing more, with those
-        jobs added at no extra cost, and rank them again: feasible cheapest first."""
+    def _plant_now(self, sc: dict):
+        """(plant, pre-actions, note): the plant for `sc` plus the truck jobs already under
+        way, as free trucks sent at minute 0 (planning_scenario drops the busy trucks)."""
         jobs = self.inflight()
-        if not jobs:
-            return plans
         plant, now = build_plant(sc), self.live.registry.sim.t
         pre = []
         for i, j in enumerate(jobs, start=1):
@@ -145,19 +172,34 @@ class RunManager:
                                  "load_min": max(1.0, j["load_end"] - max(now, j["arrive"]))}
             pre.append({"type": "SEND_TRUCK", "asset_id": sid, "target_id": j["target_id"], "at_min": 0.0})
         names = sorted({name(j["truck_id"]) for j in jobs})
-        note = f" Counts {' and '.join(names)}, already on the way."
+        note = f" Counts {' and '.join(names)}, already on the way." if names else ""
+        return plant, pre, note
+
+    @staticmethod
+    def _score(plant, sc: dict, pre: list[dict], acts: list[dict], note: str) -> tuple[dict, list[str]]:
+        """(the plan as the planner would describe it from here, warnings for steps that
+        can't apply)."""
+        clean, warns = clean_actions(plant, pre + acts)
+        run = simulate(plant, clean, PLAN_HORIZON)
+        robust = not simulate(plant, clean, PLAN_HORIZON, 1 + RANGE).shutdowns
+        p = planner_plan(plant, sc["field"], acts, run, robust, PLAN_HORIZON)
+        p["summary"] += note
+        return p, warns
+
+    def rescore(self, sc: dict, plans: list[dict]) -> list[dict]:
+        """The planner can't see trucks already on the road (planning_scenario drops them so
+        it won't send them twice). Replay its candidates, plus doing nothing more, with those
+        jobs added at no extra cost, and rank them again: feasible cheapest first."""
+        if not self.inflight():
+            return plans
+        plant, pre, note = self._plant_now(sc)
         out, seen = [], set()
         for acts in [p["actions"] for p in plans] + [[]]:
             key = json.dumps(sorted(json.dumps(a, sort_keys=True) for a in acts))
             if key in seen:
                 continue
             seen.add(key)
-            clean, _ = clean_actions(plant, pre + acts)
-            run = simulate(plant, clean, PLAN_HORIZON)
-            robust = not simulate(plant, clean, PLAN_HORIZON, 1 + RANGE).shutdowns
-            p = planner_plan(plant, sc["field"], acts, run, robust, PLAN_HORIZON)
-            p["summary"] += note
-            out.append(p)
+            out.append(self._score(plant, sc, pre, acts, note)[0])
         ok = sorted((p for p in out if p["keeps_running"]), key=lambda p: (p["cost"]["total_usd"], len(p["actions"])))
         bad = sorted((p for p in out if not p["keeps_running"]),
                      key=lambda p: (len(p["cannot_save"]), p["cost"]["total_usd"]))
@@ -177,6 +219,52 @@ class RunManager:
         plan = pick_plan(plans, exclude)
         return {"plan": plan, "source": "rules", "reason": ""}
 
+    def assess(self, plan: dict) -> tuple[dict, list[str]]:
+        """Score `plan` on the live state as a run started now would play it: each action
+        at its at_min from now, on the live levels, valves, and well flows, with the
+        trucks already on the road."""
+        sc = self.planning_scenario(set())
+        plant, pre, note = self._plant_now(sc)
+        acts = [dict(a) for a in plan.get("actions", [])]
+        return self._score(plant, sc, pre, acts, note)
+
+    async def check_fresh(self, plan: dict, origin_t: float) -> None:
+        """Refuse (409) a plan the live field has moved past: its first step's lead time
+        has passed, a step can't apply any more, or it no longer keeps every tank below
+        shutdown. The 409 offers the current cheapest robust plan (`plan`, executable by
+        its id)."""
+        live, acts = self.live, plan.get("actions", [])
+        if not acts:
+            return
+        why = None
+        first = min(float(a.get("at_min", 0) or 0) for a in acts)
+        if live.t - origin_t > first + STALE_GRACE_MIN + 1e-9:
+            why = (f"it was planned at {live.fmap.clock_text(origin_t)}, its first step was due by "
+                   f"{live.fmap.clock_text(origin_t + first)}, and it's now {live.fmap.clock_text(live.t)}.")
+        else:
+            now, warns = await asyncio.to_thread(self.assess, plan)
+            if warns:
+                why = f"a step can't apply any more. {warns[0]}"
+            elif plan.get("keeps_running", True) and not now["keeps_running"]:
+                why = f"from the live state it no longer keeps every tank below shutdown. {now['summary']}"
+        if why is None:
+            return
+        exclude = self.exclusions()
+        plans = await self.candidates(exclude)
+        offer = pick_plan(plans, exclude)
+        msg = f"Plan {plan.get('id')} is out of date: {why}"
+        if offer is None:
+            idle = next((p for p in plans if not p.get("actions")), None)
+            msg += " " + (idle["summary"] if idle else "No plan from the live state needs running.")
+        else:
+            kind = ("cheapest robust plan" if offer.get("robust") else
+                    "cheapest plan that keeps every tank running" if offer.get("keeps_running") else
+                    "best plan, though it can't save every tank,")
+            msg += (f" From the live state, the {kind} is {offer['id']} "
+                    f"(${offer.get('cost', {}).get('total_usd', 0):,.0f}): {offer['summary']} "
+                    f"Execute {offer['id']} to run it.")
+        raise ActionError(409, msg, extra={"stale_plan_id": plan.get("id"), "plan": offer})
+
     # ---------- views ----------
     def list(self) -> list[dict]:
         return list(self.runs.values())
@@ -195,12 +283,15 @@ class RunManager:
 
     # ---------- start a run ----------
     async def execute(self, plan: dict, source: str = "console", by: str = "", start: bool = True,
-                      replaces: Optional[str] = None, excluded: set = frozenset(), note: str = "") -> dict:
-        """POST /api/plans/{id}/execute. 409 if another run is RUNNING; 422 if a step can't
-        apply to this field. A run with start=False is an offered re-plan (PAUSED)."""
+                      replaces: Optional[str] = None, excluded: set = frozenset(), note: str = "",
+                      origin_t: Optional[float] = None) -> dict:
+        """POST /api/plans/{id}/execute. 409 if another run is RUNNING or the plan is out of
+        date (check_fresh); 422 if a step can't apply to this field. A run with start=False
+        is an offered re-plan (PAUSED). `source` is one of SOURCES."""
         if start and self.running():
             r = self.running()
             raise ActionError(409, f"{r['id']} is already running. Pause or cancel it first.")
+        origin = self.origin_of(plan.get("id")) if origin_t is None else origin_t
         steps = []
         order = sorted(enumerate(plan.get("actions", [])), key=lambda x: (float(x[1].get("at_min", 0) or 0), x[0]))
         for n, (_, a) in enumerate(order, start=1):
@@ -210,6 +301,10 @@ class RunManager:
                           "release_clock": None, "confirmed_t": None, "result": None, "verify": None})
         if not steps:
             raise ActionError(422, f"Plan {plan.get('id')} has no actions to run.")
+        if start:
+            await self.check_fresh(plan, origin)
+            if self.running():  # someone started one while the plan was being scored
+                raise ActionError(409, f"{self.running()['id']} is already running. Pause or cancel it first.")
         run = {"id": f"run_{next(self._ids)}", "plan_id": plan.get("id"), "summary": plan.get("summary", ""),
                "cost_usd": plan.get("cost", {}).get("total_usd"), "robust": plan.get("robust"),
                "keeps_running": plan.get("keeps_running"), "status": "PAUSED", "source": source,
@@ -218,7 +313,9 @@ class RunManager:
                "replaces": replaces, "replan_run_id": None, "replan_source": None,
                "excluded": sorted(excluded), "alert_id": None, "ended_t": None}
         self.runs[run["id"]] = run
-        self._ctx[run["id"]] = {"plant": None, "key": None, "levels": {}, "horizon": 0, "over": {}, "alert": None}
+        self._ctx[run["id"]] = {"plant": None, "key": None, "levels": {}, "horizon": 0, "over": {}, "alert": None,
+                                "plan": plan, "origin_t": origin, "jobs": {}, "replanning": False,
+                                "replan_want": None, "end_why": None}
         if start:
             await self._start(run)
         else:
@@ -234,7 +331,7 @@ class RunManager:
             plan = self.find_plan(plan_id)
         if plan is None:
             raise ActionError(404, f"No plan {plan_id}. Call POST /api/plans (or ask Jarvis for plans) first.")
-        return await self.execute(plan, source=source, by=by)
+        return await self.execute(plan, source=source, by=by, origin_t=self.origin_of(plan_id))
 
     async def execute_best(self, source: str = "jarvis", by: str = "") -> tuple[Optional[dict], dict]:
         """Jarvis's "fix it": the cheapest robust plan from the live state. Returns
@@ -257,6 +354,8 @@ class RunManager:
                 why = (f"Replaced by {run['id']}." if other["id"] == run.get("replaces")
                        else f"Superseded by {run['id']}.")
                 await self._cancel(other, why)
+        for old, _ in list(self._failed):  # a person has taken the failure in hand
+            await self._clear_failed(old)
         run.update(status="RUNNING", started=True, start_t=live.t, start_clock=live.fmap.clock(live.t), reason=None)
         for s in run["steps"]:
             s["release_clock"] = live.fmap.clock_text(live.t + s["at_min"])
@@ -284,6 +383,10 @@ class RunManager:
         if other:
             raise ActionError(409, f"{other['id']} is already running. Pause or cancel it first.")
         if not run["started"]:
+            ctx = self._ctx[run["id"]]
+            await self.check_fresh(ctx["plan"], ctx["origin_t"])
+            if run["status"] != "PAUSED" or self.running():
+                raise ActionError(409, f"{run_id} is {run['status']} and can't start now.")
             await self._start(run)
             return run
         run.update(status="RUNNING", reason=None)
@@ -307,21 +410,68 @@ class RunManager:
     async def _cancel(self, run: dict, why: str) -> None:
         await self._end(run, "CANCELLED", why)
 
+    def _proposal(self, run: dict, s: dict) -> Optional[dict]:
+        """A step's proposal, found by run and step too: live.propose stores it before its
+        first await, so this sees a step that is being released right now."""
+        p = self.live.proposals.get(s["proposal_id"] or "")
+        if p is None:
+            p = next((x for x in self.live.proposals.values()
+                      if x.get("run_id") == run["id"] and x.get("step") == s["n"]), None)
+        return p
+
+    def _undecided(self, run: dict) -> list[dict]:
+        """Steps whose proposal is still PENDING or SENDING (on its way to a connector)."""
+        out = []
+        for s in run["steps"]:
+            p = self._proposal(run, s)
+            if p is not None and p["status"] in ("PENDING", "SENDING"):
+                out.append(s)
+        return out
+
     async def _end(self, run: dict, status: str, why: str) -> None:
         """Stop a run: waiting steps are cancelled and pending proposals rejected, so
-        nothing more from it can reach equipment."""
-        run.update(status=status, reason=why, ended_t=now_iso())
+        nothing more from it can reach equipment. A step whose proposal is SENDING was
+        confirmed by a person and is already on its way: it is never marked cancelled. It
+        finishes like any step (VERIFYING, then DONE or MISMATCH), and a cancel waits for
+        it as CANCELLING."""
+        final = status
+        if status == "CANCELLED":
+            status = "CANCELLING"  # becomes CANCELLED in _settle_end once nothing is SENDING
+        run.update(status=status, reason=why)
+        self._ctx[run["id"]]["end_why"] = why
+        if final != "CANCELLED":
+            run["ended_t"] = now_iso()
+        await self._clear_alert(run)
         for s in run["steps"]:
             if s["status"] == "WAITING":
                 s["status"] = "CANCELLED"
-            elif s["status"] == "PENDING":
+                continue
+            if s["status"] != "PENDING":
+                continue
+            p = self._proposal(run, s)
+            if p is None:
                 s["status"] = "CANCELLED"
-                p = self.live.proposals.get(s["proposal_id"] or "")
-                if p and p["status"] == "PENDING":
-                    await self.live.reject(p["id"], by=f"{run['id']} {status.lower()}")
-        if status == "CANCELLED":
-            await self._clear_alert(run)
+            elif p["status"] == "PENDING":
+                s.update(status="CANCELLED", proposal_id=p["id"])
+                await self.live.reject(p["id"], by=f"{run['id']} {final.lower()}")
+            elif p["status"] != "SENDING":
+                await self._sync(run, s, p)  # decided, its decision event not here yet
+        if run["status"] == "CANCELLING":
+            in_flight = self._undecided(run)
+            if in_flight:
+                steps = ", ".join(str(s["n"]) for s in in_flight)
+                run["reason"] = (f"{why} Waiting for step {steps}, already confirmed and on its way to "
+                                 f"the connector, to finish. Nothing more is released.")
+        await self._settle_end(run, broadcast=False)
         await self._broadcast(run)
+
+    async def _settle_end(self, run: dict, broadcast: bool = True) -> None:
+        """CANCELLING becomes CANCELLED once no step's proposal is PENDING or SENDING."""
+        if run["status"] != "CANCELLING" or self._undecided(run):
+            return
+        run.update(status="CANCELLED", reason=self._ctx[run["id"]]["end_why"], ended_t=now_iso())
+        if broadcast:
+            await self._broadcast(run)
 
     async def _clear_alert(self, run: dict) -> None:
         ctx = self._ctx[run["id"]]
@@ -332,8 +482,30 @@ class RunManager:
 
     async def _alert(self, run: dict, asset_id: str, kind: str, message: str) -> None:
         a = await self.live.raise_alert(asset_id, kind, "ALARM", message)
-        self._ctx[run["id"]]["alert"] = a
+        if kind == "RUN_FAILED":
+            self._failed = [(r, x) for r, x in self._failed if r is not run] + [(run, a)]
+        else:
+            self._ctx[run["id"]]["alert"] = a
         run["alert_id"] = a["id"]
+
+    async def _clear_failed(self, run: dict) -> None:
+        """Resolve a failed run's RUN_FAILED alert (active: false)."""
+        for r, a in list(self._failed):
+            if r is run:
+                self._failed.remove((r, a))
+                if a.get("active"):
+                    await self.live.resolve_alert(a["asset_id"], a["kind"])
+
+    async def _check_failed(self) -> None:
+        """A RUN_FAILED alert resolves once its tank reads below shutdown again."""
+        live = self.live
+        for run, a in list(self._failed):
+            tank = live.fmap.tanks.get(a["asset_id"])
+            lvl = live.value(a["asset_id"], "level_pct")
+            if not a.get("active") or tank is None or (
+                    lvl is not None and not live.detector.is_stale(a["asset_id"], "level_pct")
+                    and float(lvl) < float(tank["shutdown_pct"])):
+                await self._clear_failed(run)
 
     # ---------- events from the live field ----------
     async def _on_event(self, event: str, payload) -> None:
@@ -343,12 +515,16 @@ class RunManager:
             if run and isinstance(n, int) and 1 <= n <= len(run["steps"]):
                 before = self._sig(run)
                 await self._sync(run, run["steps"][n - 1], payload)
+                await self._settle_end(run, broadcast=False)
                 if self._sig(run) != before:
                     await self._broadcast(run)
         elif event == "tick":
             for run in list(self.runs.values()):
-                if run["status"] in ACTIVE or any(s["status"] == "VERIFYING" for s in run["steps"]):
+                if (run["status"] in ACTIVE or run["status"] == "CANCELLING"
+                        or any(s["status"] == "VERIFYING" for s in run["steps"])):
                     await self.update(run)
+            if self._failed:
+                await self._check_failed()
 
     @staticmethod
     def _sig(run: dict) -> tuple:
@@ -360,10 +536,11 @@ class RunManager:
             return  # an offered re-plan: nothing happens until a person starts it
         before = self._sig(run)
         live = self.live
+        await self._settle_end(run, broadcast=False)
         for s in run["steps"]:
             if s["status"] != "VERIFYING":
                 continue
-            ok, text = self._check(s)
+            ok, text = self._check(run, s)
             text = cap(text)
             if ok:
                 s.update(status="DONE", verify=text)
@@ -389,6 +566,8 @@ class RunManager:
             if s["status"] != "WAITING" or live.t - run["start_t"] < s["at_min"] - 1e-6:
                 continue
             s["status"] = "PENDING"  # claimed before the await, so it's released once
+            sim = live.registry.sim   # so _check finds this step's own truck job
+            self._ctx[run["id"]]["jobs"][s["n"]] = [sim, len(sim.truck_jobs), None]
             try:
                 p = await live.propose(s["action"], source="run", extra={"run_id": run["id"], "step": s["n"]},
                                        reason=f"Step {s['n']} of {len(run['steps'])} in {run['id']} "
@@ -410,6 +589,9 @@ class RunManager:
             s["status"] = "PENDING"
         elif st == "CONFIRMED":
             s.update(status="VERIFYING", confirmed_t=self.live.t, result=p.get("result"))
+            mark = self._ctx[run["id"]]["jobs"].get(s["n"])
+            if mark and mark[0] is self.live.registry.sim and mark[2] is None:
+                mark[2] = len(mark[0].truck_jobs)  # the step's job was added before this
         elif st == "REJECTED":
             if run["status"] not in ACTIVE:
                 s["status"] = "CANCELLED"
@@ -434,7 +616,20 @@ class RunManager:
             await self._clear_alert(run)
 
     # ---------- checks ----------
-    def _check(self, s: dict) -> tuple[bool, str]:
+    def _truck_job(self, run: dict, s: dict) -> Optional[dict]:
+        """This step's own job in the simulator: added between the step's release and its
+        confirm, for this truck and this target. The latest such job, as the confirm adds
+        it last."""
+        sim, a = self.live.registry.sim, s["action"]
+        mark = self._ctx[run["id"]]["jobs"].get(s["n"])
+        if not mark or mark[0] is not sim:
+            return None
+        hi = mark[2] if mark[2] is not None else len(sim.truck_jobs)
+        mine = [j for j in sim.truck_jobs[mark[1]:hi]
+                if j["truck_id"] == a["asset_id"] and j["target_id"] == a["target_id"]]
+        return mine[-1] if mine else None
+
+    def _check(self, run: dict, s: dict) -> tuple[bool, str]:
         """(effect seen, what the readings say) for a confirmed step."""
         live, a, since = self.live, s["action"], s["confirmed_t"]
         aid, typ = a["asset_id"], a["type"]
@@ -446,10 +641,16 @@ class RunManager:
             return r["value"] if ok else None
 
         if typ == "SEND_TRUCK":
-            ph = live.registry.sim.truck_phase(aid)
-            if ph["phase"] != "IDLE":
-                return True, f"{name(aid)} is {ph['phase'].lower().replace('_', ' ')}."
-            return False, f"{name(aid)} is still idle {mins} after it was dispatched to {name(a['target_id'])}."
+            job, tgt = self._truck_job(run, s), name(a["target_id"])
+            if job is None:
+                return False, f"No dispatch of {name(aid)} to {tgt} seen {mins} after it was confirmed."
+            if job["depart"] > since + TRUCK_ON_TIME_MIN + 1e-9:
+                return False, (f"{name(aid)} is queued behind another job: it leaves for {tgt} at "
+                               f"{live.fmap.clock_text(job['depart'])}, not when it was confirmed.")
+            t = live.registry.sim.t
+            phase = ("queued" if t < job["depart"] else "en route" if t < job["arrive"] else
+                     "loading" if t < job["load_end"] else "hauling to disposal" if t < job["done"] else "done")
+            return True, f"{name(aid)} is {phase} for {tgt}."
         signal = {"SET_VALVE": "position", "SET_PUMP": "running", "CHOKE_WELL": "flow_bbl_hr"}[typ]
         v = fresh(signal)
         if v is None:
@@ -482,7 +683,6 @@ class RunManager:
             if float(lvl) >= float(tank["shutdown_pct"]):
                 why = (f"{name(tid)} reached shutdown ({float(lvl):.1f}%, limit {tank['shutdown_pct']}%) "
                        f"during {run['id']}.")
-                await self._clear_alert(run)
                 await self._end(run, "FAILED", why)
                 await self._alert(run, tid, "RUN_FAILED", f"{why} The run is stopped.")
                 return
@@ -535,12 +735,28 @@ class RunManager:
         await self._alert(run, asset_id, "RUN_PAUSED",
                           f"{why} {run['id']} is paused. Jarvis is re-planning from the current state.")
         await self._broadcast(run)
+        ctx = self._ctx[run["id"]]
+        ctx["replan_want"] = (asset_id, why)
+        if ctx["replanning"] or self._closed:
+            return  # the re-plan in flight picks this up when it's done
+        ctx["replanning"] = True
         if self.jarvis is not None and getattr(self.jarvis, "llm_ready", lambda: False)():
-            task = asyncio.get_running_loop().create_task(self._replan(run, asset_id, why))
+            task = asyncio.get_running_loop().create_task(self._replans(run))
             self._tasks.add(task)
             task.add_done_callback(self._tasks.discard)
         else:
-            await self._replan(run, asset_id, why)
+            await self._replans(run)
+
+    async def _replans(self, run: dict) -> None:
+        """One re-plan at a time per run; a problem raised meanwhile gets one more."""
+        ctx = self._ctx[run["id"]]
+        try:
+            while ctx["replan_want"] is not None and not self._closed:
+                asset_id, why = ctx["replan_want"]
+                ctx["replan_want"] = None
+                await self._replan(run, asset_id, why)
+        finally:
+            ctx["replanning"] = False
 
     async def _replan(self, run: dict, asset_id: str, why: str) -> None:
         try:
@@ -573,6 +789,15 @@ class RunManager:
         await self._broadcast(run)
 
     async def settle(self) -> None:
-        """Wait for background re-plans (Claude path). Tests and shutdown use it."""
+        """Wait for background re-plans (Claude path). Tests use it."""
         while self._tasks:
             await asyncio.gather(*list(self._tasks), return_exceptions=True)
+
+    async def close(self) -> None:
+        """Server shutdown (main.py's lifespan): cancel background re-plans, start no more."""
+        self._closed = True
+        tasks = list(self._tasks)
+        for t in tasks:
+            t.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)

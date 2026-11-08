@@ -399,8 +399,8 @@ The live clock starts at the blueprint's `clock_start` and runs at `FREEBOARD_SP
 | `PUMP_TRIP` | `ALARM` | The pump reports `running` false, or its flow is under 10% of its rate while it should run, or its tank rises faster than its wells explain. Confirmed over 2 readings, so it alerts within 3. |
 | `SENSOR_STALE` | `WARNING` | No reading of a signal for `stale_after_min`. |
 | `VALVE_MISMATCH` | `WARNING` | A valve's reported position differs from the position a person confirmed, for 2 readings after a 1 minute grace. |
-| `RUN_PAUSED` | `ALARM` | A plan run paused itself: a step's effect wasn't seen, a tank is rising faster than forecast, or a step was rejected or failed. `asset_id` is that step's asset or tank. The message names the re-plan run once Jarvis has one. Resolves when the run resumes, is replaced, or is cancelled. See [Plan runs](#plan-runs-63). |
-| `RUN_FAILED` | `ALARM` | A tank reached shutdown during a plan run. `asset_id` is the tank. |
+| `RUN_PAUSED` | `ALARM` | A plan run paused itself: a step's effect wasn't seen, a tank is rising faster than forecast, or a step was rejected or failed. `asset_id` is that step's asset or tank. The message names the re-plan run once Jarvis has one. Resolves (`active: false`) when the run resumes or ends: replaced, cancelled, failed, or done. See [Plan runs](#plan-runs-63). |
+| `RUN_FAILED` | `ALARM` | A tank reached shutdown during a plan run, which ends the run as `FAILED`. `asset_id` is the tank. Resolves (`active: false`) when that tank reads below shutdown again, or when a person starts another run. |
 
 `t` is when it was raised (ISO). When the condition clears, the same alert is sent again with `"active": false` and `resolved_t`. An alert closed because the field was reloaded (see below) also has `resolved_reason`.
 
@@ -439,7 +439,7 @@ Response 200:
 
 - `source` is `rules` (instant answers that need no API key: what's failing, how long until shutdown, show or explain an asset, what am I looking at with a selection, the cheapest plan, "fix it", and fixes like "open the crossover", "send truck 1 to tank 3", "shut in well 9", "turn off pump 2") or `claude`.
 - Jarvis's fixes are proposals (PENDING) in `proposals`. It never changes equipment itself.
-- "Fix it" (also "run the plan", "make it so") starts a [plan run](#plan-runs-63) of the cheapest plan that keeps every tank below shutdown, preferring one that holds with inflow 15% high. The run is in `runs`; each of its steps still waits for a person. With a key, Claude does the same through its `execute_plan` tool. If a run is already RUNNING, the reply says so and nothing new starts.
+- "Fix it" (also "run the plan", "make it so") starts a [plan run](#plan-runs-63) of the cheapest plan that keeps every tank below shutdown, preferring one that holds with inflow 15% high. The run is in `runs`; each of its steps still waits for a person. With a key, Claude does the same through its `execute_plan` tool. If a run is already RUNNING, the reply says so and nothing new starts. A negation in the same clause ("don't fix it", "do not run the plan yet") or a question ("should I fix it?", "how would you run the plan?") starts nothing: a question gets the plans answer. A polite request ("can you fix it?", "please run the plan") still starts the run.
 - "Open the crossover" picks: the crossover joining the tanks the text names ("the Tank 3 to 4 crossover", "3 and 4", "between 5 and 6"); else the one on the tank in trouble (an active `PUMP_TRIP`'s tank, then the tank with the earliest forecast shutdown), toward the neighbor with the most room before shutdown; only then the first crossover. Named tanks with no crossover between them get a reply saying so and no proposal. "Close the crossover" prefers one that is open.
 - A question about an asset that also asks for a fix ("Why is Tank 3 rising, and what's my cheapest fix?") answers the question, then adds "Cheapest plan, $X: ..." and, when it is a different plan, "Cheapest robust plan, $Y: ...". The last `ui` focus is the cheapest plan's first step.
 - With no `ANTHROPIC_API_KEY` and no rules match: **503** `{"detail": "Jarvis needs ANTHROPIC_API_KEY on the server."}`. Other Claude failures are also 503 with a `detail` saying why.
@@ -466,11 +466,21 @@ A run executes a plan from `POST /api/plans` (or from Jarvis) step by step. **Ev
 
 1. The plan's actions are sorted by `at_min`. Each step is released as a PENDING proposal (`source: "run"`, with `run_id` and `step`) when the live clock is `at_min` minutes past the run's start. The simulator applies a command the moment it's confirmed, so releasing at the plan's lead time keeps the field on the plan's timing.
 2. A person confirms (or rejects) it with `POST /api/actions/{id}/confirm`. It goes through the asset's connector.
-3. The run then looks for the effect in the live readings: the valve's `position` reads the commanded value (within 2 live min), the pump's `running` matches ON/OFF (2 min), the well's flow is within 10% of design × choke (3 min), the truck is no longer `IDLE` (1 min). It also replays exactly what was confirmed, at the times it was confirmed, and watches every tank with a fresh level.
-4. If an effect isn't seen in time (for example a stuck valve still reads CLOSED), a tank runs more than 3 points above the replay for 1 live minute (rising faster than forecast), or a step is rejected or fails at its connector, the run **pauses**, raises a `RUN_PAUSED` alert, and asks Jarvis for a **re-plan** from the current state. The re-plan avoids the failed asset (and any valve with an active `VALVE_MISMATCH`), counts wells at their live flow, and doesn't resend trucks already on the road (it counts their loads). With no API key Jarvis uses the rules pick (cheapest plan that keeps every tank running and holds with inflow 15% high); with one, Claude chooses among the same planner plans, and `replan_source` says which. The re-plan is offered as a **new run** that is PAUSED and not started (`started: false`). `POST /api/runs/{new}/resume` starts it and cancels the paused run.
+3. The run then looks for the effect in the live readings: the valve's `position` reads the commanded value (within 2 live min), the pump's `running` matches ON/OFF (2 min), the well's flow is within 10% of design × choke (3 min), the step's own truck job exists, sent to the step's `target_id` after the step was released, and leaves within 1 live min of the confirm, not queued behind another job (1 min). It also replays exactly what was confirmed, at the times it was confirmed, and watches every tank with a fresh level.
+4. If an effect isn't seen in time (for example a stuck valve still reads CLOSED), a tank runs more than 3 points above the replay for 1 live minute (rising faster than forecast), or a step is rejected or fails at its connector, the run **pauses**, raises a `RUN_PAUSED` alert, and asks Jarvis for a **re-plan** from the current state. The re-plan avoids the failed asset (and any valve with an active `VALVE_MISMATCH`), counts wells at their live flow, and doesn't resend trucks already on the road (it counts their loads). With no API key Jarvis uses the rules pick (cheapest plan that keeps every tank running and holds with inflow 15% high); with one, Claude chooses among the same planner plans, and `replan_source` says which. The re-plan is offered as a **new run** that is PAUSED and not started (`started: false`). `POST /api/runs/{new}/resume` starts it and cancels the paused run. One re-plan is in flight per run at a time; a problem raised while Jarvis is re-planning is folded into one more re-plan when that one finishes, and the newer offer supersedes the older.
 5. When every step is finished the run is `DONE`. A tank reaching shutdown during a run makes it `FAILED` (alert `RUN_FAILED`).
 
 Only one run is RUNNING at a time. Starting a run cancels any other PAUSED run.
+
+**Stale plans.** Before a run starts (`POST /api/plans/{id}/execute`, Jarvis's "fix it", or resuming an offered re-plan), its plan is scored again on the live state: the live clock, tank levels, valve positions and well flows (so what's already been applied counts), and trucks already on the road. A plan is planned at the live minute it was computed (live minute 0, the scenario's start, for `POST /api/plans` results). The start is refused with **409** when the first step's lead time (`at_min`) has passed by more than 1 live minute, a step can't apply any more (its truck is already out), or a plan that kept every tank below shutdown no longer does. The 409 body offers the current plan, computed from the live state and executable by its id at once:
+
+```json
+{ "detail": "Plan plan_867eb029 is out of date: it was planned at 1:48 AM, its first step was due by 1:53 AM, and it's now 2:20 AM. From the live state, the cheapest robust plan is plan_8272dd60 ($1,210): ... Execute plan_8272dd60 to run it.",
+  "stale_plan_id": "plan_867eb029",
+  "plan": { "id": "plan_8272dd60", "summary": "...", "actions": [...], "cost": {...}, "keeps_running": true, "robust": true } }
+```
+
+`plan` is Jarvis's rules pick (cheapest robust, else cheapest that keeps every tank running), or null when nothing needs doing.
 
 ```json
 { "id": "run_1", "plan_id": "plan_867eb029",
@@ -482,7 +492,7 @@ Only one run is RUNNING at a time. Starting a run cancels any other PAUSED run.
     { "n": 1, "action": { "type": "SEND_TRUCK", "asset_id": "TRUCK_1", "value": null, "target_id": "TANK_3" },
       "at_min": 5.0, "release_clock": "1:53 AM", "text": "Send Truck 1 to Tank 3.",
       "proposal_id": "act_1", "status": "DONE", "confirmed_t": 9.0,
-      "result": "TRUCK_1 dispatched to TANK_3, arriving in 35 min.", "verify": "Truck 1 is en route." },
+      "result": "TRUCK_1 dispatched to TANK_3, arriving in 35 min.", "verify": "Truck 1 is en route for Tank 3." },
     { "n": 3, "action": { "type": "SET_VALVE", "asset_id": "VALVE_XO_34", "value": "OPEN" },
       "at_min": 20.0, "release_clock": "2:08 AM", "text": "Open the Tank 3 to 4 crossover.",
       "proposal_id": "act_3", "status": "MISMATCH", "confirmed_t": 24.0,
@@ -494,11 +504,12 @@ Only one run is RUNNING at a time. Starting a run cancels any other PAUSED run.
   "excluded": ["VALVE_XO_34"], "alert_id": "alert_3", "ended_t": null }
 ```
 
-- Run `status`: `RUNNING`, `PAUSED`, `DONE`, `FAILED`, `CANCELLED`. `reason` says why it's paused or ended. `start_t` is live minutes (null until started); `note` is Jarvis's one-line reason for a re-plan chosen by Claude.
+- Run `status`: `RUNNING`, `PAUSED`, `CANCELLING`, `DONE`, `FAILED`, `CANCELLED`. `CANCELLING` means a cancel came while a step's proposal was `SENDING`: nothing more is released, and it becomes `CANCELLED` when those sends finish (`ended_t` is set then). `reason` says why it's paused or ended.
+- Run `source`: `console` (`POST /api/plans/{id}/execute`), `jarvis` ("fix it" or Claude's `execute_plan`), or `replan` (a re-plan Jarvis offered for a paused run). Its steps' proposals always have `source: "run"`. `start_t` is live minutes (null until started); `note` is Jarvis's one-line reason for a re-plan chosen by Claude.
 - Step `status`: `WAITING` (not released yet), `PENDING` (waiting for a person), `VERIFYING` (confirmed, effect not seen yet), `DONE`, `MISMATCH` (effect not seen in time; `verify` says what the readings show), `REJECTED`, `FAILED` (the connector refused), `CANCELLED`.
-- `POST /api/plans/{id}/execute` (optional body `{"by": "name"}`) → the new run, RUNNING. Plan ids come from `POST /api/plans` or from Jarvis's plans (ids are deterministic, so an unknown id is looked up again from the live state). 404 for an unknown plan, 409 if another run is RUNNING, 422 if a step can't apply to this field.
+- `POST /api/plans/{id}/execute` (optional body `{"by": "name"}`) → the new run, RUNNING. Plan ids come from `POST /api/plans` or from Jarvis's plans (ids are deterministic, so an unknown id is looked up again from the live state). 404 for an unknown plan, 409 if another run is RUNNING or the plan is stale (see above, with the current plan in the body), 422 if a step can't apply to this field.
 - `GET /api/runs` → `{"runs": [run]}`, oldest first. `GET /api/runs/{id}` → one run (404 if unknown).
-- `POST /api/runs/{id}/pause` (RUNNING → PAUSED: nothing new is released; steps already PENDING stay confirmable). `POST /api/runs/{id}/resume` (PAUSED → RUNNING: starts an offered re-plan, or continues a paused run, releasing overdue steps now and treating a failed step as skipped). `POST /api/runs/{id}/cancel` (any active run → CANCELLED: waiting steps are cancelled and pending proposals rejected, so nothing more from it can reach equipment). Optional body `{"by": "name"}`. 404 for an unknown run, 409 if the run isn't in the right status.
+- `POST /api/runs/{id}/pause` (RUNNING → PAUSED: nothing new is released; steps already PENDING stay confirmable). `POST /api/runs/{id}/resume` (PAUSED → RUNNING: starts an offered re-plan, or continues a paused run, releasing overdue steps now and treating a failed step as skipped). `POST /api/runs/{id}/cancel` (any active run → CANCELLED: waiting steps are cancelled and pending proposals rejected, so nothing more from it can reach equipment. A step whose proposal is already `SENDING` is never marked cancelled: it finishes and is verified like any step, and the run is `CANCELLING` until then). Optional body `{"by": "name"}`. 404 for an unknown run, 409 if the run isn't in the right status.
 
 ### `WS /ws`
 

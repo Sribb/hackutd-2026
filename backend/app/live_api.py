@@ -28,6 +28,7 @@ from typing import Callable, List, Optional, Union
 
 from fastapi import APIRouter, FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from .connectors.webhook import WebhookConnector
@@ -88,6 +89,12 @@ def build_router(live: LiveField, jarvis: Jarvis, runs: Optional[RunManager] = N
 
     def fail(e: ActionError):
         raise HTTPException(e.status, e.detail)
+
+    def fail_with(e: ActionError):
+        """Like fail(), but keeps e.extra beside `detail` (a stale plan's current offer)."""
+        if e.extra:
+            return JSONResponse(status_code=e.status, content={"detail": e.detail, **e.extra})
+        fail(e)
 
     @r.get("/api/live/state")
     def live_state() -> dict:
@@ -175,7 +182,7 @@ def build_router(live: LiveField, jarvis: Jarvis, runs: Optional[RunManager] = N
         try:
             return await runs.execute_id(plan_id, source="console", by=body.by if body else "")
         except ActionError as e:
-            fail(e)
+            return fail_with(e)
 
     @r.get("/api/runs")
     def get_runs() -> dict:
@@ -196,7 +203,7 @@ def build_router(live: LiveField, jarvis: Jarvis, runs: Optional[RunManager] = N
         try:
             return await fn(run_id, by=body.by if body else "")
         except ActionError as e:
-            fail(e)
+            return fail_with(e)
 
     @r.websocket("/ws")
     async def ws(websocket: WebSocket, role: str = "web", name: str = "") -> None:

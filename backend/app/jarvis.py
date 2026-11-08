@@ -48,7 +48,37 @@ HELP = ("I can show and explain assets, report what's failing, give the time to 
         "crossover' or 'send truck 1 to tank 3'.")
 FIX_IT = re.compile(r"\b(fix (it|this|that|the field|everything|tank \d+)|make it so|"
                     r"(run|execute|start) (the |a )?(cheapest |best )?plan)\b")
+# "Don't fix it", "do not run the plan yet": a negation in the same clause before the match.
+FIX_NEGATION = re.compile(r"\b(don'?t|dont|do not|never|not|no|stop|cancel|hold off|wait|without)\b")
+# A question isn't an order ("should I fix it?", "how would you run the plan?"), except a
+# polite request ("can you fix it?", "could you please run the plan?").
+QUESTION_START = re.compile(r"^\s*(how|what|why|when|which|who|where|should|shall|would|could|can|will|"
+                            r"is|are|was|does|do|did|if|whether|any idea)\b")
+POLITE_REQUEST = re.compile(r"^\s*(jarvis,? )?(please |(can|could|will|would) you\b( please)?)")
 REPLAN_TIMEOUT_S = 20.0
+
+
+def fix_it_request(text: str) -> Optional[str]:
+    """'run' when the text orders a plan run ("fix it", "make it so", "please run the
+    plan"), 'negated' for "don't fix it", 'question' for "should I fix it?", else None."""
+    t = text.lower().replace("-", " ").replace("’", "'")
+    m = FIX_IT.search(t)
+    if not m:
+        return None
+    # The clause holding the match: from the last sentence or clause break before it to the next.
+    start = max(t.rfind(c, 0, m.start()) for c in ".!?;:,") + 1
+    ends = [i for i in (t.find(c, m.end()) for c in ".!?;") if i >= 0]
+    clause, end = t[start:m.start()], min(ends) if ends else len(t)
+    sentence_start = max(t.rfind(c, 0, m.start()) for c in ".!?;") + 1
+    if FIX_NEGATION.search(clause):
+        return "negated"
+    sentence = t[sentence_start:m.start()]
+    jarvis_name = re.sub(r"^\s*(hey |ok |okay )?jarvis,?\s*", "", sentence)
+    if POLITE_REQUEST.search(jarvis_name):
+        return "run"
+    if t[end:end + 1] == "?" or QUESTION_START.search(jarvis_name):
+        return "question"
+    return "run"
 
 
 class JarvisUnavailable(Exception):
@@ -548,7 +578,9 @@ class Jarvis:
             return await self._propose({"type": "SET_PUMP", "asset_id": f"PUMP_{n}", "value": on.upper()}, text, ctx)
 
         # "Fix it": run the cheapest robust plan, one confirmed step at a time.
-        if FIX_IT.search(t):
+        # A negation ("don't fix it") or a question ("should I run the plan?") starts nothing.
+        fix = fix_it_request(text)
+        if fix == "run":
             res = await self.run_tool("execute_plan", {"plan_id": None}, ctx)
             if "error" in res:
                 return f"I can't start a run: {res['error']}"
@@ -600,6 +632,8 @@ class Jarvis:
             await self._focus(active[0]["asset_id"], ctx)
             more = f" {len(active) - 2} more alerts are open." if len(active) > 2 else ""
             return " ".join(a["message"] for a in active[:2]) + more
+        if fix == "negated":
+            return "Okay, I won't start a run. Say \"fix it\" when you want one."
         return None
 
     async def _propose(self, action: dict, text: str, ctx: dict) -> str:
