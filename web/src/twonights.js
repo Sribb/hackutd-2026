@@ -221,12 +221,33 @@ export function mountTwoNights(h) {
       col.querySelector(".tn-wells").textContent = `${w} of ${r.wellsTotal} wells online`;
       col.querySelector(".tn-wells").classList.toggle("down", w < r.wellsTotal);
       const list = side === "none" ? r.events.L : r.events.R;
-      const lis = col.querySelectorAll(".tn-log li");
+      const lis = box.querySelectorAll(`.tn-log.${side} li`);
       list.forEach((e, i) => lis[i] && lis[i].classList.toggle("on", e.t <= t));
+      // The one line under each total: the latest thing that happened on that night.
+      const last = list.filter((e) => e.t <= t).pop();
+      const now = col.querySelector(".tn-now");
+      const text = last ? last.text : "";
+      if (now.textContent !== text) { now.textContent = text; now.className = `tn-now${last && last.bad ? " bad" : last && last.good ? " good" : ""}`; }
     }
     const done = t >= r.horizon;
     box.querySelector(".tn-end").hidden = !done;
+    box.classList.toggle("done", done);
     box.querySelector("[data-tn=play]").textContent = done ? "Replay" : r.playing ? "Pause" : "Play";
+    fit();
+  }
+
+  // Never down on the time bar: the card ends above where the time bar sits (its layout box,
+  // not its slide-in transform), and scrolls inside if it would be taller.
+  // On a short canvas (a phone) with no room for both, the time bar steps down while the replay
+  // runs (the card has its own scrubber), so the two never overlap.
+  function fit() {
+    const tb = document.querySelector(".timebar");
+    if (!tb || !box.offsetParent) return;
+    const above = tb.offsetTop - 10 - box.offsetTop;
+    const hide = above < Math.min(box.scrollHeight, 220);
+    document.body.classList.toggle("tn-tb-hide", hide);
+    const room = Math.max(96, hide ? box.offsetParent.clientHeight - 12 - box.offsetTop : above);
+    if (box._room !== room) { box._room = room; box.style.maxHeight = `${room}px`; }
   }
 
   function step(now) {
@@ -272,35 +293,51 @@ export function mountTwoNights(h) {
     const lostWells = r.wellsTotal - wellsAt(r.none, r.horizon);
     const keeps = wellsAt(r.with, r.horizon) === r.wellsTotal;
     const li = (e) => `<li class="${e.bad ? "bad" : e.good ? "good" : ""}">${esc(e.text)}</li>`;
+    // One calm card along the top of the field: the clock and controls, the two nights side by
+    // side (running cost, wells online, the latest event), and the takeaway when it ends.
+    // The full event timeline stays folded behind "timeline".
     box.innerHTML = `
-      <div class="tn-top">
-        <div class="kicker">Two nights · same pump trip, same water</div>
-        <div class="tn-head">
-          <b class="tn-clock">${h.clockAt(0)}</b>
-          <span class="tn-ctl"><button type="button" data-tn="play">Pause</button><button type="button" data-tn="close" aria-label="Close">Close</button></span>
-        </div>
-        <div class="tn-bar" title="Click to jump"><i></i></div>
-        <div class="tn-legend"><span class="sw ghost"></span>Red: water if nobody acts <span class="sw water"></span>Water: with the plan</div>
+      <header class="tn-head">
+        <span class="tn-title">Two nights <span class="tn-sub">· same pump trip, same water</span></span>
+        <b class="tn-clock">${h.clockAt(0)}</b>
+        <span class="tn-ctl"><button type="button" data-tn="play">Pause</button><button type="button" data-tn="close" aria-label="Close">Close</button></span>
+      </header>
+      <div class="tn-bar" title="Click to jump"><i></i></div>
+      <div class="tn-sides">
+        <section class="tn-col none">
+          <div class="tn-k"><i class="sw ghost"></i>Nobody acts</div>
+          <div class="tn-nums"><b class="tn-usd">$0</b><span class="tn-wells"></span></div>
+          <div class="tn-now"></div>
+        </section>
+        <section class="tn-col with">
+          <div class="tn-k"><i class="sw water"></i>With Gaia</div>
+          <div class="tn-nums"><b class="tn-usd">$0</b><span class="tn-wells"></span></div>
+          <div class="tn-now"></div>
+        </section>
       </div>
-      <section class="tn-col none">
-        <div class="kicker">Nobody acts</div>
-        <div class="tn-usd">$0</div>
-        <div class="tn-wells"></div>
-        <ol class="tn-log">${r.events.L.map(li).join("")}</ol>
-      </section>
-      <section class="tn-col with">
-        <div class="kicker">With Gaia</div>
-        <div class="tn-usd">$0</div>
-        <div class="tn-wells"></div>
-        <ol class="tn-log">${r.events.R.map(li).join("")}</ol>
-      </section>
       <div class="tn-end" hidden>
-        <div class="tn-verdict">Same pump trip, same water. <b>${h.usd(Math.max(0, nTot - wTot))}</b>${lostWells ? ` and ${lostWells} well${lostWells === 1 ? "" : "s"}` : ""} apart.</div>
+        <div class="tn-verdict">Same pump trip, same water: <b>${h.usd(Math.max(0, nTot - wTot))}</b>${lostWells ? ` and ${lostWells} well${lostWells === 1 ? "" : "s"}` : ""} apart.</div>
         <p>Nobody acting costs ${h.usd(nTot)}${lostWells ? ` and shuts in ${lostWells} well${lostWells === 1 ? "" : "s"}` : ""}. "${esc(firstSentence(r.plan.summary))}" costs ${h.usd(wTot)}${keeps ? " and keeps every well online" : ""}.${r.plan.expires_clock ? ` It only works if it starts by ${esc(r.plan.expires_clock)}.` : ""}</p>
         ${h.approved() ? "" : `<button type="button" class="primary hold" data-tn="approve"><i></i><span>Hold to approve this plan</span></button>`}
-      </div>`;
+      </div>
+      <footer class="tn-foot">
+        <span class="tn-legend"><i class="sw ghost"></i>Red column: water if nobody acts <i class="sw water"></i>Water: with the plan</span>
+        <button type="button" class="tn-more" data-tn="more" aria-expanded="false">Timeline</button>
+      </footer>
+      <div class="tn-logs" hidden>
+        <div><div class="tn-k">Nobody acts</div><ol class="tn-log none">${r.events.L.map(li).join("")}</ol></div>
+        <div><div class="tn-k">With Gaia</div><ol class="tn-log with">${r.events.R.map(li).join("")}</ol></div>
+      </div>
+      <p class="tn-src">Both totals are the backend's own forecasts (/api/forecast): nobody acting, and the plan.</p>`;
     box.querySelector("[data-tn=play]").onclick = () => (run.playing ? pause() : play());
     box.querySelector("[data-tn=close]").onclick = close;
+    box.querySelector("[data-tn=more]").onclick = (e) => {
+      const logs = box.querySelector(".tn-logs");
+      logs.hidden = !logs.hidden;
+      e.currentTarget.setAttribute("aria-expanded", String(!logs.hidden));
+      e.currentTarget.textContent = logs.hidden ? "Timeline" : "Hide timeline";
+      fit();
+    };
     box.querySelector(".tn-bar").onclick = (e) => {
       const rect = e.currentTarget.getBoundingClientRect();
       const f = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
@@ -355,7 +392,9 @@ export function mountTwoNights(h) {
     run = null;
     box.hidden = true;
     box.innerHTML = "";
-    document.body.classList.remove("two-nights");
+    box.style.maxHeight = "";
+    box._room = null;
+    document.body.classList.remove("two-nights", "tn-tb-hide");
     if (!opts.keepPlan) h.setActions(saved.actions, true);
     h.setTime(opts.keepPlan ? 0 : saved.t);
   }

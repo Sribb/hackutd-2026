@@ -10,7 +10,7 @@ import "@fontsource/great-vibes/400.css"; // the gaia mark, same as the console
 import "@fontsource/azeret-mono/400.css";
 import "@fontsource/azeret-mono/600.css";
 import "./dataset.css";
-import { fileSource, assetIndex, checkDataset, STEP_S } from "./data.js";
+import { fileSource, backendFileSource, assetIndex, checkDataset, STEP_S } from "./data.js";
 import { lineChart, fmtTime } from "./chart.js";
 import { normAlerts, sortAlerts, actionLines, durationText, categoryOf, money } from "./alerts.js";
 import { eogClient } from "./eog.js";
@@ -59,9 +59,13 @@ function setStatus(text, tone = "") {
 async function pickSource() {
   // The raw files come from the dev server's /eog/ folder (EOG_DIR or FREEBOARD_EOG_DIR,
   // the same folder the backend reads). Detection and plans come from /api/eog.
-  const files = fileSource("/eog");
-  const info = await files.info();
   try { state.backend = await state.eog.datasets(); } catch { state.backend = null; }
+  let files = fileSource("/eog"), info;
+  try { info = await files.info(); } catch (e) {
+    // A built page (dist/) has no /eog/: read the same files through the backend.
+    files = backendFileSource(API);
+    info = await files.info().catch(() => { throw e; });
+  }
   return { source: files, info };
 }
 
