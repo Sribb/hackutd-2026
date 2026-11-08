@@ -86,13 +86,19 @@ def tanks_hit_by(fmap: FieldMap, alert: dict) -> list[str]:
 
 
 def consequence_of(fmap: FieldMap, alert: dict, shutdowns: dict, horizon_min: float,
-                   restart_usd: float, now_t: float = 0.0, start_clock: str = "00:00") -> dict:
+                   restart_usd: float, now_t: float = 0.0, start_clock: str = "00:00",
+                   unknown_tanks: Optional[set] = None) -> dict:
     """Priority and consequence fields for one alert, from the baseline forecast's
     SHUTDOWN_LEVEL events (`shutdowns`: tank id -> event, its t_min counted from now,
     which is live minute `now_t` and clock `start_clock`, the forecast's start).
 
     usd_at_risk is what the forecast charges for that shutdown: the shut-in wells' lost
-    production to the end of the horizon, plus a restart for each well."""
+    production to the end of the horizon, plus a restart for each well.
+
+    Missing data never lowers a priority: a cause alarm (a trip, a high level, a valve
+    mismatch) on a tank in `unknown_tanks` (no fresh level, so the forecast has no
+    shutdown for it) is P1, "Tank 3 level unknown; can't rule out shutdown.", and keeps
+    the dollars it last had at risk."""
     blank = {"minutes_to_consequence": None, "minutes_to_consequence_low": None, "consequence": None,
              "consequence_asset_id": None, "consequence_clock": None, "consequence_t": None, "usd_at_risk": 0}
     if alert["kind"] == "SENSOR_STALE":
@@ -101,9 +107,22 @@ def consequence_of(fmap: FieldMap, alert: dict, shutdowns: dict, horizon_min: fl
                     "consequence": f"{name(alert['asset_id'])} has no fresh level, so when it shuts in "
                                    f"is unknown. Treat it as at risk."}
         return {**blank, "priority": "P3"}
-    events = [shutdowns[tid] for tid in tanks_hit_by(fmap, alert) if tid in shutdowns]
+    hit = tanks_hit_by(fmap, alert)
+    blind = [tid for tid in hit if tid in (unknown_tanks or ()) and tid not in shutdowns]
+    out = _forecast_consequence(fmap, [shutdowns[tid] for tid in hit if tid in shutdowns],
+                                horizon_min, restart_usd, now_t, start_clock)
+    if blind and (out is None or out["priority"] != "P1"):
+        return {**blank, "priority": "P1", "consequence_asset_id": blind[0],
+                "consequence": f"{name(blind[0])} level unknown; can't rule out shutdown.",
+                "usd_at_risk": max(int(alert.get("usd_at_risk") or 0), out["usd_at_risk"] if out else 0)}
+    return out or {**blank, "priority": "P3"}
+
+
+def _forecast_consequence(fmap: FieldMap, events: list, horizon_min: float, restart_usd: float,
+                          now_t: float, start_clock: str) -> Optional[dict]:
+    """The soonest of `events` as consequence fields, or None when there is none."""
     if not events:
-        return {**blank, "priority": "P3"}
+        return None
     ev = min(events, key=lambda e: e["t_min"])
     minutes = int(ev["t_min"] + 0.5)   # whole minutes, as the console shows them
     # Ranked on the early end of the forecast's give-or-take (inflow 15% high), so a tank
@@ -121,7 +140,9 @@ def consequence_of(fmap: FieldMap, alert: dict, shutdowns: dict, horizon_min: fl
 
 
 class Detector:
-    def __init__(self, fmap: FieldMap, stale_after_min: float = 5.0) -> None:
+    def __init__(self, fmap: FieldMap, stale_after_min: float = 5.0, declared=()) -> None:
+        """declared: (asset, signal) keys a real connector promises. One that never reports goes
+        SENSOR_STALE after stale_after_min from the first evaluation, so missing data is never silent."""
         self.f = fmap
         self.stale_after = float(stale_after_min)
         self._ids = itertools.count(1)
@@ -135,6 +156,9 @@ class Detector:
         self.flow_changed_t: dict[str, float] = {}   # tank id -> live time that state last changed
         self.pump_cap: dict[str, float] = {}         # pump id -> bbl/hr it can move (shared disposal well)
         self.expected_keys: set[Key] = {(tid, "level_pct") for tid in fmap.tanks}
+        self.declared: set[Key] = set(declared)
+        self.expected_keys |= self.declared
+        self.t0: Optional[float] = None              # live time of the first evaluation
 
     # ---------- queries ----------
     def is_stale(self, asset_id: str, signal: Optional[str] = None) -> bool:
@@ -148,13 +172,20 @@ class Detector:
         """Run every check at live time t. Returns alerts raised or resolved."""
         changed: list[dict] = []
         self.expected_keys |= set(latest)
+        if self.t0 is None:
+            self.t0 = t
 
         def fresh(key: Key) -> bool:
             r = latest.get(key)
             return r is not None and t - r["t"] <= self.stale_after
 
+        def in_grace(key: Key) -> bool:
+            # A declared signal that hasn't reported yet is not stale until stale_after has passed
+            # since the first evaluation (connectors may still be connecting); it is never 'fresh'.
+            return key not in latest and key in self.declared and t - self.t0 <= self.stale_after
+
         # SENSOR_STALE
-        stale_now = {k for k in self.expected_keys if not fresh(k)}
+        stale_now = {k for k in self.expected_keys if not fresh(k) and not in_grace(k)}
         self.stale_keys = stale_now
         for aid in {a for a, _ in self.expected_keys}:
             sigs = sorted(s for a, s in stale_now if a == aid)
