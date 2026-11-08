@@ -2,7 +2,7 @@
 // shaped like the sponsor data: 5-minute grid, noise, pump on/off cycles.
 import assert from "node:assert/strict";
 import { makeStore } from "../src/dataset/data.js";
-import { screenDataset, screenAt, faultRuns, scan, LEAK } from "../src/dataset/screen.js";
+import { screenDataset, screenAt, faultRuns, scan, LEAK, screenSeries, plainAlarmAt, PLAIN } from "../src/dataset/screen.js";
 
 const STEP = 300, N = 3 * 288; // three days
 const t0 = 1_790_000_000 - (1_790_000_000 % STEP);
@@ -124,4 +124,16 @@ function dataset({ pump = () => 1, leakPct = () => 0, wearPsi = () => 0 }) {
   assert.deepEqual(runs([1, 2, 2, NaN, NaN, NaN, NaN]), [[300, null]]);
 }
 
+// How early: the screen sees a leak hours before a fixed 5% alarm on the same signal, and
+// the fixed alarm is judged only up to the moment asked.
+{
+  const on = 300;
+  const { network, store } = dataset({ leakPct: (i) => (i >= on ? 1.8 + 0.35 * ((i - on) / 12) : 0) });
+  const [e] = screenDataset(network, store);
+  const f = network.systems[0].facilities[0];
+  const lost = screenSeries(store, f, 1000).lost;
+  const plain = plainAlarmAt(lost, e.onset, store.now, PLAIN.leak);
+  assert.ok(plain - e.seen > 6 * 3600, `fixed alarm ${(plain - e.seen) / 3600} h after the screen`);
+  assert.equal(plainAlarmAt(lost, e.onset, plain - STEP, PLAIN.leak), null, "not before it happens");
+}
 console.log("dataset-screen: all pass");

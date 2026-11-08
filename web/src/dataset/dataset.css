@@ -90,6 +90,8 @@ body.travelling .ds-travel input[type=range] { accent-color: var(--warning); }
 .ds-check.alarm { border-left-color: var(--alarm); color: var(--ink); }
 .ds-unknown, .ds-clear { border: 1px solid var(--line-2); padding: 10px 12px; }
 .ds-unknown { border-color: var(--warning); }
+.ds-lead { margin: 8px 0 0; }
+.ds-lead strong { color: var(--ink, inherit); font-weight: 600; }
 .ds-unknown b { color: var(--warning); letter-spacing: .08em; text-transform: uppercase; font-size: 12px; }
 .ds-clear b { color: var(--ok); }
 .ds-unknown p, .ds-clear p { margin: 6px 0 0; }

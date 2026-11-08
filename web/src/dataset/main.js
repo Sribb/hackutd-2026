@@ -13,7 +13,7 @@ import { apiSource, fileSource, assetIndex, checkDataset, STEP_S } from "./data.
 import { lineChart, fmtTime } from "./chart.js";
 import { replay, doNothing, tankRow, inputFor, planFromActions, planToActions, cheapestJoint, walkCurve, money, revenuePerHour } from "./plan.js";
 import { normAlerts, sortAlerts, actionLines, handoffText, durationText, categoryOf, trucksInUse } from "./alerts.js";
-import { screenDataset, screenAt, screenSeries, recentMean, faultRuns, noiseSd, confidenceAt, WEAR } from "./screen.js";
+import { screenDataset, screenAt, screenSeries, recentMean, faultRuns, noiseSd, confidenceAt, plainAlarmAt, PLAIN, WEAR } from "./screen.js";
 
 const $ = (id) => document.getElementById(id);
 // A peak just under the limit must not print as the limit: 91.96% is "91.9%", not "92.0%".
@@ -403,11 +403,23 @@ function screenPool() {
     const sig = e.category === "pipeline_leak" ? ser.lost : ser.excess;
     const conf = confidenceAt(sig, ongoing ? at : e.seen, noiseSd(sig, e.onset), e.category === "pipeline_leak" ? 1 : -1, 24, e.onset);
     if (conf) ev.push(`Confidence ${Math.round(conf.share * 100)}%: ${conf.k} of the ${conf.n} latest running readings since it started sit outside this ${e.category === "pipeline_leak" ? "line" : "pump"}'s normal noise (±${e.category === "pipeline_leak" ? pct1(conf.band) : `${Math.round(conf.band)} psi`}).`);
+    // How early: against a fixed alarm on the same signal, judged only up to now.
+    const leak = e.category === "pipeline_leak";
+    const plainAt = plainAlarmAt(sig, e.onset, ongoing ? at : e.end ?? at, leak ? PLAIN.leak : PLAIN.wear);
+    const plainName = leak ? `a fixed alarm at ${PLAIN.leak}% lost` : `a fixed alarm at ${-PLAIN.wear} psi under healthy`;
+    let lead = null;
+    if (plainAt !== null) {
+      lead = (plainAt - e.seen) / 3600;
+      ev.push(lead > 0 ? `Seen ${durationText(lead)} before ${plainName} (hour average) went off, at ${fmtTime(plainAt, true)} UTC.` : `${plainName[0].toUpperCase()}${plainName.slice(1)} (hour average) went off at the same time.`);
+    } else if (ongoing) {
+      lead = (at - e.seen) / 3600; // at least this much, and counting
+      ev.push(`${plainName[0].toUpperCase()}${plainName.slice(1)} (hour average) has not gone off yet; the screen saw it ${durationText(lead)} ago.`);
+    } else ev.push(`${plainName[0].toUpperCase()}${plainName.slice(1)} (hour average) never went off before it ended.`);
     if (pumpSt === null) ev.push("No fresh reading from the pump now, so these are its last running readings. Not checked since.");
     else if (pumpSt !== 1) ev.push("The pump is not running now, so these are its last running readings.");
     if (!ongoing) ev.push(e.endedByFault ? `Ended when the pump failed at ${fmtTime(e.end, true)} UTC (a separate pump failure).` : `Back to normal by ${fmtTime(e.end, true)} UTC.`);
     list.push({ ...blank, id: `screen:${e.category}:${e.asset}:${e.onset}`, screened: true, category: e.category, status: e.status,
-      system: e.system, facility: e.facility, asset: e.asset, onset: e.onset, end: e.end, evidence: ev, confidence: conf ? conf.share : null,
+      system: e.system, facility: e.facility, asset: e.asset, onset: e.onset, end: e.end, evidence: ev, confidence: conf ? conf.share : null, lead, leadOpen: plainAt === null,
       actions: [{ type: "field_inspection", asset_id: e.asset }] });
   }
   // Pump failures that ended by `at`, from the status signal (ongoing ones are fault rows).
@@ -421,6 +433,18 @@ function screenPool() {
   }
   poolMemo = { store: state.store, at: state.at, list };
   return list;
+}
+
+// One line on how early the screen is: the median head start over a fixed alarm, for the
+// leaks and worn pumps seen up to now. Counts only problems the fixed alarm did catch (or
+// still hasn't, ongoing: at least that much), so it never overstates.
+function leadSummary() {
+  const leads = pool().filter((a) => a.screened && a.lead !== undefined && a.lead !== null && (!a.leadOpen || a.status === "ongoing"));
+  if (!leads.length) return "";
+  const v = leads.map((a) => a.lead).sort((p, q) => p - q);
+  const med = v.length % 2 ? v[v.length >> 1] : (v[v.length / 2 - 1] + v[v.length / 2]) / 2;
+  const never = pool().filter((a) => a.screened && a.leadOpen && a.status === "resolved").length;
+  return `<p class="ds-lead">Early: across ${leads.length} problem${leads.length === 1 ? "" : "s"} so far (leaks and worn pumps), the screen saw ${leads.length === 1 ? "it" : "each a median"} <strong>${esc(durationText(med))}</strong> before a fixed alarm on the same reading (${PLAIN.leak}% lost, or ${-PLAIN.wear} psi under healthy) would go off.${never ? ` ${never} more ended before a fixed alarm ever went off.` : ""}</p>`;
 }
 
 // A pump fault as an alert-shaped object, so the what-if can plan it. No backend plan.
@@ -462,7 +486,7 @@ function renderAlerts() {
     $("dsAlertCount").textContent = `${rows.length + live.length} in progress`;
     box.innerHTML = `<div class="ds-unknown"><b>Screened by this page</b><p>${esc(state.detectionNote)} gaia screened the readings itself:
       pump fault signals, leaks (pump flow that never reaches disposal) and worn pumps (discharge pressure sagging).</p>
-      <p class="ds-hint">It is a screen, not the backend's detection. Anything it can't read, it doesn't call safe.</p></div>`;
+      <p class="ds-hint">It is a screen, not the backend's detection. Anything it can't read, it doesn't call safe.</p>${leadSummary()}</div>`;
     if (rows.length) {
       const wrap = document.createElement("div");
       wrap.className = "ds-faults";

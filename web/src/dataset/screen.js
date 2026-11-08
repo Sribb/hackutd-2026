@@ -227,3 +227,25 @@ export function confidenceAt(x, t, sd, sign, n = 24, since = -Infinity) {
   for (let j = hi; j >= 0 && m < n && x[j][0] >= since; j--, m++) if (sign * x[j][1] > 2 * sd) k++;
   return m < 3 ? null : { share: k / m, k, n: m, band: 2 * sd };
 }
+
+// "How early can you spot a leak? Show the warning before it's obvious." The plain
+// alternative is a fixed alarm on the hour-average signal; these levels are where a problem
+// is plain to see on a chart: 5 % of the flow lost (healthy noise is about 1 %), or
+// discharge 25 psi under healthy (noise is a few psi).
+export const PLAIN = { leak: 5, wear: -25 };
+
+// When a fixed alarm at `level` on the mean of the last n running readings would first go
+// off between `from` and `to` (null if it would not).
+export function plainAlarmAt(x, from, to, level, n = W) {
+  let s = 0;
+  for (let i = 0; i < x.length; i++) {
+    s += x[i][1];
+    if (i >= n) s -= x[i - n][1];
+    const t = x[i][0];
+    if (t > to) break;
+    if (i < n - 1 || t < from) continue;
+    const m = s / n;
+    if (level > 0 ? m > level : m < level) return t;
+  }
+  return null;
+}
