@@ -518,7 +518,8 @@ function renderMap() {
     }
     svg += `</svg>`;
     const live = s.facilities.flatMap((f) => alertsFor(f.id));
-    card.innerHTML = `<div class="ds-sys-head"><b>${esc(s.id)}</b><span>${s.facilities.length} facilities · ${fleet ?? "?"} trucks · disposal ${esc(s.disposal_site.pressure_psi)} psi</span>${live.length ? `<span class="ds-tag ${live.some((a) => a.category === "pump_failure") ? "alarm" : "warning"}">${live.length} alert${live.length === 1 ? "" : "s"}</span>` : ""}</div>${svg}`;
+    card.innerHTML = `<div class="ds-sys-head"><b>${esc(s.id)}</b><span>${s.facilities.length} facilities · ${fleet ?? "?"} trucks · disposal ${esc(s.disposal_site.pressure_psi)} psi</span>${live.length ? `<span class="ds-tag ${live.some((a) => a.category === "pump_failure") ? "alarm" : "warning"}">${live.length} alert${live.length === 1 ? "" : "s"}</span>` : ""}<button type="button" class="ds-compare" data-sys="${esc(s.id)}" title="Compare ${esc(s.id)}'s facilities side by side">Compare</button></div>${svg}`;
+    card.querySelector(".ds-compare").onclick = () => select({ kind: "system", id: s.id });
     for (const g of card.querySelectorAll(".fac")) {
       const go = () => select({ kind: "facility", id: g.dataset.fac });
       g.addEventListener("click", go);
@@ -622,6 +623,7 @@ function renderDetail() {
     return;
   }
   const sel = state.selected;
+  if (sel.kind === "system") { compare(box, sel.id); return; }
   let alert = null, facId = sel.id;
   if (sel.kind === "fault") {
     const x = pumpFaults().find((f) => `fault:${f.facility}` === sel.id);
@@ -663,6 +665,48 @@ function renderDetail() {
     box.appendChild(btn);
   }
   box.appendChild(traces(f, alert));
+}
+
+// Side by side: every facility in one system, one small chart each, on one shared time
+// axis and crosshair. One metric at a time so every chart has one unit.
+const COMPARE = [
+  { key: "level", label: "Tank level", unit: "% full", get: (f) => [[f.tank.id, "level_pct"]], yMin: 0, yMax: 100, limits: true },
+  { key: "out", label: "Water out vs arriving", unit: "bbl/day", get: (f) => [[f.pump.id, "flow_bpd", "pump flow"], [f.pipeline.id, "receive_flow_bpd", "arriving at disposal"]], yMin: 0 },
+  { key: "in", label: "Water in", unit: "bbl/day", get: (f) => [[f.id, "inflow_bpd"]], yMin: 0 },
+  { key: "psi", label: "Pressure", unit: "psi", get: (f) => [[f.pump.id, "discharge_psi", "pump discharge"], [f.pipeline.id, "pressure_psi", "pipeline at disposal"]] },
+];
+function compare(box, systemId) {
+  const sys = state.network.systems.find((x) => x.id === systemId);
+  if (!sys) { box.innerHTML = `<p class="ds-hint">${esc(systemId)} is not in this dataset.</p>`; return; }
+  state.compareMetric ||= "level";
+  const m = COMPARE.find((c) => c.key === state.compareMetric) || COMPARE[0];
+  box.innerHTML = `<div class="ds-detail-head"><div><span class="kicker">Compare facilities</span><h2>${esc(sys.id)}</h2></div>
+    <div class="ds-win" role="group" aria-label="Metric">${COMPARE.map((c) => `<button type="button" data-m="${c.key}" class="${c.key === m.key ? "on" : ""}">${esc(c.label)}</button>`).join("")}</div>
+    <div class="ds-win" role="group" aria-label="Trend window">${[[6, "6 h"], [24, "24 h"], [72, "3 d"], [168, "week"]].map(([h, l]) =>
+      `<button type="button" data-h="${h}" class="${state.win === h * 3600 ? "on" : ""}">${l}</button>`).join("")}</div></div>`;
+  for (const b of box.querySelectorAll("[data-m]")) b.onclick = () => { state.compareMetric = b.dataset.m; renderDetail(); };
+  for (const b of box.querySelectorAll("[data-h]")) b.onclick = () => { state.win = Number(b.dataset.h) * 3600; renderDetail(); };
+  const wrap = document.createElement("div");
+  wrap.className = "ds-traces";
+  box.appendChild(wrap);
+  const to = state.at, from = Math.max(state.store.start, to - state.win);
+  const lim = state.network.defaults.tank_limits_pct;
+  const charts = [];
+  const hover = (t) => charts.forEach((c) => c.show(t));
+  requestAnimationFrame(() => {
+    for (const f of sys.facilities) {
+      const host = document.createElement("div");
+      wrap.appendChild(host);
+      const al = alertsFor(f.id);
+      const marks = al.filter((a) => a.onset).map((a) => ({ t: a.onset, label: categoryOf(a.category).short, tone: categoryOf(a.category).tone }));
+      charts.push(lineChart(host, {
+        title: f.id, unit: m.unit, from, to, height: 90, yMin: m.yMin, yMax: m.yMax, marks, onHover: hover,
+        series: m.get(f).map(([a, k, name]) => ({ name: name || a, points: state.store.range(a, k, from, to) })),
+        refs: m.limits ? [{ y: lim.warning, label: `warning ${lim.warning}%`, tone: "warning" }, { y: lim.shutdown, label: `shutdown ${lim.shutdown}%`, tone: "alarm" }] : [],
+        format: m.limits ? (v) => v.toFixed(1) + "%" : undefined,
+      }));
+    }
+  });
 }
 
 function traces(f, alert) {

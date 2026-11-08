@@ -236,3 +236,10 @@ body.travelling .ds-travel input[type=range] { accent-color: var(--warning); }
 .ds-fleet-row b { text-align: right; font-weight: 400; color: var(--ink); font-variant-numeric: tabular-nums; }
 .ds-fleet-row em { grid-column: 2 / -1; font-style: normal; color: var(--muted); font-size: 10px; }
 .ds-fleet-row em:empty { display: none; }
+
+.ds-compare { padding: 1px 7px; font-size: 10px; margin-left: 6px; }
+.ds-sys-head .ds-tag + .ds-compare { margin-left: 6px; }
+.ds-sys-head .ds-compare:first-of-type { margin-left: auto; }
+.ds-sys-head .ds-tag { margin-left: auto; }
+.ds-sys-head .ds-tag ~ .ds-compare { margin-left: 6px; }
+.ds-detail-head .ds-win { flex-wrap: wrap; }
