@@ -32,6 +32,9 @@ const clockOf = (min) => {
   return `${String(Math.floor(x / 60)).padStart(2, "0")}:${String(x % 60).padStart(2, "0")} UTC`;
 };
 
+// A backend "03:33" on a dataset reads "03:33 utc", like every other clock on the card.
+const utcOf = (c) => (liveFeed.live.dataset && /^\d{1,2}:\d{2}$/.test(String(c).trim()) ? `${String(c).trim()} utc` : c);
+
 export function makeNotifier(H) {
   const seen = new Set();
   let cur = null;        // { a, at, fresh } on screen
@@ -177,7 +180,7 @@ export function makeNotifier(H) {
       : `<p class="gn-sd">${esc(pretty(a.consequence) || (unknown.length ? `no shutdown time: no fresh reading from ${unknown.map(H.nice).join(", ")}. treat it as unknown, not safe.` : "no shutdown forecast for this alert."))}</p>`;
     let fixHtml;
     if (plan && plan.total_usd != null) {
-      fixHtml = `<p class="gn-fix"><span class="gn-k">cheapest fix</span>${esc(pretty(firstOf(plan.summary)) || "the plan")}: <b class="gn-usd">${esc(usd(plan.total_usd))}</b>${wait != null ? ` vs ${esc(usd(wait))} if nobody acts` : ""}.${plan.expires_clock ? ` start by ${esc(plan.expires_clock)}.` : ""}</p>
+      fixHtml = `<p class="gn-fix"><span class="gn-k">cheapest fix</span>${esc(pretty(firstOf(plan.summary)) || "the plan")}: <b class="gn-usd">${esc(usd(plan.total_usd))}</b>${wait != null ? ` vs ${esc(usd(wait))} if nobody acts` : ""}.${plan.expires_clock ? ` start by ${esc(utcOf(plan.expires_clock))}.` : ""}</p>
         <p class="gn-src">from ${esc(src)}. nothing is sent until a person holds to confirm.</p>`;
     } else if (waiting) {
       fixHtml = `<p class="gn-fix muted"><span class="gn-k">cheapest fix</span>checking the plans for this incident…</p>`;

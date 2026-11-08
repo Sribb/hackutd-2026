@@ -468,6 +468,7 @@ const tankInfo = (id) => (field.tanks || []).find((t) => t.id === id);
 const clockAt = (min) => {
   const [h, m] = (data.state.clock || "00:00").split(":").map(Number);
   const x = Math.round(h * 60 + m + min) % 1440, hh = Math.floor(x / 60), mm = x % 60;
+  if (liveFeed.live.dataset || (field && field.mode === "dataset")) return `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")} utc`;
   return `${hh % 12 || 12}:${String(mm).padStart(2, "0")} ${hh < 12 ? "AM" : "PM"}`;
 };
 const nice = (id) => id.replace(/_/g, " ").replace(/\b([A-Z])([A-Z]*)\b/g, (_, a, b) => a + b.toLowerCase()).replace(/\bXo\b/, "XO").replace(/\bSwd\b/, "SWD");
@@ -1699,7 +1700,7 @@ async function boot() {
   shiftlog.start(state.clock || "00:00", (state.incident && state.incident.summary) || "");
   // The live clock, carried on at the last known speed while the feed is lost, so the header
   // and log stamps never jump back to the page-load clock.
-  shiftlog.followClock(() => liveFeed.clockEstimate());
+  shiftlog.followClock(() => liveFeed.clockEstimate(), () => !!liveFeed.live.dataset);
   let built = null;
   try { built = JSON.parse(sessionStorage.getItem("freeboard.built") || "null"); sessionStorage.removeItem("freeboard.built"); } catch { /* ignore */ }
   if (built) shiftlog.add("open", `Field "${built.name}" built from an uploaded blueprint in ${built.secs} s${built.status === "fallback" ? `, on the standard model (${built.note})` : ""}.`);
