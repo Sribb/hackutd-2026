@@ -39,9 +39,9 @@ Upload a site plan, review what was read, and get a 3D night-shift console for t
 | Forecast, planner, approve, SpacetimeDB module | `backend/` | Merged |
 | Validate on load, robust plan, mount ingest | `backend/`, PR #36 | Open |
 | Blueprint format v1 + validator | `docs/BLUEPRINT.md`, `scenario/` | Merged (#48) |
-| Ingest (site plan to blueprint with Claude) | `ingest/`, PR #28 | Open |
-| Blueprint to 3D generator | `blender/`, PR #33 | Open |
-| CC0 scenery kit | `blender/assets/`, PR #32 | Open |
+| Ingest (site plan to blueprint with Claude) | `ingest/`, PR #28 | Merged |
+| Blueprint to 3D generator | `blender/`, PR #33 | Merged |
+| CC0 scenery kit | `blender/assets/`, PR #32 | Merged |
 | Console: what-if, plans, approve, Last Call | `web/`, PR #16 | Open |
 | Last Call | `lastcall/`, PR #10 | Open |
 | Upload and review screen | `web/`, PR #49 | Open |
@@ -49,7 +49,7 @@ Upload a site plan, review what was read, and get a 3D night-shift console for t
 | Jarvis side panel | `web/`, PR #53 | Open; tested against a stand-in backend |
 | Jarvis + connectors backend | issue #38 | In progress |
 | `POST /api/blueprints` (build an uploaded field) | issue #41 | Queued |
-| Shared asset library on Maincloud | `library/`, PR #35 | Open |
+| Shared asset library on Maincloud | `library/`, PR #35 | Merged |
 
 ## How we built it
 
@@ -180,7 +180,7 @@ Build-only packages pulled in by Vite (esbuild, Rollup, PostCSS, nanoid, picocol
 
 ## 3D assets
 
-Every scenery asset is CC0 1.0, from PR #32's `blender/assets/` kit. CC0 doesn't require credit; we credit every author anyway. The full record, with source URLs and the changes we made, is in `blender/assets/manifest.json` and `blender/assets/CREDITS.md`. Each license was checked at its source: [polyhaven.com/license](https://polyhaven.com/license), [docs.ambientcg.com/license](https://docs.ambientcg.com/license/), and the `License.txt` inside each Kenney zip.
+Every scenery asset is CC0 1.0, from the `blender/assets/` kit (PR #32). CC0 doesn't require credit; we credit every author anyway. The full record, with source URLs and the changes we made, is in `blender/assets/manifest.json` and `blender/assets/CREDITS.md`. Each license was checked at its source: [polyhaven.com/license](https://polyhaven.com/license), [docs.ambientcg.com/license](https://docs.ambientcg.com/license/), and the `License.txt` inside each Kenney zip.
 
 | Source | Assets | Authors | License |
 |---|---|---|---|
