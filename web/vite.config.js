@@ -139,6 +139,8 @@ function phoneRoute() {
       server.middlewares.use((req, res, next) => {
         if (/^\/phone\/?(\?|$)/.test(req.url)) req.url = req.url.replace(/^\/phone\/?/, "/phone.html");
         else if (/^\/dataset\/?(\?|$)/.test(req.url)) req.url = req.url.replace(/^\/dataset\/?/, "/dataset.html");
+        // The judge flow's opening (#147): intro, landing, judges path.
+        else if (/^\/start\/?(\?|$)/.test(req.url)) req.url = req.url.replace(/^\/start\/?/, "/start.html");
         next();
       });
     },
@@ -168,6 +170,6 @@ export default defineConfig({
   },
   build: {
     chunkSizeWarningLimit: 1200,
-    rollupOptions: { input: { main: path.resolve(__dirname, "index.html"), phone: path.resolve(__dirname, "phone.html"), dataset: path.resolve(__dirname, "dataset.html") } },
+    rollupOptions: { input: { main: path.resolve(__dirname, "index.html"), phone: path.resolve(__dirname, "phone.html"), dataset: path.resolve(__dirname, "dataset.html"), start: path.resolve(__dirname, "start.html") } },
   },
 });
