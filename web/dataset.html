@@ -48,8 +48,14 @@
       </section>
 
       <section class="ds-map card" aria-label="Network">
-        <div class="ds-sec-head"><span class="kicker">Network</span><span id="dsMapNote" class="ds-count"></span></div>
+        <div class="ds-sec-head"><span class="kicker">Network</span><span id="dsMapNote" class="ds-count"></span>
+          <div class="ds-win" id="dsView" role="group" aria-label="Map or 3D"><button type="button" data-v="map" class="on">Map</button><button type="button" data-v="3d">3D</button></div></div>
         <div id="dsMap" class="ds-systems"></div>
+        <div id="ds3d" class="ds-3d" hidden>
+          <div id="ds3dTabs" class="ds-win ds-3d-tabs" role="group" aria-label="System"></div>
+          <div id="ds3dHost" class="ds-3d-host"></div>
+          <p class="ds-hint">Built from network.json. Tanks fill to the reading at the moment on screen, with amber and red rings at the warning and shutdown limits. Drag to orbit, click an asset to open it.</p>
+        </div>
       </section>
 
       <section class="ds-detail card" aria-label="Detail">

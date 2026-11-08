@@ -33,6 +33,8 @@ const state = {
   detectionNote: "",
   selected: null, // { kind: "facility" | "alert" | "whatif", id }
   win: 24 * 3600,
+  view: "map", // map | 3d
+  sys3d: null,
   plans: new Map(), // per alert/what-if: the plan the operator is looking at
   loadSeq: 0,
   alertSeq: 0,
@@ -126,6 +128,7 @@ async function loadFolder(folder) {
   state.at = Number.isFinite(atParam) && atParam >= data.store.start && atParam <= data.store.now && folder === params.get("folder")
     ? atParam - ((atParam - data.store.start) % STEP_S) : data.store.now;
   setupSlider();
+  f3dKey = null; // a new folder can reuse system ids with a different layout
   setStatus(problems.length ? `This dataset has problems the page cannot work around: ${problems.join(" ")}` : "", problems.length ? "alarm" : "");
   renderAll();
   await refreshAlerts();
@@ -498,6 +501,78 @@ function renderMap() {
     }
     host.appendChild(card);
   }
+  render3d();
+}
+
+// ---------- 3D ----------
+
+let f3d = null;
+let f3dKey = null;
+let f3dLoading = null;
+
+function setView(v) {
+  state.view = v;
+  for (const b of $("dsView").querySelectorAll("button")) b.classList.toggle("on", b.dataset.v === v);
+  $("dsMap").hidden = v !== "map";
+  $("ds3d").hidden = v !== "3d";
+  try { localStorage.setItem("freeboard.dataset.view", v); } catch {}
+  if (v === "3d") open3d();
+}
+for (const b of $("dsView").querySelectorAll("button")) b.onclick = () => setView(b.dataset.v);
+
+async function open3d() {
+  if (!f3d && !f3dLoading) {
+    f3dLoading = import("./field3d.js").then(({ mountField3d }) => {
+      f3d = mountField3d($("ds3dHost"), { onPick: (fac) => fac && select({ kind: "facility", id: fac }) });
+      f3d.setTip(tipFor);
+    }).catch((e) => { $("ds3dHost").textContent = `3D did not load: ${e.message}`; });
+  }
+  await f3dLoading;
+  render3d();
+}
+
+function tipFor(id) {
+  const a = state.assets?.get(id);
+  if (!a) return id;
+  const L = (m) => state.store.latest(id, m, state.at);
+  if (a.kind === "tank") { const v = L("level_pct"); return `${id} · ${v === null ? "no reading" : v.toFixed(1) + "%"}`; }
+  if (a.kind === "pump") { const s = L("status"), f = L("flow_bpd"); return `${id} · ${s === 1 ? "running" : s === 2 ? "FAULT" : s === 0 ? "stopped" : "no reading"}${f !== null ? ` · ${Math.round(f)} bbl/d` : ""}`; }
+  if (a.kind === "well") { const s = L("status"), w = L("water_bpd"); return `${id} · ${s === 0 ? "shut in" : s === 1 ? "producing" : "no reading"}${w !== null ? ` · ${Math.round(w)} bbl/d water` : ""}`; }
+  if (a.kind === "pipeline") { const r = L("receive_flow_bpd"), p = L("pressure_psi"); return `${id} · ${r === null ? "no reading" : Math.round(r) + " bbl/d arriving"}${p !== null ? ` · ${Math.round(p)} psi` : ""}`; }
+  return id;
+}
+
+function render3d() {
+  if (!f3d || state.view !== "3d" || !state.network) return;
+  const systems = state.network.systems;
+  const selFac = state.selected && (facilityOf(state.selected.id) || facilityOf(state.selected.id.replace(/^fault:/, ""))
+    || facilityOf(state.alerts.find((a) => a.id === state.selected.id)?.facility));
+  if (selFac) state.sys3d = selFac.s.id;
+  if (!systems.some((s) => s.id === state.sys3d)) state.sys3d = systems[0]?.id;
+  const sys = systems.find((s) => s.id === state.sys3d);
+  if (!sys) return;
+  $("ds3dTabs").innerHTML = systems.map((s) => {
+    const n = s.facilities.reduce((k, f) => k + alertsFor(f.id).length + (state.store.latest(f.pump.id, "status", state.at) === 2 && state.detection !== "ok" ? 1 : 0), 0);
+    return `<button type="button" data-s="${esc(s.id)}" class="${s.id === sys.id ? "on" : ""}">${esc(s.id)}${n ? ` · ${n}` : ""}</button>`;
+  }).join("");
+  for (const b of $("ds3dTabs").querySelectorAll("button")) b.onclick = () => { state.sys3d = b.dataset.s; render3d(); };
+  const lim = state.network.defaults.tank_limits_pct;
+  const key = `${state.folder}|${sys.id}`;
+  if (f3dKey !== key) { f3d.build(sys, lim); f3dKey = key; }
+  const L = (a, m) => state.store.latest(a, m, state.at);
+  const view = {};
+  for (const f of sys.facilities) {
+    const al = alertsFor(f.id);
+    const pf = al.some((a) => a.category === "pump_failure");
+    const pumpS = L(f.pump.id, "status");
+    const level = L(f.tank.id, "level_pct");
+    const tankTone = pf || pumpS === 2 || (level !== null && level >= lim.shutdown) ? "alarm" : level !== null && level >= lim.warning ? "warning" : "";
+    view[f.tank.id] = { level, tone: tankTone };
+    view[f.pump.id] = { pump: pumpS, tone: pf || pumpS === 2 ? "alarm" : al.some((a) => a.category === "pump_degradation") ? "warning" : "" };
+    view[f.pipeline.id] = { recv: L(f.pipeline.id, "receive_flow_bpd") ?? 0, tone: al.some((a) => a.category === "pipeline_leak") ? "warning" : "" };
+    for (const w of f.wells) view[w.id] = { well: L(w.id, "status") };
+  }
+  f3d.update(view);
 }
 
 // ---------- detail: trends and what-if ----------
@@ -784,4 +859,6 @@ function renderFoot() {
 
 window.addEventListener("resize", (() => { let t; return () => { clearTimeout(t); t = setTimeout(() => { if (state.selected) renderDetail(); }, 200); }; })());
 window.__dataset = { state };
-boot();
+boot().then(() => {
+  try { if (localStorage.getItem("freeboard.dataset.view") === "3d" || params.get("view") === "3d") setView("3d"); } catch {}
+});
