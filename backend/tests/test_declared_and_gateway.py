@@ -7,14 +7,16 @@ from backend.tests.test_live import LiveField, healthy_scenario, run, tick  # no
 
 @pytest.fixture(autouse=True)
 def _env(monkeypatch):
-    monkeypatch.setenv("HOOK_TOKEN", "s3cret")
+    # #126: token_env must name a FREEBOARD_CONN_ variable, and gateway.local is a host an operator allows
+    monkeypatch.setenv("FREEBOARD_CONN_HOOK_TOKEN", "s3cret")
+    monkeypatch.setenv("FREEBOARD_CONN_ALLOWED_HOSTS", "127.0.0.1,localhost,gateway.local")
     for v in ("ANTHROPIC_API_KEY", "JARVIS_MODE", "JARVIS_CONFIRM"):
         monkeypatch.delenv(v, raising=False)
 
 
 def hook_field():
     raw = {"connectors": [{"id": "CONN_HOOK", "kind": "webhook",
-                           "config": {"url": "http://gateway.local/cmd", "token_env": "HOOK_TOKEN"},
+                           "config": {"url": "http://gateway.local/cmd", "token_env": "FREEBOARD_CONN_HOOK_TOKEN"},
                            "signals": [{"asset_id": "PUMP_2", "signal": "running", "address": "p2/run"}],
                            "commands": [{"asset_id": "VALVE_XO_34", "command": "SET_VALVE", "address": "xo34/cmd"}]}]}
     return LiveField(healthy_scenario(), raw)

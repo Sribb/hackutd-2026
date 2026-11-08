@@ -1,0 +1,7 @@
+# Field connector libraries (#126). Optional: without them the backend runs and these connectors show unavailable.
+# OPC UA client for kind "opcua" (backend/app/connectors/opcua_ua.py) and its fake server.
+asyncua==1.1.5
+# MQTT client for kind "sparkplug" (backend/app/connectors/sparkplug.py).
+paho-mqtt==2.1.0
+# EtherNet/IP (Allen-Bradley) client for the enip connector.
+pycomm3==1.2.14
