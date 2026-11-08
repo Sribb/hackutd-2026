@@ -43,7 +43,8 @@ ROOT = os.path.dirname(HERE)
 KIT_DIR = os.path.join(HERE, "kit")
 DEFAULT_BLUEPRINT = os.path.join(ROOT, "scenario", "field.json")
 GROUND_Z = -0.02          # flat ground just under every slab, pad, and gravel bed
-KIT_OMITS = ["pump, valve, well, pad and yard tags and signs", "the power line", "ground relief"]
+KIT_OMITS = ["the desert scenery and ground textures", "pump, valve, well, pad and yard tags and signs",
+             "the power line", "ground relief"]
 
 
 class UsageError(Exception):
@@ -51,14 +52,19 @@ class UsageError(Exception):
 
 
 def parse_args(argv):
-    opts = {"blueprint": None, "out": None, "detail": None, "render_dir": None, "render_assets": None}
+    opts = {"blueprint": None, "out": None, "detail": None, "render_dir": None, "render_assets": None,
+            "scenery": True}
     flags = {"--blueprint": "blueprint", "--out": "out", "--detail": "detail",
              "--render-dir": "render_dir", "--render-assets": "render_assets"}
     i = 0
     while i < len(argv):
+        if argv[i] == "--no-scenery":     # build_field.py's flag; the kit build has no scenery either way
+            opts["scenery"] = False
+            i += 1
+            continue
         key = flags.get(argv[i])
         if key is None or i + 1 >= len(argv):
-            raise UsageError(f"unknown or incomplete option {argv[i]!r}; options: {', '.join(flags)}")
+            raise UsageError(f"unknown or incomplete option {argv[i]!r}; options: {', '.join(flags)}, --no-scenery")
         opts[key] = argv[i + 1]
         i += 2
     if opts["detail"] not in (None, "full", "lite", "bare"):
@@ -431,6 +437,7 @@ def run(opts, src, out_dir, report, kit=None):
         "detail": {"level": level, "dropped": policy["dropped"][level] + KIT_OMITS,
                    "passes": [{"detail": level, "estimated": field.triangles(level), "triangles": tris}]},
         **({"iot": field.iot} if field.iot is not None else {}),
+        "scenery": {"on": False},        # build_field.py's key since #88: the kit has no scenery layer
         "triangles": tris, "glb_mb": round(mb, 2), "nodes": len(nodes), "objects": len(nodes),
         "budget": {"triangles": policy["budget_triangles"], "mb": policy["budget_mb"]},
     })

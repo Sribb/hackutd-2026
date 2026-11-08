@@ -5,10 +5,12 @@
   "field_parts.py": "7886143b981e8bbc",
   "detail_equipment.py": "0ed3fc575f571960",
   "detail_site.py": "ae054f9c344b1d06",
-  "field_build.py": "a0956360ecb854dc",
+  "field_build.py": "0abe068a64ae28ee",
   "piping.py": "7df74a39713c9134",
-  "layout.py": "84813b7247b34245",
-  "build_field.py": "514a14f4bb396664"
+  "layout.py": "6c51e75f31b396d5",
+  "build_field.py": "64ad2a60e2ddb7bd",
+  "equipment_parts.py": "d8acc611f9830214",
+  "iot_parts.py": "4e9d0f75651f7cb1"
  },
  "token": "KIT",
  "axes": "anchors and bounds are in the type's own frame with Blender axes: x east, y north, z up",
@@ -1120,6 +1122,705 @@
     8.519
    ],
    "root": "_tower"
+  },
+  "equipment_separator": {
+   "kind": "equipment",
+   "token": "KIT",
+   "name": "{id}",
+   "levels": {
+    "full": "equipment_separator.glb",
+    "lite": "equipment_separator.glb",
+    "bare": "equipment_separator.glb"
+   },
+   "triangles": {
+    "full": 1040,
+    "lite": 1040,
+    "bare": 1040
+   },
+   "parts": [
+    {
+     "name": "_concrete",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_pipe",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_steel",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_steel_dark",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_tank",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    }
+   ],
+   "bounds": [
+    -3.2,
+    3.2,
+    -1.4,
+    1.4,
+    -0.25,
+    2.86
+   ],
+   "root": ""
+  },
+  "equipment_heater_treater": {
+   "kind": "equipment",
+   "token": "KIT",
+   "name": "{id}",
+   "levels": {
+    "full": "equipment_heater_treater.glb",
+    "lite": "equipment_heater_treater.glb",
+    "bare": "equipment_heater_treater.glb"
+   },
+   "triangles": {
+    "full": 1648,
+    "lite": 1648,
+    "bare": 1648
+   },
+   "parts": [
+    {
+     "name": "_concrete",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_pipe",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_steel",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_steel_dark",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_tank",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    }
+   ],
+   "bounds": [
+    -1.84,
+    1.8,
+    -1.8,
+    1.8,
+    -0.25,
+    7.46
+   ],
+   "root": ""
+  },
+  "equipment_flare": {
+   "kind": "equipment",
+   "token": "KIT",
+   "name": "{id}",
+   "levels": {
+    "full": "equipment_flare.glb",
+    "lite": "equipment_flare.glb",
+    "bare": "equipment_flare.glb"
+   },
+   "triangles": {
+    "full": 968,
+    "lite": 968,
+    "bare": 968
+   },
+   "parts": [
+    {
+     "name": "_concrete",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_pipe",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_steel",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_steel_dark",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_tank",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_wire",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    }
+   ],
+   "bounds": [
+    -3.299,
+    3.299,
+    -3.32,
+    3.775,
+    -0.225,
+    15.005
+   ],
+   "root": ""
+  },
+  "equipment_compressor": {
+   "kind": "equipment",
+   "token": "KIT",
+   "name": "{id}",
+   "levels": {
+    "full": "equipment_compressor.glb",
+    "lite": "equipment_compressor.glb",
+    "bare": "equipment_compressor.glb"
+   },
+   "triangles": {
+    "full": 1960,
+    "lite": 1960,
+    "bare": 1960
+   },
+   "parts": [
+    {
+     "name": "_concrete",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_pipe",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_steel",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_steel_dark",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_tank",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    }
+   ],
+   "bounds": [
+    -4.5,
+    4.5,
+    -1.8,
+    1.8,
+    -0.25,
+    3.7
+   ],
+   "root": ""
+  },
+  "equipment_lact": {
+   "kind": "equipment",
+   "token": "KIT",
+   "name": "{id}",
+   "levels": {
+    "full": "equipment_lact.glb",
+    "lite": "equipment_lact.glb",
+    "bare": "equipment_lact.glb"
+   },
+   "triangles": {
+    "full": 1380,
+    "lite": 1380,
+    "bare": 1380
+   },
+   "parts": [
+    {
+     "name": "_concrete",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_pipe",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_steel",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_steel_dark",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_tank",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    }
+   ],
+   "bounds": [
+    -3.3,
+    3.3,
+    -1.5,
+    1.5,
+    -0.25,
+    1.675
+   ],
+   "root": ""
+  },
+  "equipment_meter_run": {
+   "kind": "equipment",
+   "token": "KIT",
+   "name": "{id}",
+   "levels": {
+    "full": "equipment_meter_run.glb",
+    "lite": "equipment_meter_run.glb",
+    "bare": "equipment_meter_run.glb"
+   },
+   "triangles": {
+    "full": 720,
+    "lite": 720,
+    "bare": 720
+   },
+   "parts": [
+    {
+     "name": "_concrete",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_pipe",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_steel",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_steel_dark",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    }
+   ],
+   "bounds": [
+    -3.657,
+    3.657,
+    -0.93,
+    0.325,
+    -0.3,
+    2.133
+   ],
+   "root": ""
+  },
+  "equipment_placeholder": {
+   "kind": "equipment",
+   "token": "KIT",
+   "name": "{id}",
+   "levels": {
+    "full": "equipment_placeholder.glb",
+    "lite": "equipment_placeholder.glb",
+    "bare": "equipment_placeholder.glb"
+   },
+   "triangles": {
+    "full": 36,
+    "lite": 36,
+    "bare": 36
+   },
+   "parts": [
+    {
+     "name": "_concrete",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_steel",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_steel_dark",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    }
+   ],
+   "bounds": [
+    -1.6,
+    1.6,
+    -1.6,
+    1.6,
+    -0.25,
+    2.23
+   ],
+   "root": ""
+  },
+  "sensor_surface": {
+   "kind": "sensor",
+   "token": "SENSOR_KIT",
+   "name": "SENSOR_{id}",
+   "levels": {
+    "full": "sensor_surface.glb",
+    "lite": "sensor_surface.glb",
+    "bare": "sensor_surface.glb"
+   },
+   "triangles": {
+    "full": 128,
+    "lite": 128,
+    "bare": 128
+   },
+   "parts": [
+    {
+     "name": "_light",
+     "role": "light",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_steel_dark",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    }
+   ],
+   "bounds": [
+    -0.115,
+    0.1,
+    -0.065,
+    0.065,
+    0.0,
+    0.62
+   ],
+   "mounts": {
+    "tank": [
+     -2.390867233276367,
+     0.209173783659935,
+     5.108181818181818,
+     "surface"
+    ],
+    "pump": [
+     0.35,
+     -0.42,
+     0.95,
+     "bracket"
+    ],
+    "valve": [
+     -0.38,
+     0.0,
+     0.25,
+     "bracket"
+    ],
+    "well": [
+     -0.9,
+     -3.0,
+     0.12,
+     "post"
+    ],
+    "disposal_well": [
+     0.9,
+     6.7,
+     0.15,
+     "post"
+    ],
+    "truck": [
+     3.1,
+     0.75,
+     3.15,
+     "surface"
+    ],
+    "yard": [
+     -14.5,
+     -6.0,
+     3.44,
+     "surface"
+    ]
+   },
+   "root": ""
+  },
+  "sensor_bracket": {
+   "kind": "sensor",
+   "token": "SENSOR_KIT",
+   "name": "SENSOR_{id}",
+   "levels": {
+    "full": "sensor_bracket.glb",
+    "lite": "sensor_bracket.glb",
+    "bare": "sensor_bracket.glb"
+   },
+   "triangles": {
+    "full": 140,
+    "lite": 140,
+    "bare": 140
+   },
+   "parts": [
+    {
+     "name": "_light",
+     "role": "light",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_steel",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_steel_dark",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    }
+   ],
+   "bounds": [
+    -0.115,
+    0.1,
+    -0.065,
+    0.18,
+    0.0,
+    0.62
+   ],
+   "mounts": {
+    "tank": [
+     -2.390867233276367,
+     0.209173783659935,
+     5.108181818181818,
+     "surface"
+    ],
+    "pump": [
+     0.35,
+     -0.42,
+     0.95,
+     "bracket"
+    ],
+    "valve": [
+     -0.38,
+     0.0,
+     0.25,
+     "bracket"
+    ],
+    "well": [
+     -0.9,
+     -3.0,
+     0.12,
+     "post"
+    ],
+    "disposal_well": [
+     0.9,
+     6.7,
+     0.15,
+     "post"
+    ],
+    "truck": [
+     3.1,
+     0.75,
+     3.15,
+     "surface"
+    ],
+    "yard": [
+     -14.5,
+     -6.0,
+     3.44,
+     "surface"
+    ]
+   },
+   "root": ""
+  },
+  "sensor_post": {
+   "kind": "sensor",
+   "token": "SENSOR_KIT",
+   "name": "SENSOR_{id}",
+   "levels": {
+    "full": "sensor_post.glb",
+    "lite": "sensor_post.glb",
+    "bare": "sensor_post.glb"
+   },
+   "triangles": {
+    "full": 148,
+    "lite": 148,
+    "bare": 148
+   },
+   "parts": [
+    {
+     "name": "_light",
+     "role": "light",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_steel",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_steel_dark",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    }
+   ],
+   "bounds": [
+    -0.115,
+    0.1,
+    -0.065,
+    0.11,
+    0.0,
+    1.62
+   ],
+   "mounts": {
+    "tank": [
+     -2.390867233276367,
+     0.209173783659935,
+     5.108181818181818,
+     "surface"
+    ],
+    "pump": [
+     0.35,
+     -0.42,
+     0.95,
+     "bracket"
+    ],
+    "valve": [
+     -0.38,
+     0.0,
+     0.25,
+     "bracket"
+    ],
+    "well": [
+     -0.9,
+     -3.0,
+     0.12,
+     "post"
+    ],
+    "disposal_well": [
+     0.9,
+     6.7,
+     0.15,
+     "post"
+    ],
+    "truck": [
+     3.1,
+     0.75,
+     3.15,
+     "surface"
+    ],
+    "yard": [
+     -14.5,
+     -6.0,
+     3.44,
+     "surface"
+    ]
+   },
+   "root": ""
+  },
+  "rtu": {
+   "kind": "rtu",
+   "token": "RTU_PAD_KIT",
+   "name": "RTU_PAD_{n}",
+   "levels": {
+    "full": "rtu.glb",
+    "lite": "rtu.glb",
+    "bare": "rtu.glb"
+   },
+   "triangles": {
+    "full": 352,
+    "lite": 352,
+    "bare": 352
+   },
+   "parts": [
+    {
+     "name": "_antenna",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_concrete",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_light",
+     "role": "light",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_steel",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_steel_dark",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    }
+   ],
+   "bounds": [
+    -0.7,
+    1.05,
+    -0.9,
+    0.601,
+    0.0,
+    7.9
+   ],
+   "spot": [
+    -9.5,
+    50.5,
+    0.15
+   ],
+   "root": ""
   }
  },
  "glyphs": {
@@ -1224,7 +1925,11 @@
    "M_GLASS",
    "M_LAMP",
    "M_WOOD",
-   "M_WIRE"
+   "M_WIRE",
+   "M_YUCCA",
+   "M_CACTUS",
+   "M_PLANT_DRY",
+   "M_FRUIT"
   ]
  },
  "files": {
@@ -1232,13 +1937,24 @@
   "disposal_well_lite.glb": 122052,
   "disposal_well_mirror.glb": 151580,
   "disposal_well_mirror_lite.glb": 122052,
+  "equipment_compressor.glb": 73628,
+  "equipment_flare.glb": 41308,
+  "equipment_heater_treater.glb": 68244,
+  "equipment_lact.glb": 57520,
+  "equipment_meter_run.glb": 34568,
+  "equipment_placeholder.glb": 4580,
+  "equipment_separator.glb": 44096,
   "glyphs.glb": 152960,
   "loadout.glb": 25060,
   "pad.glb": 47748,
   "pad_lite.glb": 23464,
-  "palette.glb": 20044,
+  "palette.glb": 25264,
   "pump.glb": 102820,
   "pump_lite.glb": 87076,
+  "rtu.glb": 22652,
+  "sensor_bracket.glb": 9984,
+  "sensor_post.glb": 10288,
+  "sensor_surface.glb": 8424,
   "tank.glb": 164360,
   "tower.glb": 14048,
   "truck.glb": 132208,
@@ -1250,6 +1966,6 @@
   "well_bare.glb": 40344,
   "yard.glb": 36580
  },
- "kit_mb": 1.59,
- "seconds": 1.5
+ "kit_mb": 1.97,
+ "seconds": 4.6
 }
