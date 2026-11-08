@@ -627,6 +627,25 @@ def test_countdown_denoises_noisy_readings(tmp_path):
     assert cd["rows_used"] == {"after_onset": 30, "before_onset": 30}
 
 
+def test_countdown_leaves_out_the_run_before_a_level_jump(tmp_path):
+    """R1 takes the level as continuous at the onset (every sponsor folder: the run before the onset
+    and the fill rows agree within 0.16 points). Readings that jump there by more than JUMP_PCT
+    would drag the onset level toward the old run, so the run is left out."""
+    ds = load(_write(tmp_path / "d", 61, {"SX_FAC_A": (20, 65.3)}))
+    e = _ev("E1", "SX_FAC_A", 20)
+    lv = ds.values("SX_TANK_A", "level_pct")
+    for i in range(20):
+        lv[i] = 40.0                                     # held at 40 % by the pump, then 65.3 % at the fault
+    cd = P.countdown(ds, e)
+    assert cd["rows_used"] == {"after_onset": 41, "before_onset": 0}
+    assert cd["level_at_onset_pct"] == 65.3 and cd["trips_at"] == T0 + 300 * 20 + 320 * 60
+    for i in range(20):
+        lv[i] = 65.3 + P.JUMP_PCT / 2                    # a disagreement within the limit keeps the run
+    cd = P.countdown(ds, e)
+    assert cd["rows_used"] == {"after_onset": 41, "before_onset": 20}
+    assert 65.3 < cd["level_at_onset_fit_pct"] < 65.3 + P.JUMP_PCT / 2
+
+
 def test_now_mode_tie_break_prefers_fewer_trucks(tmp_path):
     # 75 % -> 105 % by the repair end: needs two loads; 1 truck x 2 trips and 2 trucks x 1 trip
     # both cost $1,600, every shut-in mix costs more (R6)

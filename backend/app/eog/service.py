@@ -16,15 +16,16 @@ tested without a server.
 - **Approvals.** An overlay kept in memory: who approved which plan, at which data time. It
   never changes the data, the events or the plans.
 
-detect, plan and blueprint are imported lazily inside functions, so this module runs before
-they land. A view that needs one answers 503 with a sentence until it does, except the state
-view: the map stays up on the readings alone, with a warning. Everything that reaches a
-client goes through `jsonable` (no NaN, no Infinity).
+Events come from detect.detect and plans from plan.py, called directly. Every countdown a client
+sees (alerts, events.json, plans, handoff, approvals, what-if start level) is the Event's
+countdown block, which detect fills from plan.countdown: there is no second countdown here. If
+detection raises, the state view keeps the map up on the readings alone, with a warning; the
+views that need events fail loudly. Everything that reaches a client goes through `jsonable`
+(no NaN, no Infinity).
 """
 from __future__ import annotations
 
 import dataclasses
-import importlib
 import json
 import logging
 import math
@@ -38,6 +39,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from . import dataset as dsmod
+from . import detect, plan
 from .dataset import STEP_S, Dataset, DatasetError
 from .model import ACTION_TYPES, Event, iso, money
 
@@ -74,13 +76,8 @@ class ServiceError(Exception):
 
 
 class Unavailable(ServiceError):
-    """Dataset mode is off, or the active dataset (or a module it needs) can't be used.
-    `missing` names the module (detect, plan, blueprint) when that is the reason."""
+    """Dataset mode is off, or the active dataset can't be used."""
     status = 503
-
-    def __init__(self, sentence: str, missing: Optional[str] = None):
-        super().__init__(sentence)
-        self.missing = missing
 
 
 class NotFound(ServiceError):
@@ -297,18 +294,6 @@ def downsample(points: list[tuple[int, float]], max_points: int) -> list[tuple[i
         hi = max(range(len(seg)), key=lambda k: seg[k][1])
         out.extend(seg[k] for k in sorted({lo, hi}))
     return out
-
-
-def _module(name: str):
-    """detect, plan or blueprint, imported on first use (they land from other branches)."""
-    full = f"{__package__}.{name}"
-    try:
-        return importlib.import_module(full)
-    except ModuleNotFoundError as e:
-        if e.name != full:
-            raise          # the module exists but one of its own imports is missing: a real bug
-        raise Unavailable(f"backend/app/eog/{name}.py is not on this branch yet, so this view "
-                          f"can't be built until the {name} work is merged.", missing=name) from None
 
 
 def step_of(times: array) -> int:
@@ -639,17 +624,9 @@ class Service:
         return (view.id, str(view.folder), id(view.times), view.end) + parts
 
     def events(self, view: Dataset) -> list[Event]:
-        """Every event up to the view's now, with countdowns on ongoing pump failures."""
-        def compute() -> list[Event]:
-            detect = _module("detect")
-            evs = list(detect.detect(view))
-            for i, ev in enumerate(evs):
-                if ev.category == "pump_failure" and ev.status == "ongoing":
-                    out = detect.countdown(view, ev)
-                    if isinstance(out, Event):
-                        evs[i] = out
-            return evs
-        return self.cache.get(self._key(view, "events"), compute, keep=view.times)
+        """Every event up to the view's now (detect.detect). Pump failures carry their countdown
+        block, which detect fills from plan.countdown."""
+        return self.cache.get(self._key(view, "events"), lambda: list(detect.detect(view)), keep=view.times)
 
     @staticmethod
     def ongoing_failures(events: list[Event]) -> list[Event]:
@@ -661,7 +638,7 @@ class Service:
         if not ongoing:
             return {}
         return self.cache.get(self._key(view, "plans", "now"),
-                              lambda: dict(_module("plan").plan_failures(view, ongoing, mode="now")),
+                              lambda: dict(plan.plan_failures(view, ongoing, mode="now")),
                               keep=view.times)
 
     def plans_reference(self, view: Dataset, events: list[Event]) -> dict:
@@ -670,28 +647,20 @@ class Service:
         if not failures:
             return {}
         return self.cache.get(self._key(view, "plans", "reference"),
-                              lambda: dict(_module("plan").plan_failures(view, failures, mode="reference")),
+                              lambda: dict(plan.plan_failures(view, failures, mode="reference")),
                               keep=view.times)
 
     def alternatives(self, view: Dataset, ev: Event, trucks_free: Optional[int]) -> list:
         return self.cache.get(self._key(view, "alternatives", ev.id, trucks_free),
-                              lambda: list(_module("plan").alternatives(view, ev, start_ts=None,
-                                                                        trucks_free=trucks_free)),
+                              lambda: list(plan.alternatives(view, ev, start_ts=None, trucks_free=trucks_free)),
                               keep=view.times)
 
     def wait_curve(self, view: Dataset, ongoing: list[Event], ev: Event) -> list:
-        """Last Call's price of waiting, from plan.py. Each point's start goes out as the API's
-        usual pair, `start` (ts_unix) and `start_ts` (ISO): plan.py names the number start_ts."""
-        def compute() -> list:
-            out = []
-            for p in _module("plan").wait_curve(view, ongoing, ev.id, step_min=5, until=None):
-                d = dict(p) if isinstance(p, dict) else jsonable(p)
-                s = d.get("start", d.get("start_ts")) if isinstance(d, dict) else None
-                if finite(s):
-                    d["start"], d["start_ts"] = int(s), iso(int(s))
-                out.append(d)
-            return out
-        return self.cache.get(self._key(view, "wait_curve", ev.id), compute, keep=view.times)
+        """Last Call's price of waiting: plan.wait_curve's rows exactly as it returns them
+        ({delay_min, start_ts (a ts_unix number), cost, summary, trucks_free})."""
+        return self.cache.get(self._key(view, "wait_curve", ev.id),
+                              lambda: list(plan.wait_curve(view, ongoing, ev.id, step_min=5, until=None)),
+                              keep=view.times)
 
     def ordered(self, view: Dataset) -> tuple[list[Event], dict]:
         """(ongoing events in the alerts-view order, the now plans)."""
@@ -701,7 +670,7 @@ class Service:
         if not ongoing:
             return [], plans
         order = self.cache.get(self._key(view, "alerts"),
-                               lambda: list(_module("plan").alerts_order(ongoing, plans)),
+                               lambda: list(plan.alerts_order(ongoing, plans)),
                                keep=view.times)
         return order, plans
 
@@ -766,33 +735,20 @@ class Service:
             links += [{"from": f.tank_id, "to": f.pump_id, "kind": "tank_outlet"},
                       {"from": f.pump_id, "to": f.pipeline_id, "kind": "discharge"},
                       {"from": f.pipeline_id, "to": disposal, "kind": "pipeline"}]
-        layout, warnings = None, []
-        try:
-            layout = _module("blueprint").field_assets(ds)
-        except Unavailable:
-            pass                          # blueprint.py not merged yet: no layout, no warning
-        except Exception as e:            # noqa: BLE001 - a layout bug must not take the map down
-            self._log_once("field layout", e)
-            warnings.append(f"The field layout could not be built ({type(e).__name__}: {_sentence(e)}).")
         return {"limits": {"warning_pct": ds.warning_pct, "shutdown_pct": ds.shutdown_pct},
                 "prices": {"oil_per_bbl": ds.oil_price, "gas_per_mcf": ds.gas_price},
                 "repair_hours": ds.repair_hours,
                 "trucking": {"truck_capacity_bbl": ds.truck_capacity_bbl, "cost_per_trip": ds.truck_cost},
-                "systems": systems, "facilities": facilities, "wells": wells, "links": links,
-                "layout": layout, "warnings": warnings}
+                "systems": systems, "facilities": facilities, "wells": wells, "links": links}
 
     def state(self, at_raw: Any = None) -> dict:
         """Every asset's readings at `at` and its status. The map must stay up even when
-        detection is missing or broken: then the statuses come from the readings alone (tank
-        limits, pump faults, shut-in wells) and `warnings` says so."""
+        detection breaks: then the statuses come from the readings alone (tank limits, pump
+        faults, shut-in wells) and `warnings` says so."""
         ds, view, at = self.view(at_raw)
         warnings: list[str] = []
         try:
             events = self.events(view)
-        except Unavailable as e:
-            events = []
-            warnings.append(f"backend/app/eog/{e.missing}.py is not on this branch yet, {NO_DETECTION}."
-                            if e.missing else f"Detection is unavailable ({_sentence(e)}), {NO_DETECTION}.")
         except Exception as e:  # noqa: BLE001 - a detection bug must not take the map down
             self._log_once("detection", e)
             events = []
@@ -892,8 +848,8 @@ class Service:
                 return f"{ev.asset} failed: {tank} is at shutdown and its wells are shut in"
             if ev.trips_at is not None:
                 h = p50(ev)
-                h = h if h is not None else max(0.0, (ev.trips_at - view.now) / 3600.0)
-                return f"{ev.asset} failed: {tank} reaches shutdown at {clock_text(ev.trips_at, view.now)} (in {duration_text(h)})"
+                left = f" (in {duration_text(h)})" if h is not None else ""
+                return f"{ev.asset} failed: {tank} reaches shutdown at {clock_text(ev.trips_at, view.now)}{left}"
             return f"{ev.asset} failed: {tank} stays under shutdown until the repair"
         if ev.category == "pipeline_leak":
             return f"Leak on {ev.asset}: send an inspector now"
@@ -1069,8 +1025,8 @@ class Service:
             if short:
                 return f"shuts in at {t(e.trips_at)}"
             h = p50(e)
-            h = h if h is not None else max(0.0, (e.trips_at - now) / 3600.0)
-            return f"{tank}{level} shuts in at {t(e.trips_at)}, {duration_text(h)} left."
+            left = f", {duration_text(h)} left" if h is not None else ""
+            return f"{tank}{level} shuts in at {t(e.trips_at)}{left}."
         if short:
             return f"holds until the repair at {repair}"
         return f"{tank}{level} stays under shutdown until the repair at {repair}."
@@ -1208,19 +1164,12 @@ class Service:
             raise BadInput(f"{fac.system} has {_plural(fleet, 'truck')}, but the actions call {trucks}.")
         return out
 
-    def start_level(self, plan: Any, ds: Dataset, view: Dataset, ev: Event) -> Optional[float]:
-        """The tank level a replay starts from. First the planner's own level (plan.countdown, the
-        de-noised level its plans start from), so replaying the recommended actions costs what
-        the recommended plan says. Then the event's level, then the reading. A tank already at
-        shutdown starts there. None when there is no level at all."""
-        countdown = getattr(plan, "countdown", None)
-        if callable(countdown):
-            try:
-                level = _get(countdown(view, ev), "level_pct")
-                if finite(level):
-                    return float(level)
-            except Exception as e:  # noqa: BLE001 - fall back to the event's own level
-                self._log_once("countdown for a what-if", e)
+    @staticmethod
+    def start_level(ds: Dataset, view: Dataset, ev: Event) -> Optional[float]:
+        """The tank level a replay starts from: the event's level, which detect takes from
+        plan.countdown (the de-noised level the plans start from), so replaying the recommended
+        actions costs what the recommended plan says. A tank already at shutdown starts there;
+        with no countdown level, the reading at now. None when there is no level at all."""
         if ev.tripped:
             return float(ds.shutdown_pct)
         level = ev.level_pct if finite(ev.level_pct) else view.value_at(ds.facilities[ev.facility].tank_id, "level_pct")
@@ -1240,8 +1189,7 @@ class Service:
         if ev is None:
             raise BadInput(f"{facility_id} has no ongoing pump failure at {iso(view.now)}, so there is nothing to replay.")
         fac = ds.facilities[facility_id]
-        plan = _module("plan")
-        level = self.start_level(plan, ds, view, ev)
+        level = self.start_level(ds, view, ev)
         if level is None:
             raise BadInput(f"{fac.tank_id} has no level reading at {iso(view.now)}, so there is no level to replay from.")
         repair_end = self.repair_end_of(ds, ev)

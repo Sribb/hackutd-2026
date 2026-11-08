@@ -218,7 +218,7 @@ The backend sends the status. The web console picks the color.
 
 ## Dataset mode (EOG sponsor data)
 
-Everything under `/api/eog` serves the EOG track's sponsor datasets: the real network, its week of telemetry, and the events, plans and alerts built from them. Code: `backend/app/eog/`, where `api.py` is a thin layer over `service.py`, and detection, plans and the 3D layout come from `detect.py`, `plan.py` and `blueprint.py`. The other routes in this file are unchanged.
+Everything under `/api/eog` serves the EOG track's sponsor datasets: the real network, its week of telemetry, and the events, plans and alerts built from them. Code: `backend/app/eog/`, where `api.py` is a thin layer over `service.py`, and the events and plans come from `detect.py` and `plan.py`. The other routes in this file are unchanged.
 
 **Turning it on.** Start the backend with `FREEBOARD_EOG_DIR` set to a folder of datasets, such as a checkout of the sponsor repo. Every folder under it that holds `network.json`, `ops.json` and `telemetry.csv` is a dataset, and its id is its path under that folder, like `history/full_week`. `FREEBOARD_EOG_DATASET` picks the dataset shown at startup (an id, or a folder name such as `full_week`). Without it the backend picks `test`, then `history/full_week`, then the first dataset it finds. With `FREEBOARD_EOG_DIR` unset, every route answers 503 with one sentence that says how to turn it on.
 
@@ -227,7 +227,7 @@ Everything under `/api/eog` serves the EOG track's sponsor datasets: the real ne
 - **Times** are data time, never the server's clock. Each one comes as a pair: `onset` is ts_unix seconds (an integer) and `onset_ts` is the same moment in ISO 8601 UTC, like `2026-10-08T09:00:00Z`. Text such as "13:25" is UTC too, with the weekday added when it isn't on the day of `now`.
 - **`?at=`** Every GET takes an optional `at`: ts_unix seconds, or ISO 8601 (UTC unless it carries an offset). Numbers of 10^11 or more are read as milliseconds, which is what JavaScript's `Date.now()` gives. `at` is clamped into the dataset's range, and anything unreadable is a 422. Without `at`, a GET reads the data at the clock's cursor (`GET /api/eog/clock`). `datasets` and `clock` check `at` but always describe the real cursor.
 - **Every view starts with** `dataset`, `at`, `at_ts`, `now` and `now_ts`. `now` is the last telemetry row at or before `at`, and nothing after it is read, so time travel shows exactly what was known then.
-- **Errors** are `{"detail": "<one sentence>"}`. 503: dataset mode is off, the dataset can't be loaded, or a module the view needs (`detect.py`, `plan.py`) isn't merged yet. 404: an unknown dataset, event, facility, asset or metric. 422: bad input, and the sentence says what to fix.
+- **Errors** are `{"detail": "<one sentence>"}`. 503: dataset mode is off or the dataset can't be loaded. 404: an unknown dataset, event, facility, asset or metric. 422: bad input, and the sentence says what to fix.
 - **POST routes** need the operator token in `X-Freeboard-Token` when `backend/app/auth.py` is present and a token is configured: 401 without it, 403 for the phone token, 429 after too many wrong PINs. With no token configured they are open. If `auth.py` is present but can't be used, POST routes answer 503 and say why instead of opening. GET routes and the WebSocket only read, so they are always open. A POST body is a JSON object, an empty body counts as `{}`, and an unknown field is a 422.
 - **JSON** never holds NaN or Infinity. A number that isn't known is `null`, and a missing reading never makes an asset `OK`.
 - **Event ids** (`EV-0001`, ...) number the events in onset order within a view, so they hold as the cursor moves forward unless detection re-dates an onset. When you approve, send back the `at` of the payload the id came from.
@@ -311,20 +311,12 @@ Everything that doesn't change during the week, from `network.json` and `ops.jso
     { "from": "S1_TANK_A", "to": "S1_PUMP_A", "kind": "tank_outlet" },
     { "from": "S1_PUMP_A", "to": "S1_PIPELINE_A", "kind": "discharge" },
     { "from": "S1_PIPELINE_A", "to": "S1_DISPOSAL", "kind": "pipeline" }
-  ],
-  "layout": [{
-    "id": "S1_TANK_A", "kind": "tank", "system": "S1", "facility": "S1_FACILITY_A", "label": "S1 Tank A",
-    "lat": 31.912, "lon": -102.34, "latlon_from": "facility", "x_m": -42.67, "y_m": 123.86,
-    "links": ["S1_PUMP_A"], "fed_by": ["S1_WELL_A1", "S1_WELL_A2", "S1_WELL_A3"],
-    "blueprint_id": "TANK_S1_TANK_A", "node": "TANK_S1_TANK_A", "metrics": ["level_pct"], "synthetic": false
-  }],
-  "warnings": []
+  ]
 }
 ```
 
 - A facility's `revenue_per_hour` is what its wells earn in an hour, which is what a shut-in loses. A well's `cost_per_bbl_avoided` is its revenue per barrel of water it makes (`null` if it makes none).
 - `response_min` is the drive from the truck yard to the facility, and `cycle_min` one round trip after that.
-- `layout` is `blueprint.py`'s `field_assets`, as that module documents it: every asset (systems, facilities, tanks, pumps, pipelines, wells, disposal sites, truck yards and trucks) with its label, position (`lat`, `lon`, and `x_m`, `y_m` in meters for the 3D field), links and glb node. It is `null` until `blueprint.py` is merged. If it fails, it is `null` and `warnings` says why.
 
 ### `GET /api/eog/state`
 
@@ -362,7 +354,7 @@ Every asset's readings and status at `now`, keyed by asset id.
 - Pipeline: `INSPECT` on a suspected leak, `WARNING` when none of its readings came in.
 - Well: `ALARM` when shut in (status 0), `WARNING` with no status reading.
 - A facility is the worst of its parts, a system the worst of its facilities, and a disposal site `OK`.
-- The top-level `events` lists every ongoing event. The state view never fails because detection does: if `detect.py` is missing or raises, the statuses come from the readings alone and `warnings` says so.
+- The top-level `events` lists every ongoing event. The state view never fails because detection does: if detection raises, the statuses come from the readings alone and `warnings` says so.
 
 ### `GET /api/eog/alerts`
 
@@ -398,7 +390,7 @@ The ongoing events in SPEC's alerts-view order: pump failures first, soonest shu
 }
 ```
 
-- `countdown` is only on pump failures (`null` otherwise). `trips_at` is when the tank reaches shutdown if nobody acts, `null` when the repair comes first. `tripped` is true once the tank has reached shutdown and its wells are shut in.
+- `countdown` is only on pump failures (`null` otherwise). Every countdown in dataset mode (alerts, events.json, plans, handoff, approvals, the what-if start level) is `plan.py`'s `countdown`, which `detect.py` copies into each pump failure: `level_pct` is the de-noised level in 0.1 % steps and `trips_at` is when the tank reached, or will reach, shutdown if nobody acts (the answer keys' meaning, so it stays set once the tank has tripped), to the minute, `null` when the repair comes first. `tripped` is true once the tank has reached shutdown and its wells are shut in.
 - `action` for a pump failure is its recommended plan, with `summary` "No plan is available yet." and no actions while there is none. `expires_at` is Last Call: the last start time at which the plan still works. For a leak or a worn pump, `action` is `{ "type": "field_inspection", "asset_id": "S5_PIPELINE_B", "summary": "Send an inspector to S5_PIPELINE_B." }`.
 - `urgent` is true for pump failures and leaks. `approval` is the recorded approval (see approve) or `null`.
 
@@ -450,8 +442,8 @@ The field names are SPEC's (`system_id`, `onset_unix`), kept as SPEC writes them
     },
     "trucks_free": 1,
     "alternatives": [{ "summary": "1 truck, 1 trip (~$905)", "cost": 905.0, "trips": false }],
-    "wait_curve": [{ "delay_min": 0, "start": 1791460800, "start_ts": "2026-10-08T12:00:00Z", "cost": 905.0,
-                     "summary": "1 truck, 1 trip (~$905)", "trucks": 1, "system_cost": 3108.33 }],
+    "wait_curve": [{ "delay_min": 0, "start_ts": 1791460800, "cost": 905.0,
+                     "summary": "1 truck, 1 trip (~$905)", "trucks_free": 1 }],
     "approval": null
   }],
   "systems": [{ "system": "S2", "fleet_size": 2, "events": ["EV-0011", "EV-0012", "EV-0013"], "trucks_used": 2, "cost": 3108.33 }]
@@ -460,7 +452,7 @@ The field names are SPEC's (`system_id`, `onset_unix`), kept as SPEC writes them
 
 - `event` is the whole Event from `backend/app/eog/model.py`: `id`, `category`, `system`, `facility`, `asset`, `onset`, `end`, `status`, `confidence`, `evidence`, `detected_at`, `level_at_onset_pct`, `level_pct`, `hours_to_limit`, `trips_at`, `repair_end`, `tripped`, `lost_revenue_per_hour`, plus `onset_ts`, `end_ts`, `trips_at_ts` and `repair_end_ts`. `plan` is the whole Plan from the same file.
 - The item's `trucks_free` is the system's fleet minus the trucks the joint plan gives the system's other failures. `alternatives` are plans in the same shape for this failure on its own with those trucks, cheapest first, and they include doing nothing.
-- `wait_curve` is Last Call, the price of waiting: for each 5-minute delay until the repair, what it costs to do nothing until then and follow the best plan from there (`cost` for this event, `system_cost` for its whole system).
+- `wait_curve` is Last Call, the price of waiting: for each 5-minute delay until the repair, what this event costs if nobody acts until then and its best plan is followed from there, while the system's other failures keep their plans from `now`. The rows are `plan.py`'s `wait_curve` rows as it returns them, so `start_ts` here is ts_unix seconds (a number, not ISO text), and `trucks_free` is the trucks this event could use at that start.
 - `?mode=reference` is history mode: every pump failure up to `now`, each planned alone at its onset with the trucks still out on earlier plans, as the answer keys' `reference_action`. Its items are `{ "event", "plan", "approval" }`, and `trucks_used` is `null`.
 
 ### `POST /api/eog/whatif`

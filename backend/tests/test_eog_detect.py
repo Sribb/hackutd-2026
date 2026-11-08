@@ -20,6 +20,7 @@ import pytest
 from backend.app.eog import detect as detect_module
 from backend.app.eog.dataset import load
 from backend.app.eog.detect import countdown, detect
+from backend.app.eog.plan import countdown as plan_countdown
 from backend.app.eog.model import CATEGORIES
 from backend.tests.eog_fixture import DEFAULT_SYSTEMS, facility_spec, write_dataset
 
@@ -214,9 +215,15 @@ def test_countdown_for_an_ongoing_failure(tmp_path):
     assert abs(e.trips_at - trip_lab["trips_at"]) <= 6 * 60
     true_level = fx.level[fac.tank_id][view.end - 1]
     assert e.level_pct == pytest.approx(true_level, abs=0.3)
-    # the formula: (shutdown - level) / (producing wells' baseline / 24 / capacity * 100)
+    # the formula: (shutdown - level) / (producing wells' baseline / 24 / capacity * 100), up to the
+    # rounding plan.countdown applies (level to 0.1 % twice, trip time to the minute, p50 to 0.01 h)
     rate = sum(w.baseline_water_bpd for w in fac.wells) / 24.0 / fac.capacity_bbl * 100.0
-    assert e.hours_to_limit["p50"] == pytest.approx((view.shutdown_pct - e.level_pct) / rate, abs=0.006)
+    assert e.hours_to_limit["p50"] == pytest.approx((view.shutdown_pct - e.level_pct) / rate,
+                                                    abs=0.1 / rate + 0.5 / 60 + 0.005)
+    # one countdown in the app: detect's block is plan.countdown's, field for field
+    cd = plan_countdown(view, e)
+    assert (e.level_pct, e.hours_to_limit, e.trips_at, e.tripped, e.level_at_onset_pct) == (
+        cd["level_pct"], cd["hours_to_limit"], cd["trips_at"], cd["tripped"], cd["level_at_onset_pct"])
     assert "shutdown in about" in e.evidence[-1]
 
     # countdown() on its own fills the same fields, and leaves other events alone
@@ -229,10 +236,12 @@ def test_countdown_for_an_ongoing_failure(tmp_path):
                        asset=e.asset, onset=e.onset, end=e.onset + 3600, status="resolved", confidence=0.99)
     assert countdown(view, resolved).hours_to_limit is None
 
-    # after the tank reached shutdown: tripped, nothing left to count, no future trips_at
+    # after the tank reached shutdown: tripped, nothing left to count; trips_at is when it reached
+    # shutdown (the answer key's meaning: "reached, or will reach, its shutdown limit if nobody acts")
     view = ds.at(trip_lab["trips_at"] + 30 * 60)
     e = next(e for e in detect(view) if e.facility == fac.id)
-    assert e.status == "ongoing" and e.tripped and e.trips_at is None
+    assert e.status == "ongoing" and e.tripped and e.trips_at <= view.now
+    assert abs(e.trips_at - trip_lab["trips_at"]) <= 180
     assert e.hours_to_limit == {"p50": 0.0, "p10": 0.0, "p90": 0.0}
     assert e.level_pct == pytest.approx(view.shutdown_pct)
 
@@ -491,7 +500,7 @@ def check_against_key(ds, events, key) -> dict:
         assert e.detected_at >= k["onset"]
         if k["category"] == "pump_failure":
             assert e.onset == k["onset"] and e.detected_at == k["onset"]
-            assert e.level_at_onset_pct == pytest.approx(k["level_pct"], abs=0.5)
+            assert e.level_at_onset_pct == k["level_pct"], k["id"]     # plan.countdown's fit, 0.1 % steps
         elif k["category"] == "pipeline_leak":
             gap = gap_around(ds, fac, k["onset"])
             if gap is None:
@@ -516,14 +525,11 @@ def check_against_key(ds, events, key) -> dict:
             else:
                 assert gap[0] <= e.end <= gap[1], k["id"]         # repaired while the pump was off
         if k["category"] == "pump_failure":
-            kt = k.get("trips_at_unix")
-            if e.status == "ongoing" and e.tripped:               # already at shutdown: nothing to count
-                assert kt is not None and kt <= ds.now and e.trips_at is None, k["id"]
-            elif kt is None:
-                assert e.trips_at is None and not e.tripped, k["id"]
-            else:
-                assert e.trips_at is not None and abs(e.trips_at - kt) <= 5 * 60, k["id"]
-                assert e.tripped == (e.status == "resolved"), k["id"]
+            kt = k.get("trips_at_unix")       # reached, or will reach, shutdown if nobody acts; None: repair first
+            assert e.trips_at == kt, k["id"]                       # plan.countdown, to the minute
+            assert e.tripped == (kt is not None and kt <= ds.now), k["id"]
+            if e.status == "ongoing" and e.tripped:               # already at shutdown: nothing left to count
+                assert e.hours_to_limit == {"p50": 0.0, "p10": 0.0, "p90": 0.0}, k["id"]
     return report
 
 
@@ -555,9 +561,10 @@ def test_snapshot_matches_its_key_and_countdowns(full_week, name):
     found = {e.asset: e for e in events if e.category == "pump_failure" and e.status == "ongoing"}
     for k in ongoing:
         e = found[k["asset"]]
-        assert e.hours_to_limit["p50"] == pytest.approx(k["hours_to_limit_final"], abs=0.05), k["id"]
-        assert e.level_pct == pytest.approx(k["level_final_pct"], abs=0.3), k["id"]
-        assert abs(e.trips_at - k["trips_at_unix"]) <= 5 * 60, k["id"]
+        # the countdown comes from plan.countdown and matches the key exactly (R1, R2, R4)
+        assert e.hours_to_limit["p50"] == k["hours_to_limit_final"], k["id"]
+        assert e.level_pct == k["level_final_pct"], k["id"]
+        assert e.trips_at == k["trips_at_unix"], k["id"]
         assert e.lost_revenue_per_hour == pytest.approx(k["lost_revenue_per_hour"], abs=0.01)
     # the alerts view order (soonest shutdown first, then lost revenue) comes out as in the key
     order = sorted(found.values(), key=lambda e: (e.hours_to_limit["p50"], -e.lost_revenue_per_hour))

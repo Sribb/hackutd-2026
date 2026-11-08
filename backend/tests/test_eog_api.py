@@ -1,9 +1,12 @@
 """Dataset mode API (/api/eog): backend/app/eog/api.py and service.py.
 
-detect, plan and blueprint land from other branches, so these tests swap in small fakes with
-the agreed signatures. A synthetic dataset written to tmp_path always runs (its ids look
-nothing like the sponsor's S1-S5). The sponsor data runs too when FREEBOARD_EOG_DIR points at
-it and is skipped otherwise. Answer keys are never needed: the app must not read them.
+service.py calls the real detect.py and plan.py. Most tests here swap in small stand-ins with the
+same signatures (Fakes) so they test the API layer alone: fixed events and plans, call counts,
+injected NaN and errors. test_real_modules_behind_the_api runs the real modules on the synthetic
+dataset, and the sponsor-data tests run them on every history folder. A synthetic dataset written
+to tmp_path always runs (its ids look nothing like the sponsor's S1-S5). The sponsor data runs too
+when FREEBOARD_EOG_DIR points at it and is skipped otherwise. The app never reads an answer key;
+the tests here read them only as fixtures.
 """
 from __future__ import annotations
 
@@ -31,6 +34,9 @@ from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from backend.app.eog import api, service
+from backend.app.eog import detect as real_detect
+from backend.app.eog import plan as real_plan
+from backend.app.eog.dataset import load
 from backend.app.eog.model import Event, Plan, iso
 from backend.app.main import app
 
@@ -121,23 +127,23 @@ def write_dataset(folder: Path, rows: int = ROWS, network: dict = NETWORK, ops: 
     return folder
 
 
-# ---------- fakes with the agreed signatures ----------
+# ---------- stand-ins with the real signatures, for tests of the API layer alone ----------
 
 class Fakes:
-    """detect, plan and blueprint stand-ins. Pump failures come from runs of pump status 2
-    (generic, so they also work on the sponsor data); SPECS add a worn pump and a leak."""
+    """detect and plan stand-ins. Pump failures come from runs of pump status 2 (generic, so they
+    also work on the sponsor data) and, like detect.detect's, come with their countdown; SPECS add
+    a worn pump and a leak."""
 
     def __init__(self, specs: Optional[list] = None):
         self.specs = specs if specs is not None else []
         self.calls = {k: 0 for k in ("detect", "countdown", "plan_failures", "alternatives", "wait_curve",
-                                     "alerts_order", "simulate", "field_assets")}
+                                     "alerts_order", "simulate")}
         self.trucks_free: list = []
         self.modes: list = []
         self.simulated: list = []
         self.mutate = None           # optional f(list[Event]) -> list[Event], e.g. to inject NaN
         self.plan_actions = None     # optional f(event) -> actions for the now plans
         self.detect_delay = 0.0
-        self.layout_error: Optional[Exception] = None
 
     # detect
     def detect(self, ds):
@@ -165,6 +171,8 @@ class Fakes:
         found.sort(key=lambda e: (e.onset, e.asset))
         for n, e in enumerate(found, 1):
             e.id = f"EV-{n:04d}"
+            if e.category == "pump_failure" and e.status == "ongoing":
+                self.countdown(ds, e)          # as detect.detect: events come with their countdown
         return self.mutate(found) if self.mutate else found
 
     @staticmethod
@@ -215,9 +223,9 @@ class Fakes:
                      peak_level_pct=ds.shutdown_pct, summary="do nothing (~$5,000)", auto_shut_in_cost=5000.0)]
 
     def wait_curve(self, ds, events, event_id, step_min=5, until=None):
-        self.calls["wait_curve"] += 1      # plan.py's point shape, where start_ts is a ts_unix number
+        self.calls["wait_curve"] += 1      # plan.wait_curve's row shape, where start_ts is a ts_unix number
         return [{"delay_min": k * step_min, "start_ts": ds.now + k * step_min * 60, "cost": 800.0 + 50 * k,
-                 "summary": "1 truck, 1 trip (~$800)", "trucks": 1, "system_cost": 800.0 + 50 * k} for k in range(4)]
+                 "summary": "1 truck, 1 trip (~$800)", "trucks_free": 3 - (k > 1)} for k in range(4)]
 
     def alerts_order(self, events, plans):
         self.calls["alerts_order"] += 1
@@ -235,26 +243,12 @@ class Fakes:
         return {"cost": trips * ds.truck_cost if actions else 5000.0, "trips": not actions,
                 "peak_level_pct": level_pct + (5 if actions else 20)}
 
-    # blueprint
-    def field_assets(self, ds):
-        self.calls["field_assets"] += 1
-        if self.layout_error:
-            raise self.layout_error
-        return [{"id": f.id, "x": 50.0 * i, "y": 0.0} for i, f in enumerate(ds.facilities.values())]
-
     def install(self, monkeypatch) -> "Fakes":
-        import backend.app.eog as pkg
-        mods = {
-            "detect": {"detect": self.detect, "countdown": self.countdown},
-            "plan": {"plan_failures": self.plan_failures, "alternatives": self.alternatives,
-                     "wait_curve": self.wait_curve, "alerts_order": self.alerts_order, "simulate": self.simulate},
-            "blueprint": {"field_assets": self.field_assets, "to_blueprint": lambda ds, system=None: {}},
-        }
-        for name, fns in mods.items():
-            m = types.ModuleType(f"{PKG}.{name}")
-            m.__dict__.update(fns)
-            monkeypatch.setitem(sys.modules, f"{PKG}.{name}", m)
-            monkeypatch.setattr(pkg, name, m, raising=False)
+        """Point service's detect and plan at these stand-ins for one test (monkeypatch undoes it)."""
+        monkeypatch.setattr(service, "detect", SimpleNamespace(detect=self.detect))
+        monkeypatch.setattr(service, "plan", SimpleNamespace(
+            plan_failures=self.plan_failures, alternatives=self.alternatives, wait_curve=self.wait_curve,
+            alerts_order=self.alerts_order, simulate=self.simulate))
         return self
 
 
@@ -606,22 +600,18 @@ def test_network_comes_from_the_files(fakes):
     assert facs["Z9_FAC_A"]["revenue_per_hour"] == pytest.approx((8000 + 3750) / 24)
     assert {"from": "Z9_WELL_A1", "to": "Z9_TANK_A", "kind": "water"} in body["links"]
     assert {"from": "Z9_PIPE_B", "to": "Z9_DISPOSAL", "kind": "pipeline"} in body["links"]
-    assert body["layout"] == [{"id": "Z9_FAC_A", "x": 0.0, "y": 0.0}, {"id": "Z9_FAC_B", "x": 50.0, "y": 0.0}]
     assert body["trucking"] == {"truck_capacity_bbl": 120, "cost_per_trip": 800}
     assert body["prices"] == {"oil_per_bbl": 70, "gas_per_mcf": 2.5} and body["repair_hours"] == 5
-    assert body["warnings"] == []
 
 
-def test_network_layout_is_optional(fakes, monkeypatch):
-    fakes.layout_error = RuntimeError("no room")
+def test_network_has_no_blueprint_layout(fakes):
+    """Dataset mode reads the sponsor files only: no eog.blueprint, so the network has no
+    `layout` (and no `warnings`, which only ever reported a layout failure)."""
     body = ok(client.get("/api/eog/network"))
-    assert body["layout"] is None and "no room" in body["warnings"][0]
-    service.SERVICE.reset()
-    monkeypatch.setitem(sys.modules, f"{PKG}.blueprint", None)   # blueprint.py not merged yet
-    import backend.app.eog as pkg
-    monkeypatch.delattr(pkg, "blueprint", raising=False)
-    body = ok(client.get("/api/eog/network"))
-    assert body["layout"] is None and body["warnings"] == []
+    assert set(body) == {"dataset", "at", "at_ts", "now", "now_ts", "limits", "prices", "repair_hours",
+                         "trucking", "systems", "facilities", "wells", "links"}
+    for mod in (service, api):
+        assert "blueprint" not in Path(mod.__file__).read_text(encoding="utf-8"), mod.__name__
 
 
 def test_state_statuses_follow_readings_and_events(fakes):
@@ -748,9 +738,10 @@ def test_plans_now_and_reference(fakes):
     (item,) = body["plans"]
     assert item["event"]["id"] == "EV-0002" and item["plan"]["start"] == ts(ROWS - 1)
     assert item["trucks_free"] == 3 and item["alternatives"][0]["summary"] == "do nothing (~$5,000)"
-    assert item["wait_curve"][0] == {"delay_min": 0, "start": ts(ROWS - 1), "start_ts": iso(ts(ROWS - 1)), "cost": 800.0,
-                                     "summary": "1 truck, 1 trip (~$800)", "trucks": 1, "system_cost": 800.0}
-    assert [p["start_ts"] for p in item["wait_curve"]] == [iso(ts(ROWS - 1) + 300 * k) for k in range(4)]
+    # wait_curve rows go out exactly as plan.wait_curve returns them (start_ts is a ts_unix number)
+    assert item["wait_curve"] == fakes.wait_curve(service.SERVICE.dataset(), [], "EV-0002")
+    assert item["wait_curve"][0] == {"delay_min": 0, "start_ts": ts(ROWS - 1), "cost": 800.0,
+                                     "summary": "1 truck, 1 trip (~$800)", "trucks_free": 3}
     assert body["systems"] == [{"system": "Z9", "fleet_size": 3, "events": ["EV-0002"], "trucks_used": 1, "cost": 800.0}]
 
     # Two failures at once in one system share its fleet: each sees what the other leaves.
@@ -807,32 +798,15 @@ def test_whatif_replays_the_ongoing_failure(fakes):
         sentence(r.json()["detail"])
 
 
-def test_whatif_starts_from_the_planners_level(fakes, monkeypatch, caplog):
-    """plan.py's countdown gives the de-noised level its plans start from, so a replay of the
-    recommended actions costs what the recommended plan says. Without it (or when it breaks)
-    the event's level is used, and a tank already at shutdown starts at shutdown."""
-    import backend.app.eog as pkg
-    seen = []
-
-    def countdown(ds, ev, at_ts=None):
-        seen.append((ev.id, ds.now))
-        return {"level_pct": 81.2, "tripped": False}
-
-    monkeypatch.setattr(pkg.plan, "countdown", countdown, raising=False)
+def test_whatif_starts_from_the_events_countdown_level(fakes):
+    """A replay starts from the event's level, which detect takes from plan.countdown (the level
+    the plans start from), so replaying the recommended actions costs what the recommended plan
+    says. No second countdown is asked for (the stand-in plan has none), and a tank already at
+    shutdown starts at shutdown."""
+    assert not hasattr(service.plan, "countdown")
+    fakes.mutate = lambda evs: [replace(e, level_pct=81.2) if e.category == "pump_failure" else e for e in evs]
     body = ok(client.post("/api/eog/whatif", json={"facility_id": "Z9_FAC_A", "actions": []}))
     assert body["level_pct"] == 81.2 and fakes.simulated[-1]["level_pct"] == 81.2
-    assert seen == [("EV-0002", ts(ROWS - 1))]
-
-    def broken(ds, ev, at_ts=None):
-        raise ZeroDivisionError("bad fit")
-
-    monkeypatch.setattr(pkg.plan, "countdown", broken)
-    with caplog.at_level("ERROR", logger="freeboard.eog"):
-        for _ in range(2):
-            assert ok(client.post("/api/eog/whatif", json={"facility_id": "Z9_FAC_A"}))["level_pct"] == 83.75
-    assert sum("countdown for a what-if" in r.getMessage() for r in caplog.records) == 1   # logged once
-
-    monkeypatch.delattr(pkg.plan, "countdown")
     fakes.mutate = lambda evs: [replace(e, tripped=True) if e.category == "pump_failure" else e for e in evs]
     service.SERVICE.cache.clear()
     assert ok(client.post("/api/eog/whatif", json={"facility_id": "Z9_FAC_A"}))["level_pct"] == 90.0
@@ -911,7 +885,8 @@ def test_handoff_stays_short_on_a_busy_night(fakes):
         for k, (fac, pump) in enumerate([("Z9_FAC_B", "Z9_PUMP_B")] * 3):
             extra.append(Event(id="", category="pump_failure", system="Z9", facility=fac, asset=pump,
                                onset=ts(41 + k), end=None, status="ongoing", confidence=0.9,
-                               level_pct=50.0 + k, repair_end=ts(41 + k) + 5 * 3600,
+                               level_pct=50.0 + k, hours_to_limit={"p50": 1.0 + k},
+                               trips_at=ts(ROWS - 1) + (1 + k) * 3600, repair_end=ts(41 + k) + 5 * 3600,
                                lost_revenue_per_hour=100.0))
         for k in range(4):
             extra.append(Event(id="", category="pump_degradation", system="Z9", facility="Z9_FAC_A",
@@ -1055,18 +1030,19 @@ def test_websocket_pushes_ticks_on_changes(fakes, monkeypatch):
 
 
 def test_websocket_keeps_the_clock_going_through_errors(fakes, root, monkeypatch):
-    import backend.app.eog as pkg
+    def offline(ds):
+        raise RuntimeError("detector offline")
+
     with client.websocket_connect("/api/eog/ws") as ws:
         assert recv(ws)["type"] == "tick"
-        monkeypatch.setitem(sys.modules, f"{PKG}.detect", None)   # detection disappears
-        monkeypatch.delattr(pkg, "detect", raising=False)
+        monkeypatch.setattr(service.detect, "detect", offline)    # detection breaks
         ok(client.post("/api/eog/clock", json={"at": ts(3)}))
         msg = recv(ws)
         assert msg["type"] == "tick" and msg["clock"]["at"] == ts(3) and msg["alerts"] is None
-        assert msg["error"]["status"] == 503 and "detect.py" in msg["error"]["detail"]
+        assert msg["error"] == {"status": 500, "detail": "Internal error: RuntimeError: detector offline."}
 
         fakes.install(monkeypatch)                                 # back, but alerts_order has a bug
-        monkeypatch.setattr(sys.modules[f"{PKG}.plan"], "alerts_order", lambda events, plans: 1 / 0)
+        monkeypatch.setattr(service.plan, "alerts_order", lambda events, plans: 1 / 0)
         ok(client.post("/api/eog/clock", json={"at": ts(4)}))      # nothing ongoing: no ordering needed
         msg = recv(ws)
         assert msg["clock"]["at"] == ts(4) and msg["alerts"] == [] and "error" not in msg
@@ -1075,7 +1051,7 @@ def test_websocket_keeps_the_clock_going_through_errors(fakes, root, monkeypatch
         assert msg["clock"]["at"] == ts(15) and msg["alerts"] is None
         assert msg["error"] == {"status": 500, "detail": "Internal error: ZeroDivisionError: division by zero."}
 
-        monkeypatch.setattr(sys.modules[f"{PKG}.plan"], "alerts_order", fakes.alerts_order)
+        monkeypatch.setattr(service.plan, "alerts_order", fakes.alerts_order)
         ok(client.post("/api/eog/clock", json={"at": ts(16)}))
         msg = recv(ws)
         assert [a["event_id"] for a in msg["alerts"]] == ["EV-0001"] and "error" not in msg
@@ -1092,18 +1068,15 @@ def test_websocket_keeps_the_clock_going_through_errors(fakes, root, monkeypatch
 
 # ---------- robustness ----------
 
-def test_payloads_are_strict_json_even_with_nan_from_a_module(fakes, monkeypatch):
+def test_payloads_are_strict_json_even_with_nan_from_a_module(fakes):
     def poison(events):
-        return [replace(e, confidence=float("nan"), level_pct=float("inf"),
-                        lost_revenue_per_hour=float("nan")) for e in events]
+        out = [replace(e, confidence=float("nan"), level_pct=float("inf"),
+                       lost_revenue_per_hour=float("nan")) for e in events]
+        for e in out:
+            if e.category == "pump_failure" and e.status == "ongoing":
+                e.hours_to_limit = {"p50": float("nan")}
+        return out
     fakes.mutate = poison
-    det = sys.modules[f"{PKG}.detect"]
-    countdown = det.countdown
-
-    def poisoned_countdown(ds, ev):
-        countdown(ds, ev)
-        ev.level_pct, ev.hours_to_limit = float("inf"), {"p50": float("nan")}
-    monkeypatch.setattr(det, "countdown", poisoned_countdown)
     for path in ("/api/eog/state", "/api/eog/alerts", "/api/eog/events", "/api/eog/plans", "/api/eog/handoff",
                  "/api/eog/network", "/api/eog/clock", "/api/eog/datasets"):
         ok(client.get(path))                       # strict() fails on NaN or Infinity
@@ -1117,36 +1090,63 @@ def test_payloads_are_strict_json_even_with_nan_from_a_module(fakes, monkeypatch
     assert service.jsonable({"a": (1.0, float("-inf")), "b": {float("nan")}}) == {"a": [1.0, None], "b": [None]}
 
 
-def test_missing_modules_answer_503_with_a_sentence(root, monkeypatch):
-    import backend.app.eog as pkg
-    for name in ("detect", "plan"):
-        monkeypatch.setitem(sys.modules, f"{PKG}.{name}", None)
-        monkeypatch.delattr(pkg, name, raising=False)
-    for path in ("/api/eog/alerts", "/api/eog/events", "/api/eog/plans", "/api/eog/handoff"):
-        r = client.get(path)
-        assert r.status_code == 503 and "detect.py is not on this branch yet" in r.json()["detail"], path
-        sentence(r.json()["detail"])
-    for body in ({"facility_id": "Z9_FAC_A", "actions": []},):
-        r = client.post("/api/eog/whatif", json=body)
-        assert r.status_code == 503 and "detect.py" in r.json()["detail"]
-    r = client.post("/api/eog/plans/EV-0001/approve")
-    assert r.status_code == 503 and "detect.py" in r.json()["detail"]
-    ok(client.get("/api/eog/network"))
-    ok(client.get("/api/eog/series", params={"asset_id": "Z9_TANK_A"}))
-    # The map stays up: readings and reading-based statuses, and a warning saying why.
-    body = ok(client.get("/api/eog/state"))
-    (warning,) = body["warnings"]
-    assert warning.startswith("backend/app/eog/detect.py is not on this branch yet")
-    sentence(warning)
-    a = body["assets"]
-    assert a["Z9_PUMP_A"]["status"] == "ALARM" and a["Z9_TANK_A"]["status"] == "ALARM"   # status 2 reading
-    assert a["Z9_PIPE_B"]["status"] == "OK" and body["events"] == {} and a["Z9_TANK_A"]["events"] == []
+def test_service_calls_the_real_detect_and_plan():
+    """App code holds no stand-ins and no lazy imports: service calls detect.py and plan.py, and
+    asks for no countdown of its own (detect fills each Event's block from plan.countdown)."""
+    assert service.detect is real_detect and service.plan is real_plan
+    src = Path(service.__file__).read_text(encoding="utf-8")
+    for gone in ("importlib", "_module(", "blueprint", "countdown("):
+        assert gone not in src, gone
+
+
+def test_real_modules_behind_the_api(root):
+    """No stand-ins: detect.py and plan.py behind every route, on the synthetic week. Pump A faults
+    at row 24 with its tank at 55 % and fills at 15 %/h (1800 bpd into 500 bbl), so at row 47
+    plan.countdown gives 83.8 % (83.75 to 0.1 %), shutdown (90 %) at row 24 + 140 min, 25 min
+    from now. Every countdown the API shows is that one, and the wait curve is plan.wait_curve's."""
+    jsonschema = pytest.importorskip("jsonschema")
+    view = load(root / "alpha")
+    events = real_detect.detect(view)
+    pa = next(e for e in events if e.asset == "Z9_PUMP_A" and e.status == "ongoing")
+    cd = real_plan.countdown(view, pa)
+    assert (cd["level_at_onset_pct"], cd["level_pct"], cd["trips_at"], cd["hours_to_limit"]["p50"], cd["tripped"]) == (
+        55.0, 83.8, ts(24) + 140 * 60, 0.42, False)
+    block = lambda d: (d["level_pct"], d["hours_to_limit"], d["trips_at"], d["tripped"])   # noqa: E731
+
+    alerts = ok(client.get("/api/eog/alerts"))["alerts"]
+    a = next(x for x in alerts if x["asset"] == "Z9_PUMP_A")
+    assert block(a["countdown"]) == block(cd) and a["order"] == 1
+    assert a["countdown"]["lost_revenue_per_hour"] == pytest.approx(cd["lost_revenue_per_hour"])
+    exported = strict(client.get("/api/eog/events", params={"download": 1}).text)
+    assert not sorted(jsonschema.Draft202012Validator(EVENTS_SCHEMA).iter_errors(exported), key=str)
+    ej = next(e for e in exported if e["asset_id"] == "Z9_PUMP_A" and e["status"] == "ongoing")
+    assert (ej["level_pct"], ej["hours_to_limit"]) == (cd["level_pct"], cd["hours_to_limit"])
+    assert ej["recommended_actions"] and ej["recommended_actions"][0]["type"] != "field_inspection"
+    plans = ok(client.get("/api/eog/plans"))["plans"]
+    item = next(p for p in plans if p["event"]["asset"] == "Z9_PUMP_A")
+    assert block(item["event"]) == block(cd) and item["event"]["level_at_onset_pct"] == 55.0
+    ongoing = [e for e in events if e.category == "pump_failure" and e.status == "ongoing"]
+    curve = real_plan.wait_curve(view, ongoing, pa.id)
+    assert item["wait_curve"] == service.jsonable(curve) and curve
+    assert set(item["wait_curve"][0]) == {"delay_min", "start_ts", "cost", "summary", "trucks_free"}
+    assert item["wait_curve"][0]["start_ts"] == view.now and item["wait_curve"][0]["cost"] == item["plan"]["cost"]
+    acts = [x for x in item["plan"]["actions"] if x["type"] != "none"]
+    w = ok(client.post("/api/eog/whatif", json={"facility_id": "Z9_FAC_A", "actions": acts}))
+    assert w["level_pct"] == cd["level_pct"] and w["result"]["cost"] == pytest.approx(item["plan"]["cost"], abs=0.01)
+    when = service.clock_text(cd["trips_at"], view.now)
+    assert f"reaches shutdown at {when} (in 25 min)" in a["title"]
+    assert f"shuts in at {when}, 25 min left." in ok(client.get("/api/eog/handoff"))["text"]
+    said = ok(client.post(f"/api/eog/plans/{a['event_id']}/approve"))["radio_script"]
+    assert f"With no action it shuts in at {when}." in said
+    for path in ("/api/eog/state", "/api/eog/network", "/api/eog/clock", "/api/eog/datasets"):
+        ok(client.get(path))
+    ok(client.get("/api/eog/plans", params={"mode": "reference"}))
 
 
 def test_state_survives_a_detection_bug(fakes, monkeypatch, caplog):
     def broken(ds):
         raise ZeroDivisionError("division by zero")
-    monkeypatch.setattr(sys.modules[f"{PKG}.detect"], "detect", broken)
+    monkeypatch.setattr(service.detect, "detect", broken)
     for _ in range(3):
         body = ok(client.get("/api/eog/state"))
     assert body["warnings"] == ["Detection failed (ZeroDivisionError: division by zero), " + service.NO_DETECTION + "."]
@@ -1377,8 +1377,9 @@ def labelled_events(key: list[dict], ds) -> list[Event]:
 
 
 class Oracle(Fakes):
-    """A perfect detector: the labelled events, with a countdown that runs to the labelled
-    trips_at. Plans and layout are the plain fakes."""
+    """A perfect detector: the labelled events, each pump failure with the countdown block the
+    real detect.countdown fills from plan.countdown, as detect.detect does. Plans are the plain
+    stand-ins."""
 
     def __init__(self, key: list[dict]):
         super().__init__([])
@@ -1387,23 +1388,9 @@ class Oracle(Fakes):
     def detect(self, ds):
         self.calls["detect"] += 1
         out = labelled_events(self.key, ds)
-        by_id = {e["id"]: e for e in self.key}
         for ev in out:
-            if ev.category == "pump_failure":
-                f = ds.facilities[ev.facility]
-                ev.repair_end = ev.onset + int(ds.repair_hours * 3600)
-                ev.level_pct = ds.value_at(f.tank_id, "level_pct")
-                ev.tripped = bool(ev.level_pct is not None and ev.level_pct >= ds.shutdown_pct - 0.05)
-                ev.trips_at = by_id[ev.evidence[0].split()[-1]].get("trips_at_unix")
-                ev.lost_revenue_per_hour = ds.facility_revenue_per_hour(f.id)
+            real_detect.countdown(ds, ev)
         return out
-
-    def countdown(self, ds, ev):
-        self.calls["countdown"] += 1
-        if ev.trips_at is None:
-            ev.hours_to_limit = None
-        else:
-            ev.hours_to_limit = {"p50": round(max(0, ev.trips_at - ds.now) / 3600, 2)}
 
 
 _ACTION = {"oneOf": [
@@ -1477,9 +1464,9 @@ def test_real_views_with_the_labelled_events(real, labelled, monkeypatch):
             got = [a for a in alerts if a["category"] == "pump_failure"]
             assert [a["asset"] for a in got] == [e["asset"] for e in want], ds_id
             for a, e in zip(got, want):
-                cd = a["countdown"]
-                assert cd["level_pct"] == pytest.approx(e["level_final_pct"], abs=0.25)   # reading noise
-                assert cd["hours_to_limit"]["p50"] == pytest.approx(e["hours_to_limit_final"], abs=0.01)
+                cd = a["countdown"]                       # plan.countdown's, exactly the key's
+                assert cd["level_pct"] == e["level_final_pct"], (ds_id, a["asset"])
+                assert cd["hours_to_limit"]["p50"] == e["hours_to_limit_final"], (ds_id, a["asset"])
                 assert cd["lost_revenue_per_hour"] == pytest.approx(e["lost_revenue_per_hour"])
                 assert cd["trips_at"] == e["trips_at_unix"] and a["action"]["type"] == "plan"
                 checked_order += 1
@@ -1533,11 +1520,11 @@ def test_real_handoff_reads_in_thirty_seconds_all_week(real, labelled, monkeypat
 
 
 def test_real_state_alarms_match_the_labelled_pump_failures(real, labelled, monkeypatch):
-    """With no detector at all (statuses from the readings alone), a pump is ALARM exactly
-    while a labelled pump failure is ongoing on it, and a well is ALARM only inside one."""
-    import backend.app.eog as pkg
-    monkeypatch.setitem(sys.modules, f"{PKG}.detect", None)
-    monkeypatch.delattr(pkg, "detect", raising=False)
+    """With detection failing (statuses from the readings alone), a pump is ALARM exactly while
+    a labelled pump failure is ongoing on it, and a well is ALARM only inside one."""
+    def offline(ds):
+        raise RuntimeError("detector offline")
+    monkeypatch.setattr(service, "detect", SimpleNamespace(detect=offline))
     windows: dict = {}
     for e in labelled:
         if e["category"] == "pump_failure":
@@ -1578,19 +1565,11 @@ def test_real_network_revenue_matches_the_answer_keys(real):
 
 
 def test_real_planner_behind_the_api_with_the_labelled_events(real, labelled, monkeypatch):
-    """Runs once plan.py is merged, with a detector that reports the labelled events and leaves
-    the countdown to plan.py: the snapshot keys' alert order and countdown come out of the API,
+    """The real plan.py with a detector that reports the labelled events with no countdown, so
+    plan_failures fills it: the snapshot keys' alert order and countdown come out of the API,
     every pump failure gets a reference plan, and replaying each recommended plan through
     /whatif costs what the plan says."""
-    try:
-        importlib.import_module(f"{PKG}.plan")
-    except ModuleNotFoundError:
-        pytest.skip("backend/app/eog/plan.py is not on this branch yet")
-    import backend.app.eog as pkg
-    m = types.ModuleType(f"{PKG}.detect")
-    m.detect, m.countdown = (lambda ds: labelled_events(labelled, ds)), (lambda ds, ev: None)
-    monkeypatch.setitem(sys.modules, f"{PKG}.detect", m)
-    monkeypatch.setattr(pkg, "detect", m, raising=False)
+    monkeypatch.setattr(service, "detect", SimpleNamespace(detect=lambda ds: labelled_events(labelled, ds)))
     checked = replayed = 0
     for ds_id in [d["id"] for d in ok(client.get("/api/eog/datasets"))["datasets"]]:
         ok(client.post("/api/eog/datasets/activate", json={"id": ds_id}))
@@ -1606,8 +1585,8 @@ def test_real_planner_behind_the_api_with_the_labelled_events(real, labelled, mo
             assert [a["asset"] for a in got] == [e["asset"] for e in want], ds_id
             for a, e in zip(got, want):
                 cd = a["countdown"]
-                assert cd["level_pct"] == pytest.approx(e["level_final_pct"], abs=0.05), (ds_id, a["asset"])
-                assert cd["hours_to_limit"]["p50"] == pytest.approx(e["hours_to_limit_final"], abs=0.01)
+                assert cd["level_pct"] == e["level_final_pct"], (ds_id, a["asset"])
+                assert cd["hours_to_limit"]["p50"] == e["hours_to_limit_final"], (ds_id, a["asset"])
                 assert cd["trips_at"] == e["trips_at_unix"], (ds_id, a["asset"])
                 checked += 1
         for item in ok(client.get("/api/eog/plans"))["plans"]:
@@ -1619,18 +1598,19 @@ def test_real_planner_behind_the_api_with_the_labelled_events(real, labelled, mo
     assert checked == 7 and replayed >= checked
 
 
-def test_real_integration_smoke_with_the_merged_modules(real):
-    """Runs only once detect.py and plan.py are merged: every route on every history dataset
-    answers strict JSON, the alerts view lists pump failures first, soonest shutdown first, and
-    replaying each recommended plan through /whatif costs what the plan says."""
-    for name in ("detect", "plan"):
-        try:
-            importlib.import_module(f"{PKG}.{name}")
-        except ModuleNotFoundError:
-            pytest.skip(f"backend/app/eog/{name}.py is not on this branch yet")
+def test_real_detect_and_plan_behind_the_api_match_the_snapshot_keys(real):
+    """No stand-ins, every history dataset: every route answers strict JSON and the alerts list
+    pump failures first, soonest shutdown first. Every countdown the alerts, events.json and the
+    now plans show is plan.countdown's for that event, and in each snapshot it is the key's
+    (order, level_final_pct, hours_to_limit_final, trips_at, lost revenue). Wait-curve rows are
+    plan.wait_curve's, and replaying each recommended plan through /whatif costs what it says."""
+    jsonschema = pytest.importorskip("jsonschema")
+    check = jsonschema.Draft202012Validator(EVENTS_SCHEMA)
+    block = lambda d: (d["level_pct"], d["hours_to_limit"], d["trips_at"], d["tripped"])   # noqa: E731
+    checked = compared = 0
     for ds_id in [d["id"] for d in ok(client.get("/api/eog/datasets"))["datasets"]]:
         ok(client.post("/api/eog/datasets/activate", json={"id": ds_id}))
-        for path in ("/api/eog/state", "/api/eog/events", "/api/eog/handoff", "/api/eog/network"):
+        for path in ("/api/eog/state", "/api/eog/handoff", "/api/eog/network"):
             ok(client.get(path))
         ok(client.get("/api/eog/plans", params={"mode": "reference"}))
         alerts = ok(client.get("/api/eog/alerts"))["alerts"]
@@ -1639,10 +1619,41 @@ def test_real_integration_smoke_with_the_merged_modules(real):
         hours = [(a["countdown"]["hours_to_limit"] or {}).get("p50") for a in alerts if a["category"] == "pump_failure"]
         known = [h for h in hours if h is not None]
         assert known == sorted(known), (ds_id, hours)
-        for item in ok(client.get("/api/eog/plans"))["plans"]:
+        exported = {e["event_id"]: e for e in strict(client.get("/api/eog/events", params={"download": 1}).text)}
+        assert not sorted(check.iter_errors(list(exported.values())), key=str), ds_id
+        plans = {it["event"]["id"]: it for it in ok(client.get("/api/eog/plans"))["plans"]}
+        _, view, _ = service.SERVICE.view()
+        events = {e.id: e for e in service.SERVICE.events(view)}
+        ongoing = [e for e in events.values() if e.category == "pump_failure" and e.status == "ongoing"]
+        for a in alerts:
+            if a["category"] != "pump_failure":
+                continue
+            cd = real_plan.countdown(view, events[a["event_id"]])
+            assert block(a["countdown"]) == block(cd), (ds_id, a["event_id"])
+            assert block(plans[a["event_id"]]["event"]) == block(cd), (ds_id, a["event_id"])
+            ej = exported[a["event_id"]]
+            assert (ej["level_pct"], ej["hours_to_limit"]) == (cd["level_pct"], cd["hours_to_limit"]), ds_id
+            curve = plans[a["event_id"]]["wait_curve"]
+            assert curve == service.jsonable(real_plan.wait_curve(view, ongoing, a["event_id"])), ds_id
+            assert all(set(r) == {"delay_min", "start_ts", "cost", "summary", "trucks_free"} for r in curve)
+            compared += 1
+        key = snapshot_key(real, ds_id)
+        if key and "snapshot_" in ds_id:
+            want = sorted((e for e in key if e.get("order")), key=lambda e: e["order"])
+            got = [a for a in alerts if a["category"] == "pump_failure"]
+            assert [a["asset"] for a in got] == [e["asset"] for e in want], ds_id
+            for a, e in zip(got, want):
+                c = a["countdown"]
+                assert (c["level_pct"], c["hours_to_limit"]["p50"], c["trips_at"]) == (
+                    e["level_final_pct"], e["hours_to_limit_final"], e["trips_at_unix"]), (ds_id, e["id"])
+                assert c["lost_revenue_per_hour"] == pytest.approx(e["lost_revenue_per_hour"])
+                assert exported[a["event_id"]]["hours_to_limit"]["p50"] == e["hours_to_limit_final"]
+                checked += 1
+        for item in plans.values():
             p = item["plan"]
             if p is None:
                 continue
             acts = [a for a in p["actions"] if a["type"] != "none"]
             w = ok(client.post("/api/eog/whatif", json={"facility_id": item["event"]["facility"], "actions": acts}))
             assert w["result"]["cost"] == pytest.approx(p["cost"], abs=0.01), (ds_id, item["event"]["id"])
+    assert checked == 7 and compared >= checked

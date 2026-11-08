@@ -89,6 +89,9 @@ from .model import Event, Plan, money
 
 PRE_ROWS = 36               # rows (3 h) of the pump run before the onset used by the fit (R1)
 CLAMP_MARGIN_PCT = 0.3      # drop rows fitted this close to shutdown: readings clamp there (R1)
+JUMP_PCT = 1.0              # the run before the onset and the fill rows disagree on the onset level by more
+                            # than this: the level jumped at the onset, so the run is left out (R1). The
+                            # sponsor's readings are continuous there: at most 0.16 apart over 3,081 views
 MIN_TREND_ROWS = 3          # fewer pre-onset flow readings than this: use their mean, no trend
 DEFAULT_SD_PCT = 0.08       # reading noise assumed when a fit has too few rows to measure it
 Z90 = 1.2815515655446004    # p10 / p90 of a normal distribution
@@ -260,6 +263,11 @@ def _fit_tank(ds: Dataset, event: Event, data_until: int) -> _Tank:
         return sum(terms) / len(terms), terms
 
     pre_rows = [row for row in pre if not math.isnan(row[2])]
+    below = [y - r * x for x, y in post if y < S - CLAMP_MARGIN_PCT]
+    if below and pre_rows:
+        jump = sum(below) / len(below) - sum(y - shape_pre(x) for x, y, _ in pre_rows) / len(pre_rows)
+        if abs(jump) > JUMP_PCT:
+            pre_rows = []                # R1 assumes the level is continuous at the onset; here it is not
     if not post and not pre_rows:
         v = ds.value_at(f.tank_id, "level_pct", min(onset, int(ds.times[end - 1])) if end else onset)
         if v is None:

@@ -4,8 +4,8 @@
 It reads only rows visible in the view (index < ds.end), and the decision to raise or close a
 problem at a row uses only that row and earlier ones. A snapshot, a time-travel view (`ds.at(t)`)
 and the full week therefore agree: an event raised at one "now" is raised, with the same
-`detected_at`, at every later "now". `countdown(ds, event)` gives an ongoing pump failure its
-hours to the shutdown limit.
+`detected_at`, at every later "now". `countdown(ds, event)` fills a pump failure's countdown block
+(level, hours to the shutdown limit, trip time) from plan.countdown, the one countdown in the app.
 
 How each problem shows up was worked out from history/full_week and its answer key. No rule names
 a network, an asset, a size, a price or a time: every threshold is in units of a reading's own
@@ -43,7 +43,8 @@ from collections import deque
 from datetime import datetime, timezone
 from typing import Optional
 
-from .dataset import STEP_S, Dataset, Facility
+from . import plan
+from .dataset import STEP_S, Dataset, DatasetError, Facility
 from .model import Event
 
 # ---- statistics, in units of each reading's own noise; nothing here is specific to a network ----
@@ -52,11 +53,8 @@ WEAR_K, WEAR_H = 0.75, 11.0   # CUSUM for a worn pump: a slow ramp from zero
 END_LLR = 10.0                # nats of "healthy rather than sick" evidence that close a problem
 RECENT_H = 1.0                # hours of recent rows that set a problem's expected size and its evidence
 CP_BACK_H = 2.0               # hours of running rows before the first suspicious one a leak onset may move to
-LEVEL_FIT_H = 1.0             # hours of level readings in the countdown's line
-TRIP_FIT_H = 0.5              # hours of level readings that time a past crossing of shutdown
 MIN_POOL = 20                 # readings an hour needs before it counts towards the healthy levels
 MIN_HOURS, MIN_READINGS = 3, 200   # what a channel's healthy level must rest on before it is trusted
-Z90 = 1.2815515655446004      # 90th percentile of the standard normal, for p10 / p90
 INV_SQRT2 = 1.0 / math.sqrt(2.0)
 WEAR_CH, LEAK_CH = ("f", "d"), ("p", "r")
 
@@ -321,7 +319,6 @@ class _Facility:
         self.rc = get(fac.pipeline_id, "receive_flow_bpd")
         self.pp = get(fac.pipeline_id, "pressure_psi")
         self.lv = get(fac.tank_id, "level_pct")
-        self.inflow = get(fac.id, "inflow_bpd")
         self.wells = [c for c in (get(w.id, "status") for w in fac.wells) if c is not None]
         self.maxf = fac.max_flow_bpd if fac.max_flow_bpd and fac.max_flow_bpd > 0 else None
         self.can_wear = bool(self.fl is not None and self.di is not None and self.maxf)
@@ -628,26 +625,10 @@ def _trip_row(fs: _Facility, shutdown: float, i0: int, i1: int) -> Optional[int]
     return None
 
 
-def _crossing(ds: Dataset, lv, shutdown: float, on: int, trip: int) -> int:
-    """When the level crossed shutdown, from the fill rate of the rows before the trip row (the
-    trip row itself reads exactly the shutdown level, which then holds)."""
-    t_trip = int(ds.times[trip])
-    rows = [i for i in range(on, trip) if _ok(lv[i]) and t_trip - int(ds.times[i]) <= TRIP_FIT_H * 3600]
-    if len(rows) >= 2 and lv[rows[-1]] < shutdown:
-        fit = _fit([(int(ds.times[i]) - t_trip) / 3600.0 for i in rows], [lv[i] for i in rows])
-        if fit and fit[1] > 0:
-            last = int(ds.times[rows[-1]])
-            hours = max(0.0, (shutdown - lv[rows[-1]]) / fit[1])
-            return min(t_trip, int(round(last + hours * 3600)))
-    return t_trip
-
-
 def _failure_event(sc: _Scan, fs: _Facility, on: int, off: Optional[int]) -> Event:
     ds, fac, lv, P = sc.ds, fs.fac, fs.lv, fs.P
     end = sc.t(off) if off is not None else None
     at = off if off is not None else ds.end - 1          # the restart row, or "now"
-    trip = _trip_row(fs, ds.shutdown_pct, on, off if off is not None else ds.end)
-    trips_at = _crossing(ds, lv, ds.shutdown_pct, on, trip) if (trip is not None and lv is not None) else None
     first = f"{fac.pump_id} reports a fault (status 2) from {_hm(sc.t(on))}"
     if fs.fl is not None and _ok(fs.fl[on]):
         first += f": flow {_n(fs.fl[on])} bpd"
@@ -660,24 +641,27 @@ def _failure_event(sc: _Scan, fs: _Facility, on: int, off: Optional[int]) -> Eve
         ev.append(f"{fac.tank_id} went from {lv0:.1f}% at onset to {lv1:.1f}% "
                   f"{'when the pump restarted' if off is not None else 'in the latest reading'} "
                   f"({(sc.t(at) - sc.t(on)) / 3600.0:.1f} h later); shutdown is {ds.shutdown_pct:g}%.")
-    if trips_at is not None:
-        ev.append(f"The tank reached shutdown at about {_hm(trips_at)} and its wells shut in.")
+    e = Event(id="", category="pump_failure", system=fac.system, facility=fac.id, asset=fac.pump_id,
+              onset=sc.t(on), end=end, status="ongoing" if end is None else "resolved",
+              confidence=0.99, evidence=ev, detected_at=sc.t(on),
+              level_pct=lv1 if end is not None else None,
+              repair_end=sc.t(on) + int(round(ds.repair_hours * 3600)),
+              tripped=_trip_row(fs, ds.shutdown_pct, on, off if off is not None else ds.end) is not None,
+              lost_revenue_per_hour=ds.facility_revenue_per_hour(fac.id))
+    countdown(ds, e)                                     # the countdown block, from plan.countdown
+    if e.tripped:
+        when = "" if e.trips_at is None else f" at about {_hm(e.trips_at)}"
+        ev.append(f"The tank reached shutdown{when} and its wells shut in.")
     if end is not None:
         ev.append(f"Pump running again at {_hm(end)}, {(end - sc.t(on)) / 3600.0:.1f} h after the fault.")
-    return Event(id="", category="pump_failure", system=fac.system, facility=fac.id, asset=fac.pump_id,
-                 onset=sc.t(on), end=end, status="ongoing" if end is None else "resolved",
-                 confidence=0.99, evidence=ev, detected_at=sc.t(on),
-                 level_at_onset_pct=lv0, level_pct=lv1,
-                 trips_at=trips_at if end is not None else None,
-                 repair_end=sc.t(on) + int(round(ds.repair_hours * 3600)),
-                 tripped=trip is not None, lost_revenue_per_hour=ds.facility_revenue_per_hour(fac.id))
+    return e
 
 
 # ---------- public ----------
 def detect(ds: Dataset) -> list[Event]:
     """Every problem with onset <= ds.now in the view's readings, in onset order (EV-0001, ...).
 
-    Reads only rows with index < ds.end. Ongoing pump failures get their countdown."""
+    Reads only rows with index < ds.end. Pump failures carry their countdown block (countdown())."""
     if ds.end < 1:
         return []
     sc = _Scan(ds)
@@ -694,7 +678,6 @@ def detect(ds: Dataset) -> list[Event]:
     for n, e in enumerate(events, start=1):
         e.id = f"EV-{n:04d}"
         if e.category == "pump_failure" and e.status == "ongoing":
-            countdown(ds, e)
             e.evidence.append(_countdown_words(e))
     return events
 
@@ -709,78 +692,47 @@ def _countdown_words(e: Event) -> str:
     if e.tripped:
         return f"The tank is at shutdown and its wells are shut in until the repair, due {_hm(e.repair_end)}."
     if e.level_pct is None:
-        return "No tank level reading at the latest row, so there is no countdown; treat the tank as filling."
+        return "No tank level readings for this failure, so there is no countdown; treat the tank as filling."
     if not h:
         return "The tank is not filling (no producing wells), so there is no countdown."
     when = (f"at about {_hm(e.trips_at)}, before the repair due {_hm(e.repair_end)}" if e.trips_at is not None
             else f"but the repair is due first, at {_hm(e.repair_end)}")
-    return (f"Level now about {e.level_pct:.1f}% (the line through the last hour of readings): shutdown in "
-            f"about {_dur(h['p50'])} ({_dur(h['p10'])} to {_dur(h['p90'])}), {when}.")
+    band = _dur(h["p50"])
+    if _dur(h["p10"]) != _dur(h["p90"]):
+        band += f" ({_dur(h['p10'])} to {_dur(h['p90'])})"
+    return (f"Level now about {e.level_pct:.1f}% (the readings since the onset, fitted at the producing wells' "
+            f"inflow): shutdown in about {band}, {when}.")
 
 
 def countdown(ds: Dataset, event: Event) -> Event:
-    """Fill hours_to_limit {"p50", "p10", "p90"} and trips_at for an ongoing pump failure.
+    """Fill a pump failure's countdown block from plan.countdown, the one countdown in the app (R1:
+    a line at the producing wells' inflow fitted to the readings since the onset; levels in 0.1 %
+    steps; trip times to the minute; see plan.py).
 
-    p50 = (shutdown - level) / rate, with rate the fill rate of the wells producing at "now"
-    (status 1): the sum of their baseline_water_bpd / 24 / capacity * 100 percent an hour. The level
-    is the line through the last hour of the failure's level readings, read at "now" (a single
-    reading carries sensor noise). p10 and p90 spread around p50 by how far two measured rates
-    disagree with it (that line's slope, and the facility's inflow_bpd reading) and by the level
-    noise. trips_at is now + p50 hours, or None if the repair ends first or the tank already
-    tripped. Fills level_pct and tripped too, and returns the same event."""
-    if event.category != "pump_failure" or event.status != "ongoing":
+    Ongoing, at the view's now: level_at_onset_pct, level_pct, hours_to_limit {"p50", "p10", "p90"}
+    (all 0 once tripped), trips_at (when the tank reached or will reach shutdown if nobody acts, None
+    if the repair comes first), tripped, repair_end and lost_revenue_per_hour. Resolved, at its end:
+    the same, except that hours_to_limit stays None and level_pct is left as it is (detect sets the
+    reading at the restart). With no level readings at all the block is left as it is. Any other
+    event comes back unchanged. Returns the same event."""
+    if event.category != "pump_failure":
         return event
-    fac = ds.facilities[event.facility]
-    fs = _Facility(ds, fac)
-    now_i, now = ds.end - 1, ds.now
-    on_i = ds.index_at(event.onset)
-    shutdown = ds.shutdown_pct
-    event.tripped = _trip_row(fs, shutdown, on_i, now_i + 1) is not None
-    if event.repair_end is None:
-        event.repair_end = event.onset + int(round(ds.repair_hours * 3600))
-    lv = fs.lv
-    if lv is None or not _ok(lv[now_i]):
-        event.level_pct, event.hours_to_limit, event.trips_at = None, None, None
+    ongoing = event.status == "ongoing" or event.end is None
+    at = ds.now if ongoing else min(int(event.end), ds.now)
+    try:
+        cd = plan.countdown(ds, event, at_ts=at)
+    except DatasetError:                                 # this tank has no level readings at all
+        if event.repair_end is None:
+            event.repair_end = int(event.onset) + int(round(ds.repair_hours * 3600))
         return event
-    level = lv[now_i]
-    event.level_pct = level
-    if event.tripped or level >= shutdown:
-        event.tripped = True
-        event.hours_to_limit = {"p50": 0.0, "p10": 0.0, "p90": 0.0}
-        event.trips_at = None
-        return event
-    cap = fac.capacity_bbl
-    producing = 0.0
-    for w in fac.wells:
-        status = ds.value_at(w.id, "status")
-        if status is None or status > 0.5:      # a well with no status reading counts as producing
-            producing += w.baseline_water_bpd
-    rate = producing / 24.0 / cap * 100.0
-    if rate <= 0:
-        event.hours_to_limit, event.trips_at = None, None
-        return event
-    rows = [i for i in range(on_i, now_i + 1)
-            if _ok(lv[i]) and now - int(ds.times[i]) < LEVEL_FIT_H * 3600]
-    fit = _fit([(int(ds.times[i]) - now) / 3600.0 for i in rows], [lv[i] for i in rows]) if len(rows) >= 3 else None
-    if fit:
-        level = min(shutdown, max(0.0, fit[0]))
-        event.level_pct = level
-    head = shutdown - level
-    p50 = head / rate
-    alts, noise = [], 0.0
-    if fit:
-        if fit[1] > 0:
-            alts.append(head / fit[1])
-        noise = fit[2]
-    if fs.inflow is not None:
-        vals = [fs.inflow[i] for i in rows if _ok(fs.inflow[i])]
-        if vals and sum(vals) > 0:
-            alts.append(head / ((sum(vals) / len(vals)) / 24.0 / cap * 100.0))
-    lo, hi = min([p50] + alts), max([p50] + alts)
-    jitter = Z90 * noise / rate
-    event.hours_to_limit = {"p50": round(p50, 2),
-                            "p10": round(max(0.0, p50 - math.hypot(p50 - lo, jitter)), 2),
-                            "p90": round(p50 + math.hypot(hi - p50, jitter), 2)}
-    trips = now + int(round(p50 * 3600))
-    event.trips_at = None if trips > event.repair_end else trips
+    event.level_at_onset_pct = cd["level_at_onset_pct"]
+    event.trips_at = cd["trips_at"]
+    event.tripped = cd["tripped"]
+    event.repair_end = cd["repair_end"]
+    event.lost_revenue_per_hour = cd["lost_revenue_per_hour"]
+    if ongoing:
+        event.level_pct = cd["level_pct"]
+        event.hours_to_limit = cd["hours_to_limit"]
+    else:
+        event.hours_to_limit = None
     return event
