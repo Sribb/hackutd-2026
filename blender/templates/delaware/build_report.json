@@ -1,0 +1,99 @@
+{
+  "ok": true,
+  "errors": [],
+  "warnings": [],
+  "blueprint": "blender/templates/delaware/blueprint.json",
+  "name": "Uploaded field",
+  "counts": {
+    "tanks": 4,
+    "pumps": 4,
+    "discharge_valves": 4,
+    "crossover_valves": 1,
+    "wells": 8,
+    "disposal_wells": 1,
+    "trucks": 1,
+    "yards": 1
+  },
+  "outputs": {
+    "glb": "blender/templates/delaware/field.glb",
+    "blend": "blender/templates/delaware/field.blend",
+    "report": "blender/templates/delaware/build_report.json"
+  },
+  "kinds": {
+    "disposal_well": 1,
+    "pump": 4,
+    "tank": 4,
+    "truck": 1,
+    "valve": 5,
+    "well": 8,
+    "yard": 1
+  },
+  "placed": {
+    "given": [
+      "PUMP_1",
+      "PUMP_2",
+      "PUMP_3",
+      "PUMP_4",
+      "SWD_1",
+      "TANK_1",
+      "TANK_2",
+      "TANK_3",
+      "TANK_4",
+      "WELL_1",
+      "WELL_2",
+      "WELL_3",
+      "WELL_4",
+      "WELL_5",
+      "WELL_6",
+      "WELL_7",
+      "WELL_8",
+      "YARD_1"
+    ],
+    "auto": [
+      "TRUCK_1",
+      "VALVE_D_1",
+      "VALVE_D_2",
+      "VALVE_D_3",
+      "VALVE_D_4",
+      "VALVE_XO_23"
+    ]
+  },
+  "layout": {
+    "rows": 1,
+    "pad_pitch_m": 55.0,
+    "road_m": 297.5,
+    "road_x": [
+      -150.0,
+      147.5
+    ],
+    "ground": [
+      -160.0,
+      157.5,
+      -95.0,
+      162.0
+    ],
+    "crossovers": {
+      "VALVE_XO_23": "straight"
+    }
+  },
+  "detail": {
+    "level": "full",
+    "dropped": [],
+    "passes": [
+      {
+        "detail": "full",
+        "estimated": 83907,
+        "triangles": 81839
+      }
+    ]
+  },
+  "triangles": 81839,
+  "glb_mb": 3.35,
+  "nodes": 412,
+  "objects": 413,
+  "budget": {
+    "triangles": 300000,
+    "mb": 30.0
+  },
+  "seconds": 1.46
+}
