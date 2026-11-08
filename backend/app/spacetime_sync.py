@@ -68,12 +68,32 @@ def state_to_calls(state: dict) -> list[tuple[str, list]]:
     return calls
 
 
+_claimed = False
+
+
+def _claim_writer() -> None:
+    """The module only lets its writer identity change live state (D2). On a database
+    published before that rule, the writer list starts empty and the first claim wins,
+    so claim it once per process before pushing. Already-taken is fine if we hold it."""
+    global _claimed
+    if _claimed:
+        return
+    try:
+        call_reducer("claim_writer", [])
+        _claimed = True
+    except (urllib.error.URLError, OSError, RuntimeError) as e:
+        if "already taken" not in str(e):
+            log.info("SpacetimeDB claim_writer: %s", e)
+        _claimed = True  # a push that then fails reports the real problem
+
+
 def push_state(state: dict) -> bool:
     """Mirrors a full /api/state payload into SpacetimeDB. Returns True on success."""
     if _config() is None:
         status.update(enabled=False)
         return False
     status.update(enabled=True)
+    _claim_writer()
     try:
         for reducer, args in state_to_calls(state):
             call_reducer(reducer, args)

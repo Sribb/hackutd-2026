@@ -9,6 +9,8 @@ __pycache__/
 *.pyc
 *.db
 *.sqlite3
+# Audit log file (FREEBOARD_AUDIT_FILE, CF-10)
+backend/data/*.jsonl
 
 # Web
 node_modules/
@@ -18,6 +20,9 @@ dist/
 # Blender backups
 *.blend1
 *.blend2
+
+# Uploaded blueprints and their builds (backend/app/blueprints.py)
+backend/data/blueprints/
 
 # Agent board local state, and agent worktrees
 .board/

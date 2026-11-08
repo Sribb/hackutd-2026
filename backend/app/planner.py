@@ -76,16 +76,18 @@ def _levers(plant, field: dict, tid: str) -> list[list[list[dict]]]:
     return [xo, truck_opts, choke_opts]
 
 
-def make_plans(scenario: dict, horizon: int = 360, top_n: int = 3) -> dict:
+def make_plans(scenario: dict, horizon: int = 360, top_n: int = 3, base_actions: list | None = None,
+               plant=None) -> dict:
     """POST /api/plans: cheapest first, always at least one plan.
 
     Returns up to `top_n` plans, plus one more when none of those is robust and a
     robust plan exists, so the operator always sees the safe-but-pricier option.
     """
     field = scenario["field"]
-    plant = build_plant(scenario)
-    base = simulate(plant, [], horizon)
-    hot = simulate(plant, [], horizon, 1 + RANGE)
+    plant = plant or build_plant(scenario)
+    applied = clean_actions(plant, list(base_actions or []))[0]   # already carried out, kept in every run
+    base = simulate(plant, applied, horizon)
+    hot = simulate(plant, applied, horizon, 1 + RANGE)
     at_risk = sorted(set(base.shutdowns) | set(hot.shutdowns))
     unknown = sorted(tid for tid, lv in plant.levels.items() if lv is None)
 
@@ -100,8 +102,9 @@ def make_plans(scenario: dict, horizon: int = 360, top_n: int = 3) -> dict:
     per_tank = [_levers(plant, field, tid) for tid in at_risk]
     lever_lists = [opts for tank in per_tank for opts in tank]
     candidates = []
+    done = {(a["type"], a["asset_id"]) for a in applied}
     for combo in itertools.product(*lever_lists):
-        acts = [a for opt in combo for a in opt]
+        acts = [a for opt in combo for a in opt if (a["type"], a["asset_id"]) not in done]
         trucks = [a["asset_id"] for a in acts if a["type"] == "SEND_TRUCK"]
         if len(trucks) != len(set(trucks)):
             continue  # one truck can't be sent to two tanks at once
@@ -113,7 +116,7 @@ def make_plans(scenario: dict, horizon: int = 360, top_n: int = 3) -> dict:
     scored = []
     for acts in candidates:
         timed = [{**a, "at_min": _lead(field, plant, a)} for a in acts]
-        clean, _ = clean_actions(plant, timed)
+        clean, _ = clean_actions(plant, applied + timed)
         run = simulate(plant, clean, horizon)
         scored.append((not run.shutdowns, run.cost["total_usd"], len(timed), timed, run))
 
@@ -123,7 +126,7 @@ def make_plans(scenario: dict, horizon: int = 360, top_n: int = 3) -> dict:
         keys = {plan_id([a]) for a in timed}
         if any(prev <= keys for prev in picked_keys):
             continue  # a cheaper picked plan already does this with fewer steps
-        robust = not simulate(plant, clean_actions(plant, timed)[0], horizon, 1 + RANGE).shutdowns
+        robust = not simulate(plant, clean_actions(plant, applied + timed)[0], horizon, 1 + RANGE).shutdowns
         picked.append(_plan(plant, field, timed, run, robust, horizon))
         picked_keys.append(keys)
         if len(picked) >= top_n:
@@ -135,7 +138,7 @@ def make_plans(scenario: dict, horizon: int = 360, top_n: int = 3) -> dict:
         for ok, cost, n, timed, run in feasible:
             if plan_id(timed) in chosen:
                 continue
-            if not simulate(plant, clean_actions(plant, timed)[0], horizon, 1 + RANGE).shutdowns:
+            if not simulate(plant, clean_actions(plant, applied + timed)[0], horizon, 1 + RANGE).shutdowns:
                 extra = _plan(plant, field, timed, run, True, horizon)
                 extra["summary"] += " The cheapest plan that still holds if inflow runs 15% high."
                 picked.append(extra)
@@ -154,10 +157,13 @@ def _plan(plant, field, timed: list[dict], run, robust: bool, horizon: int) -> d
     unknown = sorted(t for t, lv in plant.levels.items() if lv is None)
     summary = describe(timed)
     if not cannot:
+        until = clock_at(plant.start_clock, horizon)
         which = "Every tank" if not unknown else "Every tank with a reading"
-        summary += f" {which} stays below shutdown through {clock_at(plant.start_clock, horizon)}."
-        if not robust:
-            summary += f" Not enough if inflow runs {int(RANGE * 100)}% high."
+        if robust:
+            summary += f" {which} stays below shutdown through {until}."
+        else:
+            summary += (f" Holds through {until} at the expected inflow, but not if inflow runs "
+                        f"{int(RANGE * 100)}% high.")
     else:
         summary += " Can't save " + ", ".join(
             f"{nice(t)} (shutdown at {clock_at(plant.start_clock, run.shutdowns[t])})" for t in cannot) + "."
@@ -177,10 +183,30 @@ def _plan(plant, field, timed: list[dict], run, robust: bool, horizon: int) -> d
 
 # ---------- approve ----------
 
-def approve(scenario: dict, plan: dict) -> dict:
-    """POST /api/plans/{id}/approve: numbered steps with asset IDs, and a radio script."""
+def radio_outcome(plan: dict) -> str:
+    """The last line of the radio script. It only says every tank is safe when that's
+    true at +15% inflow and every tank has a reading. Never falsely safe."""
+    if not plan.get("keeps_running"):
+        return "This plan can't save " + ", ".join(nice(t) for t in plan.get("cannot_save", [])) + "."
+    unknown = plan.get("unknown_tanks") or []
+    if unknown:
+        names = ", ".join(nice(t) for t in unknown)
+        line = (f"With this plan the tanks we can read stay below shutdown. We have no reading for {names}, "
+                "so someone needs to check it in person.")
+    elif plan.get("robust"):
+        return "With this plan every tank stays below shutdown, even if inflow runs 15% high."
+    else:
+        line = "With this plan the tanks hold at the expected inflow."
+    if not plan.get("robust"):
+        line += f" If inflow runs {int(RANGE * 100)}% high it isn't enough, so watch the levels."
+    return line
+
+
+def approve(scenario: dict, plan: dict, base_actions: list | None = None, plant=None) -> dict:
+    """POST /api/plans/{id}/approve: numbered steps with asset IDs, and a radio script.
+    `base_actions` are already under way (one clock, #42), so "without action" counts them."""
     field = scenario["field"]
-    plant = build_plant(scenario)
+    plant = plant or build_plant(scenario)
     clock = plant.start_clock
     order = sorted(plan["actions"], key=lambda a: -a.get("at_min", 0))  # longest lead goes first
     steps = []
@@ -212,7 +238,7 @@ def approve(scenario: dict, plan: dict) -> dict:
             text = f"Turn {nice(aid)} {a['value']}."
         steps.append({"n": n, "asset_id": aid, "text": text})
 
-    base = forecast(scenario, [], with_range=False, plant=plant)
+    base = forecast(scenario, list(base_actions or []), with_range=False, plant=plant)
     first = next((e for e in base["events"] if e["type"] == "SHUTDOWN_LEVEL"), None)
     state_line = ""
     incident = scenario.get("failures", [])
@@ -221,9 +247,7 @@ def approve(scenario: dict, plan: dict) -> dict:
     if first:
         state_line += f"Without action, {nice(first['asset_id'])} reaches shutdown at {clock_at(clock, first['t_min'])}. "
     numbered = " ".join(f"Step {s['n']}: {s['text']}" for s in steps) or "No steps."
-    outcome = ("With this plan every tank stays below shutdown."
-               if plan.get("keeps_running") else
-               "This plan can't save " + ", ".join(nice(t) for t in plan.get("cannot_save", [])) + ".")
+    outcome = radio_outcome(plan)
     radio = (f"Field, this is control. {state_line}We're running this plan. {numbered} {outcome} "
              "Call back when each step is done. Control out.")
     return {"plan_id": plan["id"], "steps": steps, "radio_script": radio}

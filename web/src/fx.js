@@ -39,44 +39,106 @@ function scramble(el, text) {
 
 // Hold-to-commit. The button fills over `ms`; letting go early cancels. Works with a
 // mouse, a finger, or by holding Space or Enter while the button has focus.
+// Holds in progress anywhere on the page. While one runs, lists that hold-to-confirm
+// buttons live in must not redraw (that would swap the button under the finger), so they
+// queue their redraw with afterHold() and it runs when the hold ends.
+let activeHolds = 0;
+const queued = new Set();
+export const isHolding = () => activeHolds > 0;
+export function afterHold(fn) {
+  if (activeHolds > 0) queued.add(fn);
+  else fn();
+}
+function holdEnded() {
+  activeHolds = Math.max(0, activeHolds - 1);
+  if (activeHolds) return;
+  const run = [...queued];
+  queued.clear();
+  for (const fn of run) fn();
+}
+
+// Press and hold to commit. Only a full, unbroken hold on this exact button commits:
+// letting go anywhere, losing focus, hiding the page, or the button leaving the page
+// (a redraw) cancels it. A plain click never commits.
 export function holdButton(btn, onCommit, ms = 1500) {
-  let t0 = 0, raf = 0, done = false;
+  let t0 = 0, raf = 0, timer = 0, done = false, holding = false;
   const set = (p) => btn.style.setProperty("--p", p.toFixed(3));
-  const tick = (now) => {
+  const finish = () => {
+    if (!holding) return;
+    holding = false;
+    cancelAnimationFrame(raf);
+    clearTimeout(timer);
+    btn.classList.remove("holding");
+    window.removeEventListener("pointerup", stop, true);
+    window.removeEventListener("pointercancel", stop, true);
+    window.removeEventListener("keyup", keyStop, true);
+    window.removeEventListener("blur", stop);
+    document.removeEventListener("visibilitychange", stop);
+  };
+  // The fill is drawn on animation frames; the commit is also checked on a clock timer, so a slow
+  // 3D frame never stretches the hold past `ms` (and never shortens it: both read the clock).
+  const due = () => {
+    if (!holding) return;
+    const left = ms - (performance.now() - t0);
+    if (left > 0) { timer = setTimeout(due, left + 1); return; }
+    tick(performance.now(), true);
+  };
+  const tick = (now, fromTimer = false) => {
+    if (!holding) return;
+    if (!btn.isConnected || btn.disabled) { stop(); return; } // redrawn or disabled mid-hold: never commit
     const p = Math.min(1, (now - t0) / ms);
     set(p);
+    if (fromTimer && p < 1) return;
     if (p >= 1) {
       done = true;
-      btn.classList.remove("holding");
+      finish();
       btn.classList.add("committed");
       if (navigator.vibrate) navigator.vibrate(30);
-      onCommit();
+      try { onCommit(); } finally { holdEnded(); }
       return;
     }
     raf = requestAnimationFrame(tick);
   };
   const start = (e) => {
-    if (done || btn.disabled) return;
+    if (done || holding || btn.disabled) return;
     if (e) e.preventDefault();
-    cancelAnimationFrame(raf);
+    holding = true;
+    activeHolds++;
     t0 = performance.now();
+    timer = setTimeout(due, ms + 1);
     btn.classList.add("holding");
+    // Listen on the window too: a release that lands anywhere else still ends the hold.
+    window.addEventListener("pointerup", stop, true);
+    window.addEventListener("pointercancel", stop, true);
+    window.addEventListener("keyup", keyStop, true);
+    window.addEventListener("blur", stop);
+    document.addEventListener("visibilitychange", stop);
     raf = requestAnimationFrame(tick);
   };
-  const stop = () => {
-    if (done) return;
-    cancelAnimationFrame(raf);
-    btn.classList.remove("holding");
+  function stop() {
+    if (done || !holding) return;
+    const early = btn.isConnected && performance.now() - t0 < ms;
+    finish();
     set(0);
-  };
+    holdEnded();
+    if (early) hint();
+  }
+  // Let go too soon (or just clicked): say so on the button for a moment. Nothing was sent.
+  let hintTimer = 0;
+  function hint() {
+    const label = btn.querySelector("span");
+    if (!label) return;
+    if (!hintTimer) btn.dataset.label = label.textContent;
+    label.textContent = "Keep holding…";
+    clearTimeout(hintTimer);
+    hintTimer = setTimeout(() => { hintTimer = 0; if (btn.dataset.label != null) label.textContent = btn.dataset.label; }, 1200);
+  }
+  function keyStop(e) { if (e.key === " " || e.key === "Enter") stop(); }
   btn.addEventListener("pointerdown", start);
-  btn.addEventListener("pointerup", stop);
   btn.addEventListener("pointerleave", stop);
-  btn.addEventListener("pointercancel", stop);
   btn.addEventListener("keydown", (e) => {
     if ((e.key === " " || e.key === "Enter") && !e.repeat) start(e);
   });
-  btn.addEventListener("keyup", (e) => { if (e.key === " " || e.key === "Enter") stop(); });
   btn.addEventListener("click", (e) => e.preventDefault()); // a plain click never commits
   set(0);
 }

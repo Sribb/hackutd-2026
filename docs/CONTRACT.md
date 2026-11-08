@@ -215,6 +215,7 @@ The backend sends the status. The web console picks the color.
 | `WARNING` | Needs attention soon | Amber |
 | `ALARM` | Failed or at risk now | Red |
 | `OFFLINE` | Stopped or shut in | Dark |
+| `UNKNOWN` | No fresh reading (live layer only). Never treat as safe | Hatched or gray with a "?" |
 
 ## Dataset mode (EOG sponsor data)
 
@@ -623,6 +624,81 @@ A read-only push, so it needs no token.
 
 The default server address is `http://127.0.0.1:8000`. All numbers below are examples. Times are minutes from now.
 
+### One clock (#42)
+
+Every backend endpoint starts from the same moment (`backend/app/now.py`):
+
+- **With the live layer** (#38): that moment is the live field. `GET /api/state` has the live `clock` and the live
+  statuses (the same as `/api/live/state`, including `UNKNOWN`), in this contract's shape. A stale reading shows
+  `"stale": true`, `"level_pct": null`, and `"last_level_pct"`, never a number as if it were current.
+  `POST /api/forecast`, `/api/plans`, and `/api/lastcall` start from the live clock and readings, and count what's
+  already under way: confirmed chokes (wells at their live flow), pumps that read off, and trucks on the road on
+  their real timetable. A plan never sends a truck that's already out.
+- **No fresh reading means the worst case, said out loud.** A pump with neither a fresh run nor a fresh flow reading
+  counts as off. A valve with no fresh `OPEN`/`CLOSED` reading counts as closed (for a crossover that gives the
+  earliest shutdown of the two tanks; the warning says the lower tank could fill faster). Each assumption is a line
+  in `warnings` on `POST /api/forecast`, `POST /api/plans` (new top-level `warnings`), and Last Call.
+- **Without it** (or `FREEBOARD_ONE_CLOCK=0`): the active scenario, plus the plans approved on it.
+- `GET /api/state`, `POST /api/forecast`, and `POST /api/plans` add `"clock_source": "live" | "static"`. Forecast and
+  plans also add `"clock"`, the moment they start from. `GET /api/health` has `clock_source` too.
+- `POST /api/plans/{id}/approve` (operator) still returns `plan_id`, `steps`, `radio_script`, and then:
+  - live: `"proposals": ["act_7", ...]`, one PENDING proposal per step in step order (`source: "plan"`). Nothing
+    moves until a person confirms each (`POST /api/actions/{id}/confirm`, phone or console). Approving the same plan
+    again returns the proposals still pending instead of new ones. `proposal_errors` lists any step it couldn't propose.
+  - static: `"recorded_actions": N`. `/api/state` shows them (`applied_actions`), and later forecasts and plans count them.
+- Activating a blueprint moves the live layer to it (`app.state.live_reload`), so the clock never follows the old field.
+- Audit (`GET /api/audit`): approving a plan logs `"approved"` (`plan_id`, `proposals`), and activating a blueprint
+  logs `"blueprint_activated"` (`blueprint_id`), each with the caller's `source` and `role`.
+- SpacetimeDB follows the live field: every change in status, level (0.1 %), position, or reason is pushed within
+  `SPACETIME_MIRROR_S` (1 s). `asset_state.status` may be `UNKNOWN`.
+
+### `GET /api/history` (CF-14)
+
+Readings on a regular grid that ends now, on the same clock as `/api/state` and the forecast. Read only.
+
+`?minutes=60&step_min=1&asset_id=TANK_3,TANK_4&signal=level_pct` (all optional: 60, 1, every asset, `level_pct`).
+`asset_id` and `signal` take comma lists; `signal=all` is every signal recorded. At most 2000 points (422 otherwise);
+an unknown asset is 404.
+
+```json
+{
+  "clock": "02:10", "clock_source": "live", "t": 26.0,
+  "minutes": 60, "step_min": 1, "stale_after_min": 5, "since_t_min": -26,
+  "timeline": [{"t_min": -60, "clock": "01:10", "tanks": {"TANK_3": null, "TANK_4": null}},
+               {"t_min": 0, "clock": "02:10", "tanks": {"TANK_3": 80.4, "TANK_4": 61.2}}],
+  "series": [{"asset_id": "TANK_3", "signal": "level_pct", "points": [[-60, null], [0, 80.4]]}],
+  "gaps": [{"asset_id": "TANK_4", "signal": "level_pct", "from_t_min": -12, "to_t_min": 0}]
+}
+```
+
+- A point is what the console showed at that moment: the latest reading at or before it, while it was fresh (the live
+  layer's rule, stale after `stale_after_min`). **A stale period is `null`, never the last value carried forward**,
+  and so is any time before the first reading (`since_t_min` is where recording starts).
+- `gaps` lists the stale runs after recording started, for shading. Time before `since_t_min` is not a gap.
+- `timeline` is the tanks' `level_pct` in the forecast's timeline shape with `t_min <= 0`, so the past and the future
+  are one trend (CF-3): history's timeline, then the forecast's (its `t_min: 0` is the same moment). A blind tank is
+  still listed, all `null`.
+- Values are as read (numbers rounded to 0.01; `running` and `position` as the connector sends them).
+- Kept for `FREEBOARD_HISTORY_MIN` live minutes (720). Activating a blueprint starts it over.
+- No live layer (or `FREEBOARD_ONE_CLOCK=0`): `clock_source: "static"`, empty lists, and a `note`.
+
+### Control token (#105, #103, CF-15)
+
+Reads (GET) are always open. One mechanism, `backend/app/auth.py`, checked per route:
+
+- None of `FREEBOARD_TOKEN`, `OPERATOR_PIN`, `FREEBOARD_PHONE_TOKEN` set: everything is open, as before.
+- Any of them set: protected writes need the header `X-Freeboard-Token`. Missing or wrong gets
+  401 `{"detail": "Enter the operator PIN to send commands."}`. `FREEBOARD_TOKEN` or `OPERATOR_PIN` is the
+  operator; `FREEBOARD_PHONE_TOKEN` is the phone, which may only confirm, reject, and ack (403 elsewhere).
+- Operator only on the backend core: `POST /api/plans/{id}/approve`, `POST /api/spacetime/sync`,
+  `POST /api/blueprints`, `POST /api/blueprints/{id}/activate`. `POST /api/forecast`, `/api/plans`, and
+  `/api/lastcall` stay open, since they change nothing. The live layer's routes are listed in its section.
+- Always, tokens or not (`backend/app/origin_guard.py`): a write whose `Origin` names a different host than the
+  server gets 403. Same host on another port (console :5173, API :8000) and localhost pass. No Origin (curl,
+  devices, webhooks) passes. Extra hosts: `FREEBOARD_ALLOWED_HOSTS=a,b`.
+- `/api/blueprints` takes only `application/json` or `multipart/form-data` (415 otherwise), and the 5 MB cap is
+  enforced while the body streams in.
+
 ### `GET /api/field`
 
 Everything that doesn't change during the night.
@@ -769,6 +845,231 @@ Turns a plan into the steps the 3D scene walks through.
 }
 ```
 
+## Live layer (#38)
+
+Additive. The endpoints above don't change. The live layer reads signals from **connectors** (the blueprint's optional `connectors` list, see [BLUEPRINT.md](BLUEPRINT.md); with none, the simulator drives every asset), flags problems from the readings, and lets Jarvis and the console **propose** commands that do nothing until a person confirms them.
+
+The live clock starts at the blueprint's `clock_start` and runs at `FREEBOARD_SPEED` live minutes per real second (default 0.25). Scripted `faults` fire at their `at_min`.
+
+### `GET /api/live/state`
+
+```json
+{
+  "clock": "01:52",
+  "t": 8.0,
+  "assets": {
+    "TANK_3": { "status": "ALARM", "level_pct": 72.6, "stale": false, "age_min": 0, "last_reading_t": "2026-11-07T07:12:03+00:00", "reason": null, "observed_bbl_hr": 182.0, "expected_bbl_hr": -40.0 },
+    "TANK_5": { "status": "UNKNOWN", "level_pct": 60.1, "stale": true, "age_min": 6.5, "last_reading_t": "2026-11-07T07:11:01+00:00", "reason": "No level_pct reading from Tank 5 for 7 min. Treat it as unknown, not safe." },
+    "PUMP_3": { "status": "ALARM", "running": false, "flow_bbl_hr": 0, "stale": false, "age_min": 0, "last_reading_t": "...", "reason": "Pump 3 tripped: it reports stopped. Tank 3 is no longer being emptied." },
+    "VALVE_XO_34": { "status": "OK", "position": "CLOSED", "stale": false, "age_min": 0, "last_reading_t": "..." },
+    "WELL_9": { "status": "OK", "flow_bbl_hr": 50, "stale": false, "age_min": 0, "last_reading_t": "..." },
+    "TRUCK_1": { "status": "OK", "phase": "EN_ROUTE", "target_id": "TANK_3", "stale": false, "age_min": null, "last_reading_t": null }
+  },
+  "connectors": [
+    { "id": "CONN_SIM", "kind": "sim", "status": "connected", "detail": "simulating 47 assets" },
+    { "id": "CONN_SCADA", "kind": "mqtt", "status": "unavailable", "detail": "paho-mqtt is not installed (pip install paho-mqtt)" }
+  ],
+  "speed": 0.25,
+  "paused": false
+}
+```
+
+- `status` is `OK`, `WARNING`, `ALARM`, `OFFLINE`, or `UNKNOWN`. A tank with no fresh level reading is `UNKNOWN`, never `OK`.
+- `stale` is true when the asset's readings are older than `sensors.stale_after_min` (default 5). `age_min` is live minutes since its newest reading (null if never). `last_reading_t` is that reading's ISO time (null if never). Trucks have no sensors, so their age is null.
+- Readings per kind: tanks `level_pct`; pumps `running`, `flow_bbl_hr`; valves `position`; wells and disposal wells `flow_bbl_hr`; trucks `phase` (`IDLE`, `QUEUED`, `EN_ROUTE`, `LOADING`, `TO_DISPOSAL`) and `target_id`. A value is null when nothing has been read.
+- Tanks also carry `observed_bbl_hr` (the fitted fill rate, positive while filling) and `expected_bbl_hr` (wells in minus the running pumps, sharing their disposal well's `max_bbl_hr`). `observed_bbl_hr` uses only readings since the tank's pumps or valves last changed state (at most the last 10 minutes), so it is null for about 2 live minutes after a trip instead of still showing the draining. `expected_bbl_hr` is null when it can't be explained that simply (a crossover on the tank not known to be closed, a pump with no fresh reading).
+- `connectors` always starts with the simulator, `CONN_SIM`. Connector `kind` is `sim`, `webhook`, `mqtt`, `modbus`, or `opcua`; `status` is `connected` or `unavailable`.
+
+### Alerts
+
+`GET /api/alerts` → `{"alerts": [alert]}`, oldest first. `POST /api/alerts/{id}/ack` (optional body `{"by": "name"}`, phone or operator token, see [Control tokens](#control-tokens-103-cf-15)) marks one acknowledged and adds `acked_t` and `acked_by` (from the token's role when tokens are on). A second ack changes nothing. The phone notification's Acknowledge button calls it, but only while no token is set: a token never goes into a notification.
+
+```json
+{ "id": "alert_1", "asset_id": "PUMP_3", "kind": "PUMP_TRIP", "severity": "ALARM",
+  "message": "Pump 3 tripped: flow reads 0 bbl/hr, it should be moving 150. Tank 3 is filling.",
+  "t": "2026-11-07T07:12:03+00:00", "clock": "01:48", "active": true,
+  "root_id": null, "priority": "P1",
+  "minutes_to_consequence": 61, "minutes_to_consequence_low": 53,
+  "consequence": "Tank 3 reaches shutdown at 2:51 AM. 4 wells go down with it.",
+  "consequence_asset_id": "TANK_3", "consequence_clock": "2:51 AM", "consequence_t": 63.5,
+  "usd_at_risk": 7241,
+  "shelved_until": null, "shelved_until_t": null, "shelve_reason": null, "shelved_by": null, "shelved_t": null }
+```
+
+| `kind` | `severity` | Raised when |
+|---|---|---|
+| `PUMP_TRIP` | `ALARM` | The pump reports `running` false, or its flow is under 10% of its rate while it should run, or its tank rises faster than its wells explain. Confirmed over 2 readings, so it alerts within 3. |
+| `SENSOR_STALE` | `WARNING` | No reading of a signal for `stale_after_min`. |
+| `VALVE_MISMATCH` | `WARNING` | A valve's reported position differs from the position a person confirmed, for 2 readings after a 1 minute grace. |
+| `TANK_HIGH` | `WARNING` | A fresh tank level at or over `warning_pct` (default `shutdown_pct - 10`) for 2 readings. Clears 1 point below it. |
+| `TANK_HIGH_HIGH` | `ALARM` | A fresh tank level at or over `high_high_pct` (default `shutdown_pct - 5`) for 2 readings. Clears 1 point below it. A stale tank raises neither: it is `SENSOR_STALE`. |
+
+`t` is when it was raised (ISO). When the condition clears, the same alert is sent again with `"active": false` and `resolved_t`. An alert closed because the field was reloaded (see below) also has `resolved_reason`.
+
+#### Priority, consequence, and root cause (CF-7)
+
+- `priority` is `P1`, `P2`, or `P3`, from the **baseline forecast** (`POST /api/forecast` with no actions, run on the live readings, with every active `PUMP_TRIP` as a failure). `P1` if the alarm leads to a tank shutdown within 60 minutes, `P2` within 180, `P3` otherwise. It is ranked on the early end of the forecast's give-or-take (`minutes_to_consequence_low`, inflow 15% high), so a shutdown forecast at 61 minutes, give or take 9, is `P1`.
+- Which shutdown an alarm leads to: `PUMP_TRIP` its tank; `TANK_HIGH` and `TANK_HIGH_HIGH` that tank; `VALVE_MISMATCH` its pump's tank (a discharge valve) or the earlier of its two tanks (a crossover). `SENSOR_STALE` on a tank level is `P2` with `minutes_to_consequence` null and a `consequence` saying it is unknown (never safe); any other stale signal is `P3`.
+- `minutes_to_consequence` is whole minutes to that shutdown in the baseline forecast (null when there is none in the 6 hour horizon), `minutes_to_consequence_low` the early end. `consequence` is the forecast event's text, `consequence_asset_id` the tank, `consequence_clock` its time ("2:51 AM"), `consequence_t` its live minute (compare with `state.t`). `usd_at_risk` is what the forecast charges for that shutdown: the shut-in wells' lost production to the end of the horizon plus a restart for each (0 when there is no consequence).
+- **Recomputed as the forecast changes:** whenever an alert is raised or resolved, and at least every live minute while any alert is active. When an alert's `priority` or consequence changes, or its consequence time moves 2 minutes or more, it is sent again over `/ws` with `"event": "updated"`. A plain countdown is not re-sent; `GET /api/alerts` always has the current numbers.
+- `root_id` points a consequential alarm at the alarm that caused it, or is null for a root. A tank's `TANK_HIGH` or `TANK_HIGH_HIGH` points at an active `PUMP_TRIP` on one of the tank's pumps, else a `VALVE_MISMATCH` on one of their discharge valves; a `TANK_HIGH_HIGH` with neither points at the same tank's `TANK_HIGH`. A root that appears after its consequence (the trip confirmed after the tank already read high) is linked then, with `"event": "updated"`. Once set, `root_id` stays, even after the root resolves. Group the list by it: after a Pump 3 trip there is one `P1` root and the Tank 3 high and high-high alarms fold under it.
+
+#### Shelving (CF-7)
+
+`POST /api/alerts/{id}/shelve` with `{"minutes": 30, "reason": "Crew is on the way to Pump 3", "by": "optional name"}` (phone or operator token) → the alert, with:
+
+- `shelved_until` its end on the clock ("3:05 AM"), `shelved_until_t` the live minute (time left is `shelved_until_t - state.t`), `shelve_reason`, `shelved_by` (from the token's role when tokens are on, as `decided_by` is), `shelved_t` (ISO).
+- **422** when `reason` is missing or blank, or `minutes` is missing or outside 15 to 240 (live minutes). **404** for an unknown id, **409** for an alert that has already cleared. Shelving a shelved alert replaces its timer.
+- A shelved alert stays `active` and keeps its priority current. It comes back by itself when `state.t` reaches `shelved_until_t`: the shelve fields go back to null, it is sent over `/ws` with `"event": "unshelved"`, and pushed to the phone again. An alert that clears while shelved ends its shelf too.
+- `POST /api/alerts/{id}/unshelve` (optional body `{"by": "name"}`, phone or operator token) brings it back early. 409 if it isn't shelved.
+- Every shelve and unshelve is in the audit log (`shelved`, `unshelved`, see below).
+
+### Actions (human-confirmed)
+
+A proposal changes nothing. Only confirm sends it, through the connector that owns the asset (the simulator when none does).
+
+```json
+{ "id": "act_1",
+  "action": { "type": "SET_VALVE", "asset_id": "VALVE_XO_34", "value": "OPEN" },
+  "reason": "Tank 3 reaches shutdown at 2:47 AM; the crossover moves water to Tank 4.",
+  "status": "PENDING", "created_t": "2026-11-07T07:12:10+00:00",
+  "text": "Open the Tank 3 to 4 crossover.", "source": "jarvis", "connector_id": "CONN_SIM" }
+```
+
+- `action.type`: `SET_VALVE` (value `OPEN`/`CLOSED`), `SET_PUMP` (`ON`/`OFF`), `CHOKE_WELL` (0 shut in to 1 untouched), `SEND_TRUCK` (value null, plus `target_id`, a tank).
+- `status`: `PENDING`, then `REJECTED`, or `SENDING` (a person confirmed it and the command is on its way to the connector), then `CONFIRMED`, `FAILED` (the connector refused, was unreachable, or nothing was sent), or `UNCERTAIN` (the command left for the device but no answer came back: a webhook read timeout or a reset after the POST went out, or a real connector that raised; the device may have moved, so check the field before proposing it again; nothing ever re-sends it). A proposal is sent at most once: the first confirm claims it as `SENDING`, so a second confirm (another screen) or a late reject gets 409. A confirm whose command path (connector, its config such as `url`, and the command's `address`) is no longer the one it was proposed on gets 409 `"Proposal act_1: the command path changed; propose again."` and sends nothing. If the field reloads between the claim and the send, it ends `FAILED` with `"The field was reloaded before it was sent; nothing moved. Propose it again."`; a send already under way keeps its result. After a decision the proposal also has `decided_t` and `decided_by`, and once sent, `result` (what the connector said).
+- `decided_by`: with control tokens on, the server sets it from the token's role, `"console"` (operator token or PIN) or `"phone"`, and **never** from the body's `by`. Automatic paths set `"jarvis"` (`JARVIS_CONFIRM=0`, simulator only) and `"blueprint"` (closed by a reload). With no token configured it is the body's `by` (or null), as before.
+- `GET /api/actions` → `{"proposals": [proposal]}`.
+- `POST /api/actions` with `{type, asset_id, value, target_id?, reason?}` → a PENDING proposal (422 if the action is invalid). Operator token.
+- `POST /api/actions/{id}/confirm` and `POST /api/actions/{id}/reject` (optional body `{"by": "name"}`) → the updated proposal. 404 for an unknown id, 409 if it isn't PENDING (including while it is SENDING). Phone or operator token.
+
+### `POST /api/jarvis`
+
+Request: `{"message": "What am I looking at?", "selected_asset_ids": ["PUMP_3"], "image_png_base64": "<optional screenshot of the 3D view>"}`
+
+Response 200:
+
+```json
+{ "reply": "Pump 3 is stopped, moving 0 barrels an hour (reading 20 s old). Pump 3 tripped: it reports stopped.",
+  "source": "rules",
+  "ui": [{ "type": "ui", "action": "focus", "asset_id": "PUMP_3" }],
+  "proposals": [] }
+```
+
+- `source` is `rules` (instant answers that need no API key: what's failing, how long until shutdown, show or explain an asset, what am I looking at with a selection, the cheapest plan, and fixes like "open the crossover", "send truck 1 to tank 3", "shut in well 9", "turn off pump 2") or `claude`.
+- Jarvis's fixes are proposals (PENDING) in `proposals`. It never changes equipment itself. With control tokens on, asking Jarvis needs the operator token.
+- **Every number names its source and age (CF-11).** A live reading carries its age in live time, "Tank 3 is at 71% (reading 20 s old)", and the connector when it isn't the simulator, "(reading from CONN_HOOK, 2 min old)". A forecast or plan carries the time it ran: "The forecast at 1:52 AM says Tank 3 reaches shutdown at 2:47 AM, give or take 9 minutes. 4 wells go down with it. That's 55 min from now." and "The planner ran at 1:52 AM on the live readings. Cheapest plan, $X: ...".
+- Jarvis never vouches for an asset with no current reading. An UNKNOWN tank gets exactly "I have no current reading for Tank 5, so I can't say it's safe." plus "Its last reading is 8 min old." (or "It has sent no reading since startup."), and never a level; any other UNKNOWN asset gets "... so I can't say what it's doing.". The sentence comes first in "How long until shutdown?" (then "Treat it as at risk and check in person.", then the earliest shutdown, or "The forecast at 1:52 AM says no tank with a fresh reading reaches shutdown in the next 6 hours if nothing changes."), first in the cheapest-fix answer, and in "What's failing?".
+- "What's failing?" uses CF-7's `priority` and `root_id`: it leads with each P1 root cause (or the most urgent root when there is no P1), "P1 since 1:50 AM: Pump 3 tripped: it reports stopped. Tank 3 is no longer being emptied (reading 0 s old).", then the forecast consequence and its clock, then "2 related alarms." for the alarms folded under it, instead of one line per alarm. Then the tanks with no reading, "N other alerts open; the next is P2 on Tank 5.", and "N shelved alerts not shown.". With nothing open: "All quiet at 1:52 AM. No active alerts.", but never while a tank is UNKNOWN.
+- Claude's tools carry the same facts: `explain_asset` returns `as_of` and `reading` (`{signal, age_min, age_s, age, connector_id, current, wall_t}`) and, for an UNKNOWN asset, `say` (the sentence above); `get_forecast` and `get_plans` return `as_of`, `source`, and `unknown_tanks`; `list_alerts` (named as in [JARVIS_CONSOLE.md](JARVIS_CONSOLE.md), no args yet) returns `{as_of, open, groups: [{root, related, related_count, related_ids}], unknown_tanks}`, most urgent group first, with each root's `priority`, `root_id`, `raised_at`, `consequence`, `consequence_clock`, `minutes_to_consequence`, `minutes_from_now`, `usd_at_risk`, `forecast_at`, `reading`, `acked`, `shelved`, and `shelved_until`. The system prompt tells Claude to cite the age and run time with every number.
+- "Open the crossover" picks: the crossover joining the tanks the text names ("the Tank 3 to 4 crossover", "3 and 4", "between 5 and 6"); else the one on the tank in trouble (an active `PUMP_TRIP`'s tank, then the tank with the earliest forecast shutdown), toward the neighbor with the most room before shutdown; only then the first crossover. Named tanks with no crossover between them get a reply saying so and no proposal. "Close the crossover" prefers one that is open.
+- A question about an asset that also asks for a fix ("Why is Tank 3 rising, and what's my cheapest fix?") answers the question, then adds "The planner ran at 1:52 AM on the live readings. Cheapest plan, $X: ..." and, when it is a different plan, "Cheapest robust plan, $Y: ...". The last `ui` focus is the cheapest plan's first step.
+- With no `ANTHROPIC_API_KEY` and no rules match: **503** `{"detail": "Jarvis needs ANTHROPIC_API_KEY on the server."}`. Other Claude failures are also 503 with a `detail` saying why.
+
+### Control tokens (#103, CF-15)
+
+One mechanism for the console link, the phone QR, and the typed PIN. Code: `backend/app/auth.py`.
+
+| Variable | Role |
+|---|---|
+| `FREEBOARD_TOKEN` | operator: everything |
+| `OPERATOR_PIN` | operator too: a short PIN a person can type (CF-5's prompt fills the same header) |
+| `FREEBOARD_PHONE_TOKEN` | phone: confirm, reject, ack, shelve, and unshelve only |
+
+- **None set:** every route behaves exactly as before.
+- **Use a PIN of 6 or more digits.** The server logs a warning at startup for a shorter `OPERATOR_PIN`.
+- **Wrong tokens are throttled** (HTTP and `/ws` alike). 5 wrong tokens in 60 s from one client IP lock that IP for 60 s, then 120 s, 240 s, and so on up to 15 min: **429** `{"detail": "Too many wrong PINs. Wait 60 s."}` with a `Retry-After` header (on `/ws`, close 1008 with that reason). While locked, even the right token is refused unchecked. A correct token from another IP keeps working. 30 wrong tokens in 60 s from all IPs together lock, the same way, every IP that hasn't used a correct token in the last day. A missing token is not counted (it is the PIN prompt). Behind a proxy every client shares the proxy's IP. Each counted failure is an `auth_failed` audit entry (`source` the client IP, `path`, `locked_s` when it started a lock), never the value tried.
+- **Any set:** every `POST` in the live layer needs the header `X-Freeboard-Token`: `/api/actions` (create), `/api/actions/{id}/confirm` and `/reject`, `/api/alerts/{id}/ack`, `/shelve`, and `/unshelve`, `/api/live/faults`, `/api/live/sim`, `/api/jarvis`. Missing or wrong → **401** `{"detail": "Enter the operator PIN to send commands."}`. The phone token on an operator-only route → **403**. `POST /api/live/readings/{connector_id}` keeps its own connector token (`token_env`). Reads (`GET`) stay open. Tokens are compared with `hmac.compare_digest` and never logged.
+- `WS /ws`: send the token, best first, as the subprotocol `freeboard.<token>` (`new WebSocket(url, ["freeboard", "freeboard." + token])`; the server picks `freeboard`), or as the first message `{"type": "auth", "token": "<token>"}` within 5 s of connecting (answered `{"type": "auth", "ok": true, "role": "phone"}`; a late or second `auth` gets `"ok": false` and changes nothing), or, as a fallback, `?token=<token>`. The server redacts `token=` and `X-Freeboard-Token` values from uvicorn's access and error logs. A wrong token is closed with code **1008**. No token connects read-only: it gets every message, but its `ui` messages are ignored. Operator and phone tokens may send `ui`.
+- The `require_role` dependency also sets `request.state.role`.
+- **Other lanes** put the same check on their routes (`/api/blueprints/*`, approve, spacetime sync #105; `/api/ingest` #106):
+
+```python
+from fastapi import Depends
+from backend.app.auth import Caller, require_role
+
+@app.post("/api/plans/{plan_id}/approve")
+def post_approve(plan_id: str, caller: Caller = Depends(require_role("operator"))) -> dict:
+    ...  # caller.role: "operator" | "phone" | None (no token configured); caller.device: "console" | "phone" | None
+```
+
+`require_role("operator")` is operator only; `require_role("phone")` is phone or operator. `caller.decided_by(body_by)` gives the value to store as `decided_by`.
+
+### Audit log (CF-10)
+
+`GET /api/audit` (optional `?since=<seq>`) → `{"entries": [entry]}`, oldest first. Append-only, kept in memory for the server's life. Set `FREEBOARD_AUDIT_FILE` to also append each entry as a JSON line (a relative path is under `backend/data/`, where `*.jsonl` is gitignored).
+
+```json
+{ "seq": 2, "t": "2026-11-07T07:12:10+00:00", "clock": "01:52", "live_t": 8.0,
+  "event": "confirmed", "source": "phone", "role": "phone", "by": "phone",
+  "asset_id": "VALVE_XO_34", "proposal_id": "act_1", "status": "SENDING",
+  "text": "Open the Tank 3 to 4 crossover.", "connector_id": "CONN_SIM" }
+```
+
+| `event` | When | Extra fields |
+|---|---|---|
+| `proposed` | A proposal is created (console or Jarvis) | `proposal_id`, `status` `PENDING`, `text`, `reason`, `connector_id`, `target_id?` |
+| `confirmed` | A person (or `JARVIS_CONFIRM=0`) confirmed it; it is now `SENDING` | same, plus `auto` `"JARVIS_CONFIRM=0"` on the automatic path |
+| `result` | The connector answered, or nothing was sent | `status` `CONFIRMED`, `FAILED`, or `UNCERTAIN`, `result`, `reloaded` `true` when the field reloaded between the claim and the answer |
+| `rejected` | A person rejected it, or a reload closed it (`source` `blueprint`) | `result?` |
+| `acked` | An alert was acknowledged (the first time only) | `alert_id`, `kind`, `severity`, `message`, `priority` |
+| `shelved` | A person shelved an alert (CF-7) | `alert_id`, `kind`, `priority`, `minutes`, `reason`, `shelved_until`, `shelved_until_t` |
+| `fault` | `POST /api/live/faults` (also when it is refused) | `asset_id`, `fault` (the type), `ok`, `reason?`, `rate_bbl_hr?`, `result` (why it was refused) |
+| `sim` | `POST /api/live/sim` | whichever of `speed`, `paused`, `advance_min` were sent |
+| `auth_failed` | A wrong control token (see [Control tokens](#control-tokens-103-cf-15)) | `source` the client IP, `role` null, `path`, `locked_s?`. Never the value tried. |
+| `unshelved` | A shelf ended | `alert_id`, `kind`, `priority`, `why` (`expired` with `source` `timer`, `by hand`, `resolved` with `source` `detector`, or `reloaded` with `source` `blueprint`), `shelve_reason`, `shelved_until` |
+
+- `t` is the wall time (ISO), `clock` and `live_t` the live clock. `role` is the token role (`operator`, `phone`, or null when no token is configured or nobody asked). `source` is `console`, `phone`, `jarvis`, `blueprint`, `timer` (a shelf ran out), or `detector` (an alert cleared while shelved); for a Jarvis proposal, `role` is the operator who asked. `by` is the stored `decided_by`.
+- **Other lanes** log their own steps (approve, activate, shelve) with `app.state.audit.append("approved", source=caller.device, role=caller.role, plan_id=...)`. Any extra keyword is kept on the entry. It is safe to call from a sync endpoint's worker thread.
+
+### Following the active blueprint
+
+The live layer follows `POST /api/blueprints/{id}/activate` once #64's `_use_scenario` calls `app.state.live_reload(scenario)` (installed by `backend/app/live_api.py`; until then the live layer stays on the startup scenario). The hook is a plain function and is safe to call from a sync endpoint's worker thread: it runs the reload on the live loop and waits up to 30 s for the loop to start it. If the loop hasn't started it by then, the reload is called off (it never applies later) and the hook raises `live_api.ReloadTimeout` (a `TimeoutError`); activate again. A reload:
+
+- stops the old connectors and builds the new field, connectors, and detector, keeping the live clock (`t` and the clock shown), speed, and pause. Readings start over from the new connectors, and the new blueprint's `faults` fire at their `at_min` after the reload;
+- resolves every active alert with a `resolved_reason` (`"Pump 6 is not in the activated blueprint."`, or that the field reloaded and is checked again; the new detector raises it again if it still holds). Alert ids keep counting;
+- closes a PENDING proposal as `REJECTED` with `decided_by` `"blueprint"` and a `result` saying why, when its asset or target is gone, it is no longer valid, or it would now go to a different connector or to the same connector set up differently (its `url` or other config, or the command's `address`, changed). A person never confirms a command routed somewhere other than where it was proposed. A proposal already `SENDING` that hasn't started its send ends `FAILED` with nothing sent; one whose send is under way keeps its result, but its position is not recorded as commanded in the new field;
+- broadcasts each closed proposal, each resolved alert, and a fresh `state`.
+
+### Connectors and demo controls
+
+- `GET /api/live/connectors` → `{"connectors": [...], "jarvis": {"mode", "model", "llm_available"}, "push": {"enabled", "last_error"}}`.
+- `POST /api/live/readings/{connector_id}` (webhook connectors only) with `{"readings": [{"asset_id", "signal", "value"} | {"address", "value"}]}` → `{"accepted": [...], "rejected": [...]}`. Only signals the blueprint declares for that connector are accepted. If the connector has `token_env`, send the token in `X-Freeboard-Token`.
+- `POST /api/live/sim` with `{speed?, paused?, advance_min?}` → the live clock.
+- `POST /api/live/faults` with `{asset_id, type: TRIP | STUCK_VALVE | SENSOR_STALE | LEAK | REPAIR, reason?, rate_bbl_hr?}` injects a fault into the simulator.
+
+### `WS /ws`
+
+Connect to `ws://127.0.0.1:8000/ws?role=web` (`role` is `web`, `phone`, `device`, or `other`; with control tokens on, send the token as the `freeboard.<token>` subprotocol or a first `auth` message, see above). Every message is one JSON object with a `type` and a `seq` counter:
+
+| `type` | Payload | When |
+|---|---|---|
+| `state` | `{"type": "state", "seq": 1, "state": <GET /api/live/state body>}` | On connect, every tick, and after each confirm |
+| `alert` | `{"type": "alert", "seq": 2, "event": "raised", "alert": <alert>}` | `event` is `raised`, `resolved`, `updated` (priority, consequence, or root changed), `shelved`, or `unshelved`. Replace the row with the same `alert.id`. |
+| `proposal` | `{"type": "proposal", "seq": 3, "proposal": <proposal>}` | Created, sending, confirmed, rejected, failed, or uncertain |
+| `ui` | `{"type": "ui", "seq": 4, "action": "focus", "asset_id": "PUMP_3", "reason": "...", "source": "jarvis"}` | Jarvis, a new ALARM, a proposal, or a phone wants every screen on an asset |
+
+Clients may send `{"type": "ping"}` (answered with `pong`) and `{"type": "ui", "action": "focus", "asset_id": "TANK_3"}` to point every console at an asset (with control tokens on, only a client that connected with a valid token).
+
+### Environment
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `ANTHROPIC_API_KEY` | unset | Enables Claude in Jarvis. Without it, only the rules answer. |
+| `JARVIS_MODEL` | `claude-sonnet-5-5` | Claude model for Jarvis. |
+| `JARVIS_MODE` | `auto` | `auto` (rules first, Claude for the rest), `rules`, or `llm`. |
+| `JARVIS_CONFIRM` | `1` | `0` lets Jarvis's proposals run without a person, **only** for the simulator. Real equipment always waits for confirm. |
+| `FREEBOARD_SPEED` | `0.25` | Live minutes per real second. |
+| `NTFY_TOPIC` | unset | Phone push of ALARM and WARNING alerts through ntfy. Off when unset. |
+| `NTFY_SERVER` | `https://ntfy.sh` | ntfy server. |
+| `PUBLIC_URL` | unset | Where a phone can reach this server, for the notification's buttons. |
+| `CORS_ORIGINS` | unset | Extra allowed origins, comma separated. Localhost is always allowed. |
+| `FREEBOARD_TOKEN` | unset | Operator control token (#103). Any of these three turns the write lock on. |
+| `OPERATOR_PIN` | unset | Operator PIN, same role as `FREEBOARD_TOKEN` (CF-15). Use 6 or more digits (wrong ones are throttled). Never commit it. |
+| `FREEBOARD_PHONE_TOKEN` | unset | Phone control token: confirm, reject, ack, shelve, and unshelve only. |
+| `FREEBOARD_AUDIT_FILE` | unset | Also append the audit log here as JSON lines (relative = under `backend/data/`). |
+| `*_env` in connector config | | Names the variable holding a connector secret, e.g. `"token_env": "HOOK_TOKEN"`. |
+
 ### `POST /api/ingest`
 
 Upload a blueprint as multipart form field `file`. That can be a PNG, JPEG, WebP, GIF, or PDF site plan, a CSV equipment list, or a blueprint JSON. The response is the parsed blueprint plus what a human must confirm before the field is built. Code: `ingest/`. Mount it with `app.include_router(ingest.router.router)`.
@@ -790,3 +1091,52 @@ Upload a blueprint as multipart form field `file`. That can be a PNG, JPEG, WebP
 - `blueprint` has the same shape as `scenario/field.json`, plus `x` and `y` in meters where the plan shows a position. Each asset also carries `_ingest` with its original label, Claude's confidence, and the evidence.
 - `errors` block a build: duplicate IDs, bad IDs, or references to missing IDs. `review` items don't block a build, but the console should show them for a human to confirm or fill in.
 - Error statuses: 400 for a bad file, 413 for a file too large, 415 for an unsupported type, 422 when Claude declines or can't read it, 429 when rate limited, and 502 or 503 for server and API problems. The `detail` says what to do.
+
+### Blueprints (#41): `POST /api/blueprints` and friends
+
+Upload a customer's field ([BLUEPRINT.md](BLUEPRINT.md)), get its 3D model, and run the console on it. The upload screen (`web/src/upload.js`, #43) reads exactly this shape.
+
+**`POST /api/blueprints`** takes any of:
+
+- `{"blueprint": {...}, "activate": true}`, where `blueprint` is the one from `/api/ingest` after a person fills the review items. `activate` is optional and defaults to `true`.
+- a raw blueprint as the JSON body.
+- `multipart/form-data` with a `.json` file in the field `file` (and an optional `activate` field). Drawings and CSVs go to `/api/ingest` first, so they get a 415.
+
+The response, and **`GET /api/blueprints/{id}`**, is one record:
+
+```json
+{
+  "id": "bp_7efcfbee8eff",
+  "status": "fallback",
+  "ok": true,
+  "errors": [],
+  "warnings": [],
+  "counts": { "tanks": 8, "pumps": 8, "valves": 13, "wells": 24, "disposal_wells": 3, "trucks": 3, "yards": 1 },
+  "glb_url": "/api/blueprints/bp_7efcfbee8eff/field.glb",
+  "note": "Showing the standard field model: Blender isn't installed on this server. The forecast and plans use your blueprint. 12 asset(s) have no 3D shape in it: PUMP_7, ...",
+  "active": true,
+  "name": "Pecos Ridge lease - night shift",
+  "model": "fallback",
+  "placed": null,
+  "build_report": null,
+  "build_seconds": null,
+  "source": "body",
+  "created_at": "2026-11-07T18:20:55"
+}
+```
+
+- `status`: `building` (poll GET about once a second), `ready` (built by Blender), `fallback` (the console shows main's `blender/field.glb`), or `failed` (the blueprint has problems).
+- **The demo never waits on a build.** If Blender is missing, the generator can't take `--blueprint` yet, or the build fails or takes over `FREEBOARD_BUILD_TIMEOUT` seconds (default 180), the status is `fallback` and the reason is in `note`. Generator errors become `warnings` that start with `Generator error:`.
+- `failed` comes back as **HTTP 422** with the same record plus `detail` (the problems in one sentence). `errors` lists every problem from `scenario/validate_blueprint.py`, then the backend's own checks. Nothing is built or activated.
+- The `id` is a hash of the blueprint, so uploading the same file again returns the same record without rebuilding.
+- A valid upload is activated straight away unless `activate` is `false`. The console then reloads on `/api/field` and `glb_url`.
+- Blender is found from `BLENDER`, then `blender` on the PATH, then `/Applications/Blender.app/Contents/MacOS/Blender`. It runs `blender --background --factory-startup --python blender/build_field.py -- --blueprint <file> --out <dir>` and reads `<dir>/build_report.json` (`ok`, `errors`, `warnings`, `counts`, `placed`).
+- Files live in `backend/data/blueprints/<id>/` (gitignored), or `FREEBOARD_BLUEPRINTS_DIR`.
+
+**`GET /api/blueprints/{id}/field.glb`** serves the built model when the status is `ready`, and main's `blender/field.glb` otherwise. The header `X-Freeboard-Model` says `built` or `fallback`. A `failed` blueprint gets a 409.
+
+**`POST /api/blueprints/{id}/activate`** makes `/api/field`, `/api/state`, `/api/forecast`, `/api/plans`, and Last Call use this blueprint. It returns the record with `"active": true`. A `failed` blueprint gets a 409, and an unknown id gets a 404. **`POST /api/blueprints/default/activate`** goes back to the server's starting scenario. The active blueprint is kept in memory, so a restart goes back to the default.
+
+**`GET /api/blueprints`** returns `{"active": "<id or default>", "blueprints": [record, ...]}`, newest first.
+
+While a blueprint with new IDs is active (such as `TANK_7`), `/api/field` lists IDs the Asset IDs table above doesn't have, and `tools/check` against that server reports them. Activate `default` before running `tools/check`.
