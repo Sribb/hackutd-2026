@@ -4,6 +4,22 @@ This is what lets us work in parallel. The Blender model, the web console, and t
 
 If you need to change something here, change this file in the same commit and tell the team.
 
+
+## Error codes
+
+Every route answers errors with `{"detail": "<a plain sentence>"}` and one of these codes. `GET /api/health` reports `api_version` (now `1.1`), which goes up when a route's shape changes.
+
+| Code | Means | What the client does |
+|---|---|---|
+| 401 | No or wrong operator token or PIN | Ask for the PIN, then retry once |
+| 403 | Refused: another site's page, or a role that can't do this | Show the sentence; don't retry |
+| 404 | No such asset, plan, dataset or system | Show the sentence |
+| 409 | Conflict: the state moved (a plan already approved, another dataset active) | Reload, then decide again |
+| 413 / 415 | Upload too big or the wrong type | Show the sentence |
+| 422 | Bad input: the sentence names the field | Fix the input |
+| 429 | Too many tries; `Retry-After` gives the wait | Wait, then retry |
+| 503 | A part is off (dataset mode with no `FREEBOARD_EOG_DIR`, a build failed) | Show the sentence; the rest keeps working |
+
 ## Asset IDs
 
 The field below is a placeholder until we have sponsor data. Change the numbers if needed, but keep the naming pattern.
@@ -1122,7 +1138,7 @@ The response, and **`GET /api/blueprints/{id}`**, is one record:
 ```
 
 - `status`: `building` (poll GET about once a second), `ready` (built by Blender), `fallback` (the console shows main's `blender/field.glb`), or `failed` (the blueprint has problems).
-- **The demo never waits on a build.** If Blender is missing, the generator can't take `--blueprint` yet, or the build fails or takes over `FREEBOARD_BUILD_TIMEOUT` seconds (default 180), the status is `fallback` and the reason is in `note`. Generator errors become `warnings` that start with `Generator error:`.
+- **The demo never waits on a build.** If Blender is missing, the generator can't take `--blueprint` yet, or the build fails or takes over `FREEBOARD_BUILD_TIMEOUT` seconds (default 90), the status is `fallback` and the reason is in `note`. Generator errors become `warnings` that start with `Generator error:`.
 - `failed` comes back as **HTTP 422** with the same record plus `detail` (the problems in one sentence). `errors` lists every problem from `scenario/validate_blueprint.py`, then the backend's own checks. Nothing is built or activated.
 - The `id` is a hash of the blueprint, so uploading the same file again returns the same record without rebuilding.
 - A valid upload is activated straight away unless `activate` is `false`. The console then reloads on `/api/field` and `glb_url`.
