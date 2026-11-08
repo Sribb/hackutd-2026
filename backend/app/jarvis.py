@@ -886,10 +886,17 @@ class Jarvis:
 
         # "What's wrong with this?", "how's it doing?": the asset selected on screen.
         sel = next((a for a in selected if live.fmap.kind_of(a)), None)
-        if (sel and THIS.search(t) and not self._asset_in(t) and "crossover" not in t
-                and re.search(r"wrong|status|how'?s|how is|doing|explain|tell me|about|happening|going on|okay|\bok\b", t)):
+        about_this = (THIS.search(t) and not self._asset_in(t) and "crossover" not in t
+                      and re.search(r"wrong|status|how'?s|how is|doing|explain|tell me|about|happening|going on|okay|\bok\b", t))
+        if sel and about_this:
             await self._focus(sel, ctx)
             return await self._describe(sel)
+        # A selection the live field doesn't know (a sponsor id while a dataset is on screen):
+        # explain_asset answers from the dataset (eog/gaia.py), or not at all.
+        if selected and about_this and not sel:
+            line = await self._describe_other(selected[0], ctx)
+            if line:
+                return line
 
         # What am I looking at.
         if re.search(r"looking at|what is this|what's this|whats this|this (asset|thing|one)|selected|what is that", t):
@@ -976,6 +983,35 @@ class Jarvis:
         if res["status"] == "PENDING":
             return f"Proposed: {res['text']} It's waiting for your confirmation on the console."
         return f"{res['text']} {res.get('note') or ''}".strip()
+
+    async def _describe_other(self, aid: str, ctx: dict) -> Optional[str]:
+        """An asset outside the live field map, from explain_asset's own fields (a dataset's,
+        while one is on screen): its alerts first, then a tank's level, each with the dataset's
+        clock. Never 'safe': a blind asset gets the tool's `say`, a quiet one 'no open alert'.
+        None when no tool knows the asset."""
+        info = await self.run_tool("explain_asset", {"asset_id": aid}, {"ui": [], "proposals": []})
+        if not isinstance(info, dict) or "error" in info:
+            return None
+        self._note_ui(aid, ctx)
+        when = info.get("as_of") or info.get("clock") or "the data's clock"
+        src = "the dataset" if info.get("dataset") else "the data"
+        if info.get("say"):
+            return str(info["say"])
+        parts = []
+        alerts = [a for a in info.get("alerts") or [] if isinstance(a, dict) and a.get("message")]
+        if alerts:
+            msg = str(alerts[0]["message"]).rstrip().rstrip(".")
+            parts.append(f"{alerts[0].get('priority') or 'P3'}: {msg} ({src}, as of {when}).")
+            if len(alerts) > 1:
+                parts.append(f"{n_of(len(alerts) - 1, 'more alert')} on it.")
+        lvl = (info.get("live") or {}).get("level_pct")
+        if info.get("kind") == "tank" and isinstance(lvl, (int, float)):
+            sd = (info.get("design") or {}).get("shutdown_pct")
+            limit = f" against a {sd:g}% shutdown" if isinstance(sd, (int, float)) else ""
+            parts.append(f"{aid} reads {lvl:.0f}%{limit} at {when} in {src}.")
+        if not alerts:
+            parts.insert(0, f"No open alert on {aid} at {when} in {src}.")
+        return " ".join(parts)
 
     async def _describe(self, aid: str) -> str:
         info = await self.run_tool("explain_asset", {"asset_id": aid}, {"ui": [], "proposals": []})
