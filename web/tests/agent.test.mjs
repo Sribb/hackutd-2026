@@ -21,11 +21,12 @@ for (const q of ["walk me through it", "walk me through what's wrong", "step by 
 assert.ok(!WALK.test(normalize("show tank 3").trim()));
 
 const w = walkthrough(base);
-assert.deepEqual(w.steps.map((s) => s.action), ["focus", "trace_pipes", "focus", "set_time", "open_panel"]);
+assert.deepEqual(w.steps.map((s) => s.action), ["focus", "trace_pipes", "focus", "set_time", "chart", "open_panel"]);
+assert.equal(w.steps[4].text, "plot tank 3 level");
 assert.equal(w.steps[0].asset_id, "PUMP_3");
 assert.equal(w.steps[2].asset_id, "TANK_3");
 assert.deepEqual(w.steps[3].args, { clock: "2:47 AM" });
-assert.deepEqual(w.steps.map((s) => s.step), ["flying to pump 3", "tracing pipes to tank 3", "flying to tank 3", "jumping to 2:47 am", "opening the plans"]);
+assert.deepEqual(w.steps.map((s) => s.step), ["flying to pump 3", "tracing pipes to tank 3", "flying to tank 3", "jumping to 2:47 am", "drawing the level", "opening the plans"]);
 assert.match(w.reply, /^Pump 3 tripped at 1:52 am \(live alert, P1\)\./);
 assert.match(w.reply, /The shift forecast \(every 30 s\) says tank 3 reaches shutdown at 2:47 am; the cheapest safe plan is \$1,200/);
 assert.match(w.reply, /holds to confirm/);

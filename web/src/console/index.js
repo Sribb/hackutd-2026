@@ -169,6 +169,7 @@ export function mountConsole(H) {
     side, stream, apply: (d) => directives.apply(d), nice, hasId: H.hasId, selected: H.selected, tankOf: H.tankOf,
     brief: () => computeBrief(), alerts: () => activeAlerts(), unknown: () => unknownTanks(),
     say: (t, x) => say(t, x), ask: (t) => { setOpen(true); ask(t); }, closePanels: () => closeDrawer(true), BASE, getJson,
+    chart: (t) => { const m = intents.match(t, { hasId: H.hasId, ids: H.ids, selected: H.selected, opened: () => false }); return m && m.chart && !m.chart.error ? charts.answer(m.chart) : ""; },
   });
   // Chart cards (chartask.js): drawn from the data in the browser, no AI. A click flies to the asset.
   const charts = makeCharts({

@@ -1,7 +1,8 @@
 // "Walk me through it" with no Claude (#171): the same visible steps an agent would take, from
 // the console's own data, so the agentic feel works offline and with no ANTHROPIC_API_KEY.
 //   1. fly to the failed asset (the most urgent root alert)   2. trace its pipes to the tank
-//   3. fly to that tank   4. jump the time to its forecast shutdown   5. open the plans
+//   3. fly to that tank   4. jump the time to its forecast shutdown   5. draw its level (a chart
+//   card, #159)   6. open the plans
 // The words name where each number came from (the live alert, the brief or the shift forecast)
 // and never call the field safe while a tank is unknown. Nothing here moves equipment: the
 // plans open on screen and a fix still needs a person to hold to confirm it.
@@ -38,6 +39,8 @@ export function walkthrough(H) {
   }
   if (tank) steps.push({ action: "focus", asset_id: tank, step: `flying to ${nice(tank).toLowerCase()}` });
   if (cd && cd.at != null) steps.push({ action: "set_time", args: { clock: clock12(cd.at) }, step: `jumping to ${clock12(cd.at).toLowerCase()}` });
+  const lvl = tank || (cd && H.hasId(cd.asset_id) ? cd.asset_id : null);
+  if (lvl && /^TANK_/.test(lvl)) steps.push({ action: "chart", text: `plot ${nice(lvl).toLowerCase()} level`, step: "drawing the level" });
   const plan = (b.plans && (b.plans.robust || b.plans.cheapest)) || null;
   if (plan || cd) steps.push({ action: "open_panel", args: { panel: "plans" }, step: "opening the plans" });
 
