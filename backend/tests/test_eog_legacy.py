@@ -196,6 +196,67 @@ def test_calm_dataset(client):
     assert ok(client.post("/api/lastcall", json={}))["status"] == "CALM"
 
 
+@pytest.fixture
+def one_failure(tmp_path, monkeypatch):
+    """A calm field until Q7_PUMP_B fails at hour 20 (from 60 %, so its tank trips before the
+    repair). Returns (client, the failure as /api/eog/events lists it at the last row)."""
+    base = tmp_path / "eog"
+    write_dataset(base / "onefail", seed=4, hours=24, repair_hours=5, problems=[
+        {"type": "pump_failure", "facility": "Q7_FACILITY_B", "onset_h": 20.0, "level_pct": 60}])
+    monkeypatch.setenv("FREEBOARD_EOG_DIR", str(base))
+    c = TestClient(app)
+    ev = next(e for e in ok(c.get("/api/eog/events"))["events"] if e["category"] == "pump_failure")
+    return c, ev
+
+
+def _calm(c, ev):
+    st = ok(c.get("/api/state"))
+    assert st["incident"] is None
+    assert st["assets"]["Q7_PUMP_B"]["status"] == "OK" and st["assets"]["Q7_TANK_B"]["status"] == "OK"
+    assert ok(c.post("/api/plans", json={}))["plans"] == []
+    assert ok(c.post("/api/lastcall", json={}))["status"] == "CALM"
+    return st
+
+
+def _incident(c, ev):
+    st = ok(c.get("/api/state"))
+    assert st["incident"]["root_asset_id"] == "Q7_PUMP_B" and st["incident"]["event_id"] == ev["event_id"]
+    assert st["assets"]["Q7_PUMP_B"]["status"] == "ALARM" and st["assets"]["Q7_TANK_B"]["status"] == "ALARM"
+    assert [p["asset_id"] for p in ok(c.post("/api/plans", json={}))["plans"]] == ["Q7_PUMP_B"]
+    assert [e["asset_id"] for e in ok(c.post("/api/forecast", json={}))["events"]] == ["Q7_TANK_B"]
+    assert ok(c.post("/api/lastcall", json={}))["status"] == "INCIDENT"
+    return st
+
+
+def test_legacy_routes_follow_the_clock_cursor(one_failure):
+    """The judge tour: the cursor 15 min before the onset is calm; stepped one row past the
+    onset (as a poll would see it), the same routes show the incident."""
+    c, ev = one_failure
+    onset = ev["onset_unix"]
+    clock = ok(c.post("/api/eog/clock", json={"at": onset - 900, "play": False}))
+    before = _calm(c, ev)
+    assert before["now"] == clock["now"] < onset
+    ok(c.post("/api/eog/clock", json={"at": onset + 300}))
+    after = _incident(c, ev)
+    assert after["now"] == onset + 300 and after["clock"] == legacy.hhmm(service.SERVICE.dataset(), onset + 300)
+
+
+def test_legacy_routes_follow_the_clock_while_playing(one_failure, monkeypatch):
+    """POST /api/eog/clock {"at": onset - 900, "play": true, "speed": 3}: 3 data-minutes per real
+    second, so the failure arrives 5 real seconds in and shows by the next 5-minute row."""
+    c, ev = one_failure
+    real = [1000.0]
+    monkeypatch.setattr(service.SERVICE, "real", lambda: real[0])
+    ok(c.post("/api/eog/clock", json={"at": ev["onset_unix"] - 900, "play": True, "speed": 3}))
+    _calm(c, ev)
+    real[0] += 4.0                                 # 12 data-minutes: still before the onset
+    _calm(c, ev)
+    real[0] += 3.0                                 # 21 data-minutes: one row past the onset
+    st = _incident(c, ev)
+    assert ev["onset_unix"] <= st["now"] <= ev["onset_unix"] + 600
+    assert ok(c.get("/api/eog/state"))["now"] == st["now"]     # the same view as /api/eog
+
+
 def test_spacetime_push_on_activation_and_cursor(client, monkeypatch):
     sent = []
     monkeypatch.setattr(spacetime_sync, "enabled", lambda: True)
