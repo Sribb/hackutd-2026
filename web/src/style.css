@@ -373,49 +373,74 @@ button { white-space: nowrap; }
 .pager-card p { margin: 0; font-size: 12px; line-height: 1.6; color: var(--ink-2); }
 .pager-card code { font: 12px var(--mono); color: var(--ink); word-break: break-all; }
 
-/* ---- Two nights: counterfactual replay (twonights.js) ---- */
+/* ---- Two nights: counterfactual replay (twonights.js) ----
+   One calm card along the top of the field (#154): the clock and controls, the two nights side by
+   side, the takeaway at the end, the timeline folded. It never reaches the time bar (twonights.js
+   fit() caps its height) and leaves the middle of the field clear. */
 .twobtn { margin-left: auto; font: 11px var(--mono); letter-spacing: .08em; text-transform: uppercase; padding: 4px 10px;
           border-color: var(--alarm); color: var(--alarm); }
 .twobtn::before { content: "[ "; } .twobtn::after { content: " ]"; }
 .twobtn:disabled { opacity: .6; }
-#twonights { position: absolute; inset: 56px 14px 118px 14px; z-index: 6; pointer-events: none; font: 12px/1.45 var(--mono); }
-#twonights > * { pointer-events: auto; background: rgba(5,5,5,.88); border: 1px solid var(--line); }
-#twonights .tn-top { position: absolute; top: 0; left: 50%; transform: translateX(-50%); width: min(330px, 34%); padding: 8px 12px; }
-#twonights .tn-col { position: absolute; top: 0; width: min(260px, 27%); max-height: 100%; overflow: auto; padding: 10px 12px; }
-#twonights .tn-col.none { left: 0; } #twonights .tn-col.with { right: 0; }
-#twonights .tn-end { position: absolute; bottom: 0; left: 50%; transform: translateX(-50%); width: min(480px, 44%); padding: 12px 14px; }
-#twonights .tn-head { display: flex; align-items: baseline; gap: 12px; }
-#twonights .tn-clock { font: 400 24px var(--display); font-variant-numeric: tabular-nums; white-space: nowrap; }
-#twonights .tn-head .kicker { white-space: nowrap; }
-#twonights .tn-ctl { margin-left: auto; display: flex; gap: 6px; }
-#twonights .tn-ctl button { font: 11px var(--mono); padding: 3px 9px; }
-#twonights .tn-bar { height: 3px; background: var(--line); margin: 6px 0 6px; cursor: pointer; }
-#twonights .tn-bar i { display: block; height: 100%; background: var(--ink); width: 0; }
-#twonights .tn-col { border-top: 2px solid var(--alarm); }
-#twonights .tn-col.with { border-top-color: var(--good); }
-#twonights .tn-usd { font: 400 34px/1.1 var(--display); font-variant-numeric: tabular-nums; margin: 4px 0 2px; }
-#twonights .tn-col.none .tn-usd { color: var(--alarm); }
-#twonights .tn-col.with .tn-usd { color: var(--good); }
-#twonights .tn-wells { color: var(--ink-2); }
-#twonights .tn-wells.down { color: var(--alarm); }
-#twonights .tn-log { list-style: none; margin: 8px 0 0; padding: 0; }
-#twonights .tn-log li { padding: 3px 0; color: var(--muted); opacity: .28; transition: opacity .4s, color .4s; }
-#twonights .tn-log li.on { opacity: 1; color: var(--ink); }
-#twonights .tn-log li.on.bad { color: var(--alarm); }
-#twonights .tn-log li.on.good { color: var(--good); }
-#twonights .tn-legend { margin-top: 0; color: var(--muted); font-size: 11px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-#twonights .sw { display: inline-block; width: 10px; height: 10px; }
-#twonights .sw.ghost { background: rgba(255,75,31,.45); }
-#twonights .sw.water { background: #3d6b8c; margin-left: 8px; }
-#twonights .tn-verdict { font: 400 24px var(--display); }
-#twonights .tn-verdict b { color: var(--good); font-weight: 400; }
-#twonights .tn-end p { margin: 6px 0 10px; color: var(--ink-2); }
-@media (max-width: 720px) {
-  #twonights { overflow: auto; pointer-events: auto; }
-  #twonights > * { position: static !important; transform: none !important; width: auto !important; margin-bottom: 8px; }
-  #twonights .tn-usd { font-size: 26px; }
+#twonights { position: absolute; top: 14px; left: 50%; transform: translateX(-50%); width: min(640px, calc(100% - 24px)); z-index: 6;
+  container-type: inline-size; overflow-y: auto; overscroll-behavior: contain; padding: 12px 16px 10px;
+  background: rgba(12,12,12,.84); border: 1px solid rgba(255,255,255,.09); border-radius: 16px !important; box-shadow: 0 12px 40px rgba(0,0,0,.35);
+  -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); color: #ececec; font: 13px/1.45 var(--sans);
+  animation: tn-in .6s cubic-bezier(.2,.7,.2,1); }
+#twonights[hidden] { display: none; }
+@keyframes tn-in { from { opacity: 0; transform: translate(-50%, -10px); } to { opacity: 1; transform: translate(-50%, 0); } }
+#twonights .tn-head { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+#twonights .tn-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+#twonights .tn-sub { color: #9a9a9a; font-weight: 400; }
+#twonights .tn-clock { margin-left: auto; font: 500 15px var(--sans); font-variant-numeric: tabular-nums; white-space: nowrap; }
+#twonights .tn-ctl { display: flex; gap: 6px; flex: none; }
+#twonights .tn-ctl button, #twonights .tn-more { padding: 4px 12px; font: 12.5px var(--sans); background: transparent; border: 1px solid rgba(255,255,255,.14);
+  color: #dcdcdc; border-radius: 999px !important; cursor: pointer; }
+#twonights .tn-ctl button:hover, #twonights .tn-more:hover { background: rgba(255,255,255,.07); color: #fff; }
+#twonights .tn-bar { height: 3px; margin: 10px 0 12px; background: rgba(255,255,255,.1); border-radius: 2px !important; cursor: pointer; }
+#twonights .tn-bar i { display: block; height: 100%; width: 0; background: #e6e6e6; border-radius: 2px !important; }
+#twonights .tn-sides, #twonights .tn-logs { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px 22px; }
+#twonights .tn-k { display: flex; align-items: center; gap: 7px; font-size: 12px; color: #9a9a9a; }
+#twonights .tn-nums { display: flex; align-items: baseline; flex-wrap: wrap; gap: 0 10px; margin-top: 2px; }
+#twonights .tn-usd { font: 500 22px/1.25 var(--sans); font-variant-numeric: tabular-nums; }
+#twonights .tn-col.none .tn-usd, #twonights .tn-wells.down, #twonights .tn-now.bad { color: #ff7a5c; }
+#twonights .tn-col.with .tn-usd, #twonights .tn-now.good, #twonights .tn-verdict b { color: #6fcf97; }
+#twonights .tn-wells { font-size: 12.5px; color: #bdbdbd; font-variant-numeric: tabular-nums; }
+#twonights .tn-now { min-height: 1.45em; margin-top: 3px; font-size: 12px; color: #8e8e8e; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; transition: color .6s ease; }
+#twonights .tn-end { margin-top: 12px; padding-top: 10px; border-top: 1px solid rgba(255,255,255,.08); animation: tn-fade .7s ease; }
+#twonights .tn-end[hidden] { display: none; }
+@keyframes tn-fade { from { opacity: 0; } to { opacity: 1; } }
+#twonights .tn-verdict { font: 500 16px/1.4 var(--sans); }
+#twonights .tn-verdict b { font-weight: 600; }
+#twonights .tn-end p { margin: 4px 0 10px; font-size: 12.5px; color: #b4b4b4; }
+#twonights .tn-end button.hold { padding: 8px 18px; font: 500 13px var(--sans); background: #f2f2f2; color: #0d0d0d; border: 0; border-radius: 999px !important; }
+#twonights .tn-end button.hold > i { background: rgba(0,0,0,.18); }
+#twonights .tn-foot { display: flex; align-items: center; gap: 10px; margin-top: 10px; font-size: 11.5px; color: #8e8e8e; }
+#twonights .tn-legend { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 6px; min-width: 0; }
+#twonights .tn-more { margin-left: auto; padding: 3px 10px; font-size: 12px; flex: none; }
+#twonights .tn-logs { margin-top: 8px; }
+#twonights .tn-logs[hidden] { display: none; }
+#twonights .tn-log { list-style: none; margin: 4px 0 0; padding: 0; font-size: 12px; }
+#twonights .tn-log li { padding: 2px 0; color: #8e8e8e; opacity: .4; transition: opacity .6s ease, color .6s ease; }
+#twonights .tn-log li.on { opacity: 1; color: #dcdcdc; }
+#twonights .tn-log li.on.bad { color: #ff7a5c; }
+#twonights .tn-log li.on.good { color: #6fcf97; }
+#twonights .sw { display: inline-block; width: 8px; height: 8px; flex: none; border-radius: 2px !important; }
+#twonights .sw.ghost { background: rgba(255,75,31,.75); }
+#twonights .sw.water { background: #4f86ad; }
+#twonights .tn-legend .sw.water { margin-left: 6px; }
+#twonights .tn-src { margin: 6px 0 0; font-size: 11px; color: #6e6e6e; }
+@container (max-width: 460px) {
+  #twonights .tn-sub, #twonights .tn-legend, #twonights .tn-src, #twonights .tn-now { display: none; }
+  #twonights { padding: 10px 12px 8px; }
+  #twonights .tn-usd { font-size: 18px; }
+  #twonights .tn-bar { margin: 8px 0 8px; }
+  #twonights .tn-foot { margin-top: 6px; }
+  #twonights .tn-sides, #twonights .tn-logs { gap: 6px 12px; }
 }
-@media (prefers-reduced-motion: reduce) { #twonights .tn-log li { transition: none; } }
+@media (prefers-reduced-motion: reduce) {
+  #twonights, #twonights .tn-end { animation: none; }
+  #twonights .tn-log li, #twonights .tn-now { transition: none; }
+}
 /* The replay owns the stage while it runs; the Sky box (#85) comes back on close. */
 body.two-nights .sky-ctl { display: none; }
 /* Scenery toggle (#88) inside the model note */

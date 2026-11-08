@@ -1526,6 +1526,8 @@ const ui = layout === "console" ? mountConsole({
   tanks: () => ((field && field.tanks) || []).map((t) => t.id),
   tankOf: (id) => { const p = ((field && field.pumps) || []).find((x) => x.id === id) || ((field && field.wells) || []).find((x) => x.id === id); return p ? p.tank_id : null; },
   blind: () => (data ? blindTanks() : []),
+  // The field as it is now (minute 0, never the slider's forecast), for the monitoring strip (#154).
+  liveView: () => (data && fc ? viewAt(0) : {}),
   selected: () => selectedId,
   select: (id) => select(id),
   focus: (id) => { if (ids.has(id)) { select(id, true); inspect.pointed(id, "jarvis"); } },
