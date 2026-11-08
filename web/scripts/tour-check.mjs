@@ -5,7 +5,8 @@
 //   TOUR_URL='<the console link npm run demo prints, with its #k= part>' node scripts/tour-check.mjs
 //
 // Options: --size=1440x900 (default) · --notify-stub (define window.gaiaNotify and check the
-// tour calls it) · --layout-only (next through every step, checking placement only).
+// tour calls it) · --layout-only (next through every step, checking placement only) ·
+// --reduced (prefers-reduced-motion: step 2 must not fly on its own).
 // Each step: the card renders, never touches the time bar (where it sits when up, and its
 // on-screen box) or the composer, stays in the window, and the page never scrolls sideways.
 
@@ -17,6 +18,7 @@ const arg = (k) => process.argv.find((a) => a.startsWith(`--${k}`));
 const [W, H] = (arg("size") ? arg("size").split("=")[1] : "1440x900").split("x").map(Number);
 const STUB = !!arg("notify-stub");
 const LAYOUT = !!arg("layout-only");
+const REDUCED = !!arg("reduced");
 const u = new URL(url);
 const open = `${u.origin}/?tour=1&fresh${u.hash}`;
 
@@ -25,7 +27,7 @@ let failed = 0;
 const check = (ok, what) => { log(ok ? "ok  " : "FAIL", what); if (!ok) failed++; };
 
 const browser = await chromium.launch({ args: ["--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader"] });
-const page = await browser.newPage({ viewport: { width: W, height: H } });
+const page = await browser.newPage({ viewport: { width: W, height: H }, reducedMotion: REDUCED ? "reduce" : "no-preference" });
 const errors = [];
 page.on("pageerror", (e) => errors.push(String(e.message || e)));
 const posts = [];
@@ -49,7 +51,7 @@ const geo = () => page.evaluate(() => {
     hitTimebar: hit(r, lay) || (vis.right > vis.left && vis.bottom > vis.top && hit(r, vis)), hitDock: hit(r, box(".cs-dock")), hitAsk: hit(r, box("#csAsk")),
     inView: r.left >= 0 && r.top >= 0 && r.right <= innerWidth && r.bottom <= innerHeight, visible: getComputedStyle(card).opacity !== "0" || card.classList.contains("in"),
     overflowX: document.documentElement.scrollWidth > innerWidth, rings: [...document.querySelectorAll(".gt-ring:not([hidden])")].length,
-    dashes: /[–—]/.test(card.textContent)
+    dashes: /[\u2013\u2014]/.test(card.textContent)
   };
 });
 async function placed(label) {
@@ -76,15 +78,34 @@ try {
   let g = await placed("1 field");
   check(/night-shift operator/.test(g.title) && /3d/.test(g.body), "1 field: title and body");
 
+  // This machine can be slow enough that the whole camera tour runs between two polls: record it.
+  await page.evaluate(() => {
+    const seen = window.__seen = { on: false, sel: false, bodies: [] };
+    new MutationObserver(() => {
+      const c = document.querySelector(".gt-card");
+      if (!c || c.dataset.step !== "look") return;
+      if (c.querySelector(".gt-btn.on")) seen.on = true;
+      if (!document.querySelector("#csSel").hidden) seen.sel = true;
+      const t = c.querySelector(".gt-body").textContent.trim();
+      if (t && !seen.bodies.includes(t)) seen.bodies.push(t);
+    }).observe(document.body, { subtree: true, childList: true, attributes: true, characterData: true });
+  });
   await next(); await waitStep("look");
   await placed("2 look (start)");
-  if (!LAYOUT) {
-    await page.waitForFunction(() => document.querySelector(".gt-card .gt-btn.on"), null, { timeout: 20000 });
-    g = await placed("2 look (flying)");
-    check(/tank|pump|swd/.test(g.body), `2 look: names the stop (${g.body.slice(0, 60)})`);
-    check(await page.evaluate(() => !document.querySelector("#csSel").hidden), "2 look: the camera tour selected an asset");
-    await bodyHas("whole field", 15000);
-    check(true, "2 look: the camera tour finished and flew home");
+  if (REDUCED) {
+    await page.waitForFunction(() => document.querySelectorAll(".gt-card [data-stop]").length > 0, null, { timeout: 20000 });
+    await page.waitForTimeout(4000);
+    check(await page.evaluate(() => !document.querySelector(".gt-card .gt-btn.on") && document.querySelector("#csSel").hidden), "2 look (reduced motion): no flight until a stop is picked");
+    await page.click(".gt-card [data-stop='0']");
+    await page.waitForFunction(() => !document.querySelector("#csSel").hidden, null, { timeout: 20000 });
+    check(true, "2 look (reduced motion): picking a stop flies there");
+  } else if (!LAYOUT) {
+    await bodyHas("whole field", 40000);
+    const seen = await page.evaluate(() => window.__seen);
+    check(seen.on && ["tank", "pump", "swd"].every((k) => seen.bodies.some((t) => t.startsWith(k))), `2 look: flew to each stop (${seen.bodies.map((t) => t.split(":")[0]).join(", ")})`);
+    check(seen.sel, "2 look: the camera tour selected each asset on the way");
+    check(await page.evaluate(() => document.querySelector("#csSel").hidden), "2 look: the camera tour finished and flew home (selection cleared)");
+    await placed("2 look (done)");
   }
 
   await next(); await waitStep("gaia");

@@ -396,21 +396,31 @@ const STEPS = [
   },
   {
     id: "fix", title: "the cheapest fix", targets: ["#csPlan", "#csFix"],
-    enter(ctx) {
+    async enter(ctx) {
       const b = C().brief();
       const plan = (b && b.plans && (b.plans.robust || b.plans.cheapest)) || null;
-      const action = plan && plan.actions && plan.actions[0];
+      // Late in the night the best plan can be "do nothing" (nothing saves the tank any more):
+      // then the planner's cheapest plan that still has a step, from the same /api/plans list.
+      let alt = null;
+      if (!(plan && plan.actions && plan.actions.length) && BASE) {
+        const r = await post(`${BASE}/api/plans`, {}).catch(() => null);
+        const list = r && r.ok ? ((await r.json().catch(() => ({}))).plans || []) : [];
+        alt = list.find((p) => (p.actions || []).length) || null;
+        if (!ctx.alive()) return;
+      }
+      const action = (alt || plan || {}).actions ? (alt || plan).actions[0] : null;
       let proposing = false, said = "", sawConfirm = false;
-      const head = plan
+      const head = (plan
         ? `<p>the planner's best plan costs ${esc(usd(plan.total_usd))}, against ${esc(usd(b.do_nothing_usd))} if nobody acts: ${esc(lc(plan.summary))}</p>`
-        : "<p>the planner has no fix to make right now.</p>";
+        : "<p>the planner has no fix to make right now.</p>")
+        + (alt ? `<p>its cheapest plan that still does something costs ${esc(usd(alt.total_usd ?? (alt.cost && alt.cost.total_usd)))}: ${esc(lc(alt.summary))}</p>` : "");
       const rule = "<p>gaia never moves equipment. it proposes a fix, and a person holds to confirm it.</p>";
       const propose = async () => {
         proposing = true;
         said = "proposing…";
         draw();
         const r = await post(`${BASE}/api/actions`, { type: action.type, asset_id: action.asset_id, value: action.value ?? null, target_id: action.target_id ?? null,
-          reason: "Step 1 of the planner's best plan, proposed from the guided tour. Nothing moves until a person holds to confirm." }).catch(() => null);
+          reason: `Step 1 of the planner's ${alt ? "cheapest plan with a step" : "best plan"}, proposed from the guided tour. Nothing moves until a person holds to confirm.` }).catch(() => null);
         proposing = false;
         said = r && r.ok ? "" : `couldn't propose it (${r ? `http ${r.status}` : "no backend"}). nothing was sent.`;
         draw();
