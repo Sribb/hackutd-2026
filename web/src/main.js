@@ -4,6 +4,7 @@ import "@fontsource/azeret-mono/600.css";
 import * as THREE from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { mountSky } from "./sky.js";
 import * as api from "./api.js";
 import { buildPlaceholder } from "./placeholder.js";
 import { decode, holdButton } from "./fx.js";
@@ -52,6 +53,8 @@ ground.rotation.x = -Math.PI / 2;
 ground.receiveShadow = true;
 ground.name = "ground";
 scene.add(ground);
+// Day and night (#85): sky, lights, lamps and site brightness follow the field clock plus the slider.
+const sky = mountSky({ scene, renderer, camera, key: moon, stage: $("stage"), site: () => field && field.site, offsetMin: () => tMin });
 
 function resize() {
   const { clientWidth: w, clientHeight: h } = canvas.parentElement;
@@ -1107,6 +1110,7 @@ async function boot() {
   }
   fc = baseline;
   scene.add(model.root);
+  sky.attach(model.root); // before indexModel darkens the site, so the sky knows its daytime colors
   indexModel(model.root);
 
   const missing = [...ids].filter((id) => !assets.has(id));
@@ -1140,6 +1144,7 @@ renderer.setAnimationLoop(() => {
   if (data) {
     for (const id of ids) paint(id, (lastView[id] || {}).status || "NO_DATA", t);
     animateMovers(dt, t);
+    sky.update(dt); // after paint(), so lamps and headlights layer on top of the status colors
     if ((t | 0) !== lastSec) { lastSec = t | 0; $("clock").textContent = shiftlog.clockNow(true); if (liveFeed.live.lostSince) renderFeed(); }
   }
   if (selBox) selBox.update();
