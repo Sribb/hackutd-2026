@@ -23,6 +23,13 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink); 
 .loading { position: absolute; inset: 0; display: grid; place-items: center; font: 13px var(--mono); color: var(--muted); pointer-events: none; }
 .tag { position: absolute; pointer-events: none; transform: translate(12px, -50%); background: var(--surface-2); border: 1px solid var(--line);
        border-radius: 6px; padding: 3px 8px; font: 12px var(--mono); color: var(--ink); white-space: nowrap; }
+/* ---- part-level tooltip (#86) ---- */
+.tag.rich { white-space: normal; width: max-content; max-width: 320px; display: grid; gap: 2px; padding: 6px 9px; line-height: 1.4; z-index: 5; }
+.tag.rich[hidden] { display: none; }
+.tag.rich .tag-id { color: var(--muted); font-size: 11px; }
+.tag.rich .tag-what { color: var(--ink-2); font-size: 11px; }
+.tag.rich .tag-note { color: var(--trying, #8fb8c8); font-size: 11px; }
+.tag.rich.flip { transform: translate(calc(-100% - 12px), -50%); }
 .model-note { position: absolute; top: 12px; left: 12px; font: 11px var(--mono); color: var(--muted); background: rgba(10,12,15,.7);
               border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; }
 

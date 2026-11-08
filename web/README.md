@@ -35,6 +35,17 @@ The fake files are generated, not hand-written: `python3 web/scripts/make_fakes.
 
 `window.__freeboard` in the browser console has `assets` (ID to meshes), `select(id)`, `viewAt(t)`, `setActions([...])`, `actions`, and `missing` (contract IDs not found in the model).
 
+## Highlights and parts (#86)
+
+Every highlight goes through one manager, `src/highlight.js`. Other modules call `highlight.set(source, ids, style)` and `highlight.clear(source)`, where `ids` can be asset IDs, part or node names (`TANK_3_lt`, `SENSOR_...`, `PIPE_TANK_3_PUMP_3`) or nodes. The API and the priorities are documented at the top of the file: part 100, hover 90, Jarvis and phone 80, selection 70, plan-run step 60, trying 50, alarm and alert 40, sensor 35, related 20. On each mesh the highest priority wins the outline, and the emissive lifts add up, so trying plus selected look the same as before.
+
+- **Hover** outlines the whole asset and gives the part under the pointer a stronger highlight. The tooltip names the asset and part, the live number for that part, the status, the ID and what the part is: "Tank 3 level gauge: 71%, ALARM". `src/parts.js` maps every mesh to its asset and part from node names and extras, including `LOADOUT_n` (Tank n), `SWD_n_tower` lamps, and the coming `SENSOR_*` and `RTU_*`.
+- **Small parts:** an asset under 28 px on screen is hit anywhere in a 28 px box around it, and a wheel, light or gauge under 14 px anywhere in a 14 px box. At the overview camera, hovering the center of each of the 514 parts picks the right asset 99% of the time and names the feature part (wheel, light, gauge, rotor...) 97% of the time.
+- **Click** selects as before (Jarvis follows). The selection lightly outlines what it connects to in `/api/field`, through valves (so Tank 3 brings in its wells, Pump 3, the crossover and Tank 4) and the pipes between them, and dims everything else to 40%. Status lights never dim. **Escape** clears, **Tab** and **Shift+Tab** cycle, and a **double-click** frames the asset. The cursor is a pointer only over an asset. Scenery, the site, pads and roads are never picked or highlighted.
+- **Jarvis** `ui` focus and a **phone's Show** get a violet outline for 8 seconds, and the tooltip says who pointed there. Assets in ALARM pulse red. `iot3d.js` feeds plan-run steps (`run`), new alerts (`alert`) and sensor lights (`sensor`).
+- **Cost:** the outline is a flat redraw of only the highlighted meshes from their own scene, plus one screen pass cut to the box around them. Measured on this laptop, with the frame rate uncapped: +0.2 ms a frame with the alarm outlines, and +0.4 ms with a selection, its related assets, dimming and a hover.
+- Debug: `window.__freeboardHL` has `pick(x, y)`, `hover(x, y)`, `project(name)`, `state()`, `winner(name)`, `parts(id)`, `coverage()`, `frame(id)` and `perf`.
+
 ## Next
 
 1. Swap to the live `/api/forecast`, `/api/plans`, and `/api/lastcall` as the backend lands. No code change is needed.
