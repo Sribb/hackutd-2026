@@ -1,0 +1,113 @@
+/* Freeboard Remote (#114): the default screen, one column beside the 3D field.
+   Uses the console's tokens from style.css (--bg, --ink, --warning, --alarm, --good ...). */
+
+#remote { display: none; }
+body.fb-remote #side { display: none; }
+body.fb-remote #remote { display: flex; }
+body.fb-remote #jarvisBtn, body.fb-remote #jarvis { display: none !important; } /* the Remote column is the Jarvis panel */
+body.fb-remote #app { grid-template-columns: minmax(0, 1fr) 380px; }
+body.fb-classic #rmBack { display: inline-block; }
+#rmBack { display: none; }
+
+.remote { flex-direction: column; gap: 12px; min-height: 0; height: 100vh; overflow-y: auto; overscroll-behavior: contain;
+  border-left: 1px solid var(--line); background: var(--surface); padding: 14px 16px 0; }
+.remote > section { flex-shrink: 0; }
+.remote .kicker { margin-bottom: 6px; }
+.rm-head { display: flex; align-items: center; gap: 10px; }
+.rm-head .brand { margin-right: auto; }
+.rm-conn { font: 11px var(--mono); letter-spacing: .08em; color: var(--muted); }
+.rm-conn::before { content: "\25CF  "; color: var(--muted); }
+.rm-conn.on::before { color: var(--good); }
+.rm-conn.lost { color: var(--alarm); }
+.rm-conn.lost::before { color: var(--alarm); }
+
+/* Countdown: the one number the night shift needs. */
+.rm-count { border: 1px solid var(--line); padding: 12px 14px; background: var(--bg); }
+.rm-count.alarm { border-color: rgba(255,75,31,.6); box-shadow: inset 0 0 40px rgba(255,75,31,.07); }
+.rm-count.warn { border-color: var(--warning); }
+.rm-count.clear { border-color: rgba(143,163,107,.5); }
+.rm-clock { font: 12px var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; }
+.rm-big { font: 400 40px/1.1 var(--display); margin: 4px 0 2px; font-variant-numeric: tabular-nums; }
+.rm-count.alarm .rm-big { color: var(--alarm); }
+.rm-count.warn .rm-big { color: var(--warning); font-size: 28px; }
+.rm-count.clear .rm-big { color: var(--good); }
+.rm-count.calm .rm-big { color: var(--ink-2); font-size: 24px; }
+.rm-sub { font-size: 13px; color: var(--ink-2); line-height: 1.45; }
+.rm-vouch { margin-top: 8px; font: 600 12px var(--mono); color: var(--warning); line-height: 1.45; }
+.rm-vouch[hidden] { display: none; }
+.rm-inc { margin-top: 8px; font-size: 12px; color: var(--ink); }
+.rm-inc:empty { display: none; }
+
+/* Fixes waiting for a person. */
+.rm-fixes[hidden] { display: none; }
+.rm-fixes { display: grid; gap: 8px; }
+.rm-fix { border: 1px solid var(--warning); border-left-width: 3px; padding: 10px 12px; background: var(--bg); display: grid; gap: 5px; }
+.rm-fix.SENDING { border-color: var(--ink-2); }
+.rm-fix.UNCERTAIN { border-color: var(--warning); background: rgba(201,161,74,.06); }
+.rm-fix.CONFIRMED { border-color: rgba(143,163,107,.6); opacity: .8; }
+.rm-fix.REJECTED { border-color: var(--line); opacity: .6; }
+.rm-fix-top { display: flex; justify-content: space-between; gap: 8px; font: 11px var(--mono); letter-spacing: .1em; text-transform: uppercase; }
+.rm-state { color: var(--warning); font-weight: 600; }
+.rm-fix.CONFIRMED .rm-state { color: var(--good); }
+.rm-fix-text { font-weight: 600; font-size: 14px; }
+.rm-fix-why { font-size: 12px; color: var(--ink-2); line-height: 1.45; }
+.rm-btns { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 4px; }
+.rm-hold { flex: 1; min-height: 40px; touch-action: none; user-select: none; -webkit-user-select: none; }
+.rm-hold.holding { border-color: var(--alarm); }
+.rm-sending { flex: 1; min-height: 40px; }
+.rm-uncertain { font-size: 12px; color: var(--warning); line-height: 1.5; }
+.rm-uncertain b { font: 600 11px var(--mono); letter-spacing: .12em; margin-right: 6px; }
+.rm-done { font-size: 12px; color: var(--good); }
+.rm-note { font-size: 12px; color: var(--ink-2); }
+.rm-warn { font-size: 12px; color: var(--warning); }
+
+/* Quick asks, 3 by 2. */
+.rm-quick-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+.rm-quick-row button { padding: 8px 4px; font-size: 10px; letter-spacing: .06em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rm-quick-row button::before, .rm-quick-row button::after { content: none !important; }
+
+/* Jarvis chat. */
+.rm-jarvis { display: flex; flex-direction: column; }
+.rm-chat { list-style: none; margin: 0; padding: 10px 12px; border: 1px solid var(--line); background: var(--bg); max-height: 32vh; min-height: 90px;
+  overflow-y: auto; font-size: 13px; }
+.rm-chat li + li { margin-top: 10px; }
+.rm-chat b { font: 600 10px var(--mono); letter-spacing: .16em; text-transform: uppercase; color: var(--muted); }
+.rm-chat p { margin: 3px 0 0; line-height: 1.5; white-space: pre-wrap; }
+.rm-chat li.m-you p { color: var(--ink-2); }
+.rm-chat li.m-note p { color: var(--muted); font-size: 12px; }
+.rm-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+button.rm-chip { font: 11px var(--mono); letter-spacing: .04em; text-transform: none; color: var(--trying); border: 1px solid var(--trying); padding: 2px 8px; justify-self: start; }
+button.rm-chip::before, button.rm-chip::after { content: none !important; }
+
+/* Alerts. */
+#rmAlerts { display: grid; gap: 6px; }
+#rmAlerts .empty { font-size: 12px; }
+.rm-alert { border: 1px solid var(--line); border-left: 3px solid var(--muted); padding: 8px 10px; background: var(--bg); font-size: 12px; display: grid; gap: 4px; }
+.rm-alert.P1 { border-left-color: var(--alarm); }
+.rm-alert.P2 { border-left-color: var(--warning); }
+.rm-alert.acked, .rm-alert.shelved { opacity: .6; }
+.rm-alert-top { display: flex; align-items: baseline; gap: 8px; }
+.rm-alert-top .muted { margin-left: auto; font: 11px var(--mono); }
+.rm-alert-msg { color: var(--ink-2); line-height: 1.45; }
+.rm-prio { font: 600 10px var(--mono); letter-spacing: .08em; padding: 0 5px; border: 1px solid currentColor; color: var(--muted); }
+.rm-prio.P1 { color: var(--alarm); }
+.rm-prio.P2 { color: var(--warning); }
+.rm-mins { font: 600 11px var(--mono); color: var(--alarm); }
+.rm-rel { margin-top: 0; }
+.rm-rel div { margin-top: 4px; color: var(--ink-2); }
+.rm-alert .rm-btns button { padding: 3px 8px; font-size: 10px; }
+
+/* Talk or type, pinned to the bottom of the column. */
+.rm-bar { position: sticky; bottom: 0; margin: auto -16px 0; padding: 10px 16px 12px; display: flex; gap: 8px; align-items: center;
+  background: var(--surface); border-top: 1px solid var(--line); flex-shrink: 0; }
+.rm-bar input { flex: 1; min-width: 0; background: transparent; border: 0; border-bottom: 1px solid var(--ink-2); color: var(--ink);
+  font: 13px var(--mono); padding: 8px 0; outline: none; }
+.rm-bar input:focus { border-bottom-color: var(--ink); }
+.rm-mic[hidden] { display: none; }
+.rm-mic.listening { border-color: var(--alarm); color: var(--alarm); animation: blink 1s steps(2) infinite; }
+
+@media (max-width: 860px) {
+  body.fb-remote #app { grid-template-columns: 1fr; }
+  .remote { height: auto; overflow: visible; border-left: 0; border-top: 1px solid var(--line); }
+}
+@media (prefers-reduced-motion: reduce) { .rm-mic.listening { animation: none; } }

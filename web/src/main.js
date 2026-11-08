@@ -15,6 +15,7 @@ import { mountJarvis, jarvisSelectionChanged } from "./jarvis.js";
 import * as liveFeed from "./live.js";
 import { mountTwoNights } from "./twonights.js";
 import { mountInspect } from "./inspect.js";
+import { mountRemote } from "./remote/remote.js"; // #114: also puts the control token on POSTs and /ws
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
@@ -1042,6 +1043,22 @@ mountJarvis({
     c.getContext("2d").drawImage(canvas, 0, 0, c.width, c.height);
     return c.toDataURL("image/png").split(",")[1];
   },
+});
+// Freeboard Remote (#114): the default screen, a column beside the 3D field. "Classic" brings back
+// the panels above. Everything lives in remote/; these hooks are its only door in.
+mountRemote({
+  app: $("app"),
+  ready: () => !!data,
+  stateClock: () => (data ? data.state.clock : null),
+  tanks: () => ((field && field.tanks) || []).map((t) => t.id),
+  tank: (id) => (field ? tankInfo(id) || null : null),
+  blind: () => (data ? blindTanks() : []),
+  shutdown: () => (data ? shutdownOf(data.baseline) : null),
+  incident: () => (data ? data.state.incident : null),
+  selected: () => selectedId,
+  focus: (id) => { if (ids.has(id)) { select(id, true); inspect.pointed(id, "jarvis"); } },
+  logged: () => renderLog(),
+  nice,
 });
 // Hand control drives the same hover, select, orbit and zoom the mouse does.
 mountHands({
