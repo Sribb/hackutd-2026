@@ -343,6 +343,8 @@ The live clock starts at the blueprint's `clock_start` and runs at `FREEBOARD_SP
 | `PUMP_TRIP` | `ALARM` | The pump reports `running` false, or its flow is under 10% of its rate while it should run, or its tank rises faster than its wells explain. Confirmed over 2 readings, so it alerts within 3. |
 | `SENSOR_STALE` | `WARNING` | No reading of a signal for `stale_after_min`. |
 | `VALVE_MISMATCH` | `WARNING` | A valve's reported position differs from the position a person confirmed, for 2 readings after a 1 minute grace. |
+| `RUN_PAUSED` | `ALARM` | A plan run paused itself: a step's effect wasn't seen, a tank is rising faster than forecast, or a step was rejected or failed. `asset_id` is that step's asset or tank. The message names the re-plan run once Jarvis has one. Resolves when the run resumes, is replaced, or is cancelled. See [Plan runs](#plan-runs-63). |
+| `RUN_FAILED` | `ALARM` | A tank reached shutdown during a plan run. `asset_id` is the tank. |
 
 `t` is when it was raised (ISO). When the condition clears, the same alert is sent again with `"active": false` and `resolved_t`.
 
@@ -360,6 +362,7 @@ A proposal changes nothing. Only confirm sends it, through the connector that ow
 
 - `action.type`: `SET_VALVE` (value `OPEN`/`CLOSED`), `SET_PUMP` (`ON`/`OFF`), `CHOKE_WELL` (0 shut in to 1 untouched), `SEND_TRUCK` (value null, plus `target_id`, a tank).
 - `status`: `PENDING`, then `CONFIRMED`, `REJECTED`, or `FAILED` (the connector refused or was unreachable). After a decision the proposal also has `result` (what the connector said), `decided_t`, and `decided_by`.
+- `source` is `console`, `jarvis`, or `run`. A plan run's step also has `run_id` and `step` (its `n`). It is confirmed and rejected like any other proposal.
 - `GET /api/actions` → `{"proposals": [proposal]}`.
 - `POST /api/actions` with `{type, asset_id, value, target_id?, reason?}` → a PENDING proposal (422 if the action is invalid).
 - `POST /api/actions/{id}/confirm` and `POST /api/actions/{id}/reject` (optional body `{"by": "name"}`) → the updated proposal. 404 for an unknown id, 409 if it isn't PENDING.
@@ -374,11 +377,13 @@ Response 200:
 { "reply": "Pump 3 is stopped, moving 0 barrels an hour. Pump 3 tripped: it reports stopped.",
   "source": "rules",
   "ui": [{ "type": "ui", "action": "focus", "asset_id": "PUMP_3" }],
-  "proposals": [] }
+  "proposals": [],
+  "runs": [] }
 ```
 
-- `source` is `rules` (instant answers that need no API key: what's failing, how long until shutdown, show or explain an asset, what am I looking at with a selection, the cheapest plan, and fixes like "open the crossover", "send truck 1 to tank 3", "shut in well 9", "turn off pump 2") or `claude`.
+- `source` is `rules` (instant answers that need no API key: what's failing, how long until shutdown, show or explain an asset, what am I looking at with a selection, the cheapest plan, "fix it", and fixes like "open the crossover", "send truck 1 to tank 3", "shut in well 9", "turn off pump 2") or `claude`.
 - Jarvis's fixes are proposals (PENDING) in `proposals`. It never changes equipment itself.
+- "Fix it" (also "run the plan", "make it so") starts a [plan run](#plan-runs-63) of the cheapest plan that keeps every tank below shutdown, preferring one that holds with inflow 15% high. The run is in `runs`; each of its steps still waits for a person. With a key, Claude does the same through its `execute_plan` tool. If a run is already RUNNING, the reply says so and nothing new starts.
 - With no `ANTHROPIC_API_KEY` and no rules match: **503** `{"detail": "Jarvis needs ANTHROPIC_API_KEY on the server."}`. Other Claude failures are also 503 with a `detail` saying why.
 
 ### Connectors and demo controls
@@ -387,6 +392,46 @@ Response 200:
 - `POST /api/live/readings/{connector_id}` (webhook connectors only) with `{"readings": [{"asset_id", "signal", "value"} | {"address", "value"}]}` → `{"accepted": [...], "rejected": [...]}`. Only signals the blueprint declares for that connector are accepted. If the connector has `token_env`, send the token in `X-Freeboard-Token`.
 - `POST /api/live/sim` with `{speed?, paused?, advance_min?}` → the live clock.
 - `POST /api/live/faults` with `{asset_id, type: TRIP | STUCK_VALVE | SENSOR_STALE | LEAK | REPAIR, reason?, rate_bbl_hr?}` injects a fault into the simulator.
+
+### Plan runs (#63)
+
+A run executes a plan from `POST /api/plans` (or from Jarvis) step by step. **Every step is an ordinary proposal that waits for a person to confirm it**; the run never confirms anything. `JARVIS_CONFIRM=0` auto-confirms only steps whose command goes to the simulator.
+
+1. The plan's actions are sorted by `at_min`. Each step is released as a PENDING proposal (`source: "run"`, with `run_id` and `step`) when the live clock is `at_min` minutes past the run's start. The simulator applies a command the moment it's confirmed, so releasing at the plan's lead time keeps the field on the plan's timing.
+2. A person confirms (or rejects) it with `POST /api/actions/{id}/confirm`. It goes through the asset's connector.
+3. The run then looks for the effect in the live readings: the valve's `position` reads the commanded value (within 2 live min), the pump's `running` matches ON/OFF (2 min), the well's flow is within 10% of design × choke (3 min), the truck is no longer `IDLE` (1 min). It also replays exactly what was confirmed, at the times it was confirmed, and watches every tank with a fresh level.
+4. If an effect isn't seen in time (for example a stuck valve still reads CLOSED), a tank runs more than 3 points above the replay for 1 live minute (rising faster than forecast), or a step is rejected or fails at its connector, the run **pauses**, raises a `RUN_PAUSED` alert, and asks Jarvis for a **re-plan** from the current state. The re-plan avoids the failed asset (and any valve with an active `VALVE_MISMATCH`), counts wells at their live flow, and doesn't resend trucks already on the road (it counts their loads). With no API key Jarvis uses the rules pick (cheapest plan that keeps every tank running and holds with inflow 15% high); with one, Claude chooses among the same planner plans, and `replan_source` says which. The re-plan is offered as a **new run** that is PAUSED and not started (`started: false`). `POST /api/runs/{new}/resume` starts it and cancels the paused run.
+5. When every step is finished the run is `DONE`. A tank reaching shutdown during a run makes it `FAILED` (alert `RUN_FAILED`).
+
+Only one run is RUNNING at a time. Starting a run cancels any other PAUSED run.
+
+```json
+{ "id": "run_1", "plan_id": "plan_867eb029",
+  "summary": "Open the Tank 3 to 4 crossover, send Truck 1 to Tank 3, and send Truck 2 to Tank 3. Every tank stays below shutdown through 7:48 AM. Not enough if inflow runs 15% high.",
+  "cost_usd": 664, "robust": false, "keeps_running": true,
+  "status": "PAUSED", "source": "console", "created_t": "2026-11-07T07:12:10+00:00", "created_by": "Sriyan",
+  "started": true, "start_t": 4.0, "start_clock": "01:48",
+  "steps": [
+    { "n": 1, "action": { "type": "SEND_TRUCK", "asset_id": "TRUCK_1", "value": null, "target_id": "TANK_3" },
+      "at_min": 5.0, "release_clock": "1:53 AM", "text": "Send Truck 1 to Tank 3.",
+      "proposal_id": "act_1", "status": "DONE", "confirmed_t": 9.0,
+      "result": "TRUCK_1 dispatched to TANK_3, arriving in 35 min.", "verify": "Truck 1 is en route." },
+    { "n": 3, "action": { "type": "SET_VALVE", "asset_id": "VALVE_XO_34", "value": "OPEN" },
+      "at_min": 20.0, "release_clock": "2:08 AM", "text": "Open the Tank 3 to 4 crossover.",
+      "proposal_id": "act_3", "status": "MISMATCH", "confirmed_t": 24.0,
+      "result": "Sent to VALVE_XO_34. (Simulated fault: the valve is stuck and won't move.)",
+      "verify": "The Tank 3 to 4 crossover still reads CLOSED 2 minutes after it was commanded OPEN." }
+  ],
+  "reason": "The Tank 3 to 4 crossover still reads CLOSED 2 minutes after it was commanded OPEN.",
+  "note": null, "replaces": null, "replan_run_id": "run_2", "replan_source": "rules",
+  "excluded": ["VALVE_XO_34"], "alert_id": "alert_3", "ended_t": null }
+```
+
+- Run `status`: `RUNNING`, `PAUSED`, `DONE`, `FAILED`, `CANCELLED`. `reason` says why it's paused or ended. `start_t` is live minutes (null until started); `note` is Jarvis's one-line reason for a re-plan chosen by Claude.
+- Step `status`: `WAITING` (not released yet), `PENDING` (waiting for a person), `VERIFYING` (confirmed, effect not seen yet), `DONE`, `MISMATCH` (effect not seen in time; `verify` says what the readings show), `REJECTED`, `FAILED` (the connector refused), `CANCELLED`.
+- `POST /api/plans/{id}/execute` (optional body `{"by": "name"}`) → the new run, RUNNING. Plan ids come from `POST /api/plans` or from Jarvis's plans (ids are deterministic, so an unknown id is looked up again from the live state). 404 for an unknown plan, 409 if another run is RUNNING, 422 if a step can't apply to this field.
+- `GET /api/runs` → `{"runs": [run]}`, oldest first. `GET /api/runs/{id}` → one run (404 if unknown).
+- `POST /api/runs/{id}/pause` (RUNNING → PAUSED: nothing new is released; steps already PENDING stay confirmable). `POST /api/runs/{id}/resume` (PAUSED → RUNNING: starts an offered re-plan, or continues a paused run, releasing overdue steps now and treating a failed step as skipped). `POST /api/runs/{id}/cancel` (any active run → CANCELLED: waiting steps are cancelled and pending proposals rejected, so nothing more from it can reach equipment). Optional body `{"by": "name"}`. 404 for an unknown run, 409 if the run isn't in the right status.
 
 ### `WS /ws`
 
@@ -398,6 +443,7 @@ Connect to `ws://127.0.0.1:8000/ws?role=web` (`role` is `web`, `phone`, `device`
 | `alert` | `{"type": "alert", "seq": 2, "alert": <alert>}` | Raised or resolved |
 | `proposal` | `{"type": "proposal", "seq": 3, "proposal": <proposal>}` | Created, confirmed, rejected, or failed |
 | `ui` | `{"type": "ui", "seq": 4, "action": "focus", "asset_id": "PUMP_3", "reason": "...", "source": "jarvis"}` | Jarvis, a new ALARM, a proposal, or a phone wants every screen on an asset |
+| `run` | `{"type": "run", "seq": 5, "run": <run>}` (`run.steps[]` has `proposal_id`, `action`, `status`) | A [plan run](#plan-runs-63) is created, or its status, a step's status, or its re-plan changes |
 
 Clients may send `{"type": "ping"}` (answered with `pong`) and `{"type": "ui", "action": "focus", "asset_id": "TANK_3"}` to point every console at an asset.
 
@@ -408,7 +454,7 @@ Clients may send `{"type": "ping"}` (answered with `pong`) and `{"type": "ui", "
 | `ANTHROPIC_API_KEY` | unset | Enables Claude in Jarvis. Without it, only the rules answer. |
 | `JARVIS_MODEL` | `claude-sonnet-5-5` | Claude model for Jarvis. |
 | `JARVIS_MODE` | `auto` | `auto` (rules first, Claude for the rest), `rules`, or `llm`. |
-| `JARVIS_CONFIRM` | `1` | `0` lets Jarvis's proposals run without a person, **only** for the simulator. Real equipment always waits for confirm. |
+| `JARVIS_CONFIRM` | `1` | `0` lets Jarvis's proposals and plan-run steps run without a person, **only** for the simulator (rehearsals). Real equipment always waits for confirm. |
 | `FREEBOARD_SPEED` | `0.25` | Live minutes per real second. |
 | `NTFY_TOPIC` | unset | Phone push of ALARM and WARNING alerts through ntfy. Off when unset. |
 | `NTFY_SERVER` | `https://ntfy.sh` | ntfy server. |
