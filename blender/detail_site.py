@@ -9,10 +9,9 @@ import bmesh
 from mathutils import Matrix, Vector
 
 import field_parts as fp
-from detail_equipment import bolts, flange, label, status_light
+from detail_equipment import bolts, flange, id_text, label, status_light
 from field_parts import PI, Kit, ball, box, cyl, line, ring, tube
 
-POLE_X = [-198 + 44 * i for i in range(10)]
 POLE_Y = -6.5
 ARM_Z = 11.4
 
@@ -24,11 +23,12 @@ def wire(bm, a, b, sag, r=0.015, segs=8):
         tube(bm, p, q, r, 4)
 
 
-def power(site, drops):
+def power(site, drops, pole_x):
     """A three-wire line on wood poles along the road's south shoulder, with service drops."""
     k = Kit(site, "SITE_power", None)
     wood, steel, dark, wire_m = k["M_WOOD"], k["M_STEEL"], k["M_STEEL_DARK"], k["M_WIRE"]
     phases = [(-1.0, ARM_Z + 0.27), (1.0, ARM_Z + 0.27), (0.0, 12.25)]
+    POLE_X = pole_x
     for x in POLE_X:
         cyl(wood, 0.16, 12.0, (x, POLE_Y, 6.0), segs=10, r2=0.12)
         box(wood, (0.12, 2.4, 0.14), (x, POLE_Y, ARM_Z))
@@ -72,7 +72,7 @@ def light_tower(site, name, loc, aim_deg):
 def pad_extras(site, n, pad, tank_y, top):
     """Steel containment posts, liner, step-over, driveway sign."""
     k = Kit(site, f"PAD_{n}_detail", pad)
-    for i in range(9):
+    for i in range(9 if fp.LOD["posts"] else 0):
         off = -6.0 + 1.5 * i
         for x, y in ((off, tank_y - 6.55), (off, tank_y + 6.55), (-6.55, tank_y + off), (6.55, tank_y + off)):
             box(k["M_STEEL_DARK"], (0.1, 0.1, 0.95), (x, y, top + 0.47))
@@ -87,10 +87,10 @@ def pad_extras(site, n, pad, tank_y, top):
     tube(k["M_STEEL"], (-11.3, 27.5, 0.0), (-11.3, 27.5, 2.0), 0.05, 6)
     box(k["M_STEEL"], (1.9, 0.05, 0.55), (-11.3, 27.5, 1.75))
     k.done()
-    label(site, f"PAD_{n}_sign", f"TANK BATTERY {n}", 0.13, (-11.3, 27.47, 1.75), (PI / 2, 0, 0), pad)
+    label(site, f"PAD_{n}_sign", f"TANK BATTERY {id_text(n)}", 0.13, (-11.3, 27.47, 1.75), (PI / 2, 0, 0), pad)
 
 
-def swd_extras(site, sid, root, fx, num):
+def swd_extras(site, sid, root, fx):
     """Settling tank, inlet meter run, building trim, wellhead trim, gate, sign, lamps."""
     k = Kit(site, f"{sid}_detail", root)
     tank, st, dk, pp = k["M_TANK"], k["M_STEEL"], k["M_STEEL_DARK"], k["M_PIPE"]
@@ -126,13 +126,15 @@ def swd_extras(site, sid, root, fx, num):
     tube(gate, (0, 0, 0.2), (8, 0, 1.7), 0.025, 6)
     g = site.mesh(f"{sid}_gate", gate, "M_STEEL", root, loc=(-4.0, -10.5, 0.1))
     g.rotation_euler.z = math.radians(75)
-    label(site, f"{sid}_sign", f"SWD {num}", 0.9, (3 * fx, -6.06, 3.2), (PI / 2, 0, 0), root)
-    light_tower(site, sid, root.matrix_basis @ Vector((10 * fx, 9, 0.15)), 222 if fx > 0 else 318)
+    label(site, f"{sid}_sign", id_text(sid), 0.9, (3 * fx, -6.06, 3.2), (PI / 2, 0, 0), root)
+    aim = (222 if fx > 0 else 318) + math.degrees(root.rotation_euler.z)
+    light_tower(site, sid, root.matrix_basis @ Vector((10 * fx, 9, 0.15)), aim)
 
 
-def yard_extras(site, root):
+def yard_extras(site, root, slots):
+    """slots are the yard-local spots where trucks park; each gets a curb stop at its nose."""
     """Trailer stairs and trim, fuel tank, storage box, dumpster, curb stops, sign."""
-    k = Kit(site, "YARD_1_detail", root)
+    k = Kit(site, f"{root.name}_detail", root)
     st, dk = k["M_STEEL"], k["M_STEEL_DARK"]
     for dx in (-0.65, 0.65):
         line(st, [(-9 + dx, -3.1, 0.6), (-9 + dx, -3.1, 1.5), (-9 + dx, -4.1, 1.5)], 0.025)
@@ -146,12 +148,12 @@ def yard_extras(site, root):
     for x in (-17.9, -12.1):
         box(dk, (0.06, 2.3, 2.4), (x, 6, 1.4))
     box(dk, (2.0, 1.6, 1.3), (18, -6, 0.77))
-    for x in (-2.0, 12.5):
-        box(k["M_CONCRETE"], (1.8, 0.25, 0.15), (x + 6.8, 4.0, 0.2), Matrix.Rotation(PI / 2, 4, "Z"))
+    for x, y in slots:
+        box(k["M_CONCRETE"], (1.8, 0.25, 0.15), (x + 6.8, y, 0.2), Matrix.Rotation(PI / 2, 4, "Z"))
     tube(st, (5.5, 11.5, 0.0), (5.5, 11.5, 2.0), 0.05, 6)
     box(st, (1.4, 0.05, 0.5), (5.5, 11.5, 1.75))
     k.done()
-    label(site, "YARD_1_sign", "YARD 1", 0.22, (5.5, 11.47, 1.75), (PI / 2, 0, 0), root)
+    label(site, f"{root.name}_sign", id_text(root.name), 0.22, (5.5, 11.47, 1.75), (PI / 2, 0, 0), root)
 
 
 def truck_extras(site, tid, root):

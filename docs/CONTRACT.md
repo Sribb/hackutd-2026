@@ -43,55 +43,119 @@ Save the source as `blender/field.blend` and the export as `blender/field.glb`.
 
 ## What's in field.glb
 
-`blender/field.glb` is built by a script, so anyone can rebuild it. Run this from the repo root:
+A generator builds the field from a blueprint, so anyone can rebuild it, and a client's own field comes out of the same code. Run this from the repo root:
 
 ```bash
-/Applications/Blender.app/Contents/MacOS/Blender --background --factory-startup --python blender/build_field.py
+/Applications/Blender.app/Contents/MacOS/Blender --background --factory-startup \
+  --python blender/build_field.py -- --blueprint path/to/blueprint.json --out path/to/dir
 ```
 
-It writes `blender/field.blend` and `blender/field.glb`. Change the model in the scripts, not by hand in the `.blend`, or the next rebuild will overwrite your edits:
-- `blender/build_field.py` holds the layout.
+- With no `--blueprint`, it builds `scenario/field.json` into `blender/`. That is the committed `blender/field.glb`, with the IDs in the table above.
+- With `--blueprint` and no `--out`, it writes to `blender/out/<blueprint name>/`, which git ignores.
+- It writes `field.glb`, `field.blend`, and `build_report.json`. A blueprint with errors exits with code 1 and writes only the report, never a glb. A crash or a failed self-check exits with code 2.
+- `--detail full|lite|bare` forces a detail level. `--render-dir DIR` saves Workbench check renders.
+- `python3 blender/test_generator.py` builds the samples in `blender/samples/` and checks every glb. `blender/preview/index.html` opens any `field.glb` in a browser; how to serve it is at the top of the file.
+
+Change the model in the scripts, not by hand in the `.blend`, or the next rebuild will overwrite your edits:
+- `blender/blueprint.py` reads and checks the blueprint.
+- `blender/layout.py` decides where every asset goes.
+- `blender/field_build.py` and `blender/piping.py` build the field and its pipes.
 - `blender/field_parts.py` builds each core asset.
 - `blender/detail_equipment.py` adds gauges, sensors, panels, wellhead trees, labels, and load-outs.
 - `blender/detail_site.py` adds power, light towers, containment, disposal well and yard equipment, and truck detail.
+- `blender/names.py` lists the names every build must contain. Each build checks itself against it before it exports.
 
-**Finding what was clicked:** Every asset is an empty node named with its ID. Static parts are child meshes, like `TANK_3_tank` and `TANK_3_steel`. Walk up from the clicked mesh until a node has `userData.asset_id`. Three.js puts glTF extras in `userData`.
+### The blueprint
+
+A blueprint is `scenario/field.json` with optional positions. The generator reads only these fields. The backend reads the rest.
+
+| Field | What the generator does with it |
+|---|---|
+| `tanks[]`: `id`, `capacity_bbl` | One pad per tank. The painted number is the ID without `TANK_`, and the shell reads `<capacity_bbl> BBL`. |
+| `pumps[]`: `id`, `tank_id`, `valve_id` | Up to 2 pumps per tank, each with its discharge valve. |
+| `valves[]`: `id`, `kind`, `pump_id`, `connects` | A `DISCHARGE` valve sits on its pump, found from the pump's `valve_id`, the valve's `pump_id`, or `connects[0]`. A `CROSSOVER` joins the two tanks in `connects`. |
+| `wells[]`: `id`, `tank_id` | Up to 8 wells per tank, each piped to its tank. |
+| `disposal_wells[]`: `id` | 1 to 4, fed by the trunk line. |
+| `trucks[]`: `id`, `home_id` | Up to 6, parked in the yard. |
+| `yards[]`: `id` | One yard, or none. |
+| `x`, `y` on any asset | Optional position in meters. Assets without one are placed automatically. Valves always sit on their pipe, so their `x` and `y` are ignored with a warning. |
+| `connections` | Checked for unknown IDs, not drawn yet. |
+
+The generator never invents an asset ID: every asset node in the glb is a blueprint ID. These stop the build with exit code 1: an ID that doesn't match `^[A-Z][A-Z0-9_]*$`, a duplicate ID, a reference to an unknown ID (`tank_id`, `valve_id`, `swd_id`, `pump_id`, `connects`, `home_id`, or a `minutes_to` key), a crossover that doesn't join two tanks, a discharge valve that no pump uses, and a size outside 1 to 20 tanks, 0 to 8 wells per tank, 0 to 2 pumps per tank, 4 crossovers per tank, 1 to 4 disposal wells, 0 to 6 trucks, or 0 to 1 yards.
+
+### Coordinates and auto-layout
+
+Positions are plan meters. The lease road runs along x on y = 0, and y points north. Blender uses the same X and Y with Z up, so three.js gets `(x, height, -y)`. Assets without a position are laid out like today's field:
+
+- Pads sit in a row north of the road, 55 m apart and centered on x = 0, and the road grows with the row. With more than 8 tanks they go in two rows. The second row sits south of the road, turned to face it, with the yard in the middle slot.
+- Each pad has its tank 46 m from the road, its pumps between the tank and the road, and the load-out stand and `STOP_<tank>` beside the driveway. Its wells sit behind the tank, in one arc for up to 4 wells and two staggered rows for 5 to 8.
+- Disposal wells sit at the road ends. The first goes at the west end north of the road, the second at the east end, then the south side of the west and east ends.
+- The yard and its trucks sit south of the road at the center.
+- The trunk line runs along the road's north shoulder through every pump's tie-in and dips under each driveway. Tie-ins from south pads cross under the road. A disposal well at a trunk end feeds in as today, and any other disposal well gets a branch.
+- A crossover between neighbors in a row is a straight run between the tanks, like `VALVE_XO_34`. Any other pair runs on a pipe rack behind the tanks, with its valve beside the first tank in `connects`. When the tanks face each other across the road, the rack crosses under it in a gap between pads.
+- A tank with `x` and `y` has its center there, and its pad faces the road. Keep `|y|` at 30 m or more so the pad clears the road.
+
+### The report
+
+`build_report.json` says what was built, or why nothing was:
+
+```json
+{
+  "ok": true, "errors": [], "warnings": [],
+  "blueprint": "scenario/field.json",
+  "counts": { "tanks": 6, "pumps": 6, "discharge_valves": 6, "crossover_valves": 1, "wells": 24, "disposal_wells": 2, "trucks": 2, "yards": 1 },
+  "kinds": { "disposal_well": 2, "pump": 6, "tank": 6, "truck": 2, "valve": 7, "well": 24, "yard": 1 },
+  "placed": { "given": [], "auto": ["PUMP_1", "..."] },
+  "layout": { "rows": 1, "road_m": 450.0, "crossovers": { "VALVE_XO_34": "straight" } },
+  "detail": { "level": "full", "dropped": [] },
+  "triangles": 144230, "glb_mb": 6.0, "nodes": 776, "seconds": 1.9
+}
+```
+
+`counts` comes from the blueprint and `kinds` from the built scene. `placed` lists which assets had positions in the blueprint and which were placed automatically. When `ok` is false, `errors` says what to fix.
+
+**Names in this section:** `<tank>`, `<pump>`, `<valve>`, `<well>`, `<swd>`, `<truck>`, and `<yard>` are blueprint IDs, and `n` is a tank ID without its `TANK_` prefix, so `TANK_3` gives `PAD_3`. For today's field they are the same names as before.
+
+**Finding what was clicked:** Every asset is an empty node named with its ID. Static parts are child meshes, like `TANK_3_tank` and `TANK_3_steel`. Walk up from the clicked mesh until a node has `userData.asset_id`. Three.js puts glTF extras in `userData`, and `userData.kind` is `tank`, `pump`, `valve`, `well`, `disposal_well`, `truck`, or `yard`.
 
 **Moving parts:** Each one has its origin at its pivot, with no rotation in the file. Animate it with one property:
 
 | Node | What it does | How to animate it in three.js |
 |---|---|---|
-| `TANK_n_LEVEL` | Brine level inside the cutaway tank | `scale.y` from 0 (empty) to 1 (full). The file ships at 0.55 for preview. |
-| `PUMP_n_rotor` | Motor fan, so you can see the pump running | Spin `rotation.x` while running, stop when failed |
-| `VALVE_*_wheel` | Handwheel on every valve | Turn `rotation.y` while the valve opens or closes |
-| `WELL_k_beam` | Pumpjack walking beam | Rock `rotation.x` by about ±0.25 rad while the well produces |
-| `WELL_k_crank` | Pumpjack crank and counterweights | Spin `rotation.x` while the well produces, stop when shut in |
-| `TANK_n_gauge` | Float marker on the outside level board | `position.y = 0.3 + 4.3 × level` (0 to 1), in the tank's local space |
-| `TRUCK_n_axle_1` to `_3` | Wheel pairs | Spin `rotation.z` while the truck drives |
-| `SWD_n_gate` | Swinging gate in the fence | `rotation.y` 0 is closed, 1.31 rad is open. It ships open. |
+| `<tank>_LEVEL` | Brine level inside the cutaway tank | `scale.y` from 0 (empty) to 1 (full). The file ships at 0.55 for preview. |
+| `<pump>_rotor` | Motor fan, so you can see the pump running | Spin `rotation.x` while running, stop when failed |
+| `<valve>_wheel` | Handwheel on every valve | Turn `rotation.y` while the valve opens or closes |
+| `<well>_beam` | Pumpjack walking beam | Rock `rotation.x` by about ±0.25 rad while the well produces |
+| `<well>_crank` | Pumpjack crank and counterweights | Spin `rotation.x` while the well produces, stop when shut in |
+| `<tank>_gauge` | Float marker on the outside level board | `position.y = 0.3 + 4.3 × level` (0 to 1), in the tank's local space |
+| `<truck>_axle_1` to `_3` | Wheel pairs | Spin `rotation.z` while the truck drives |
+| `<swd>_gate` | Swinging gate in the fence | `rotation.y` 0 is closed, 1.31 rad is open. It ships open. |
+
+Assets on the south side of the road are turned 180 degrees about Y. Their parts still animate the same way, because each property is in the part's local space.
 
 **Lights:** These meshes use the `M_LAMP` material. Set the emissive color to light them by status:
-- `PUMP_n_light` and `WELL_k_light` are the status lights on each pump panel and well controller.
-- `TRUCK_n_beacon` is the amber beacon for a truck on a job, and `TRUCK_n_headlights` are its head and tail lights.
-- `PAD_n_lamps` and `SWD_n_lamps` are the light tower heads.
+- `<pump>_light` and `<well>_light` are the status lights on each pump panel and well controller.
+- `<truck>_beacon` is the amber beacon for a truck on a job, and `<truck>_headlights` are its head and tail lights.
+- `PAD_n_lamps` and `<swd>_lamps` are the light tower heads.
 
-**Sensors:** `TANK_n_lt` (radar level) and `TANK_n_lshh` (high-level switch) are separate meshes, so the console can highlight the sensor behind an alarm. Clicking them selects the tank.
+**Sensors:** `<tank>_lt` (radar level) and `<tank>_lshh` (high-level switch) are separate meshes, so the console can highlight the sensor behind an alarm. Clicking them selects the tank.
 
 **Pipes:** Every pipe is its own mesh named for what it connects, with `userData.pipe_id`:
 
 | Pipes | Connects |
 |---|---|
-| `PIPE_WELL_k_TANK_n` | A well's flowline to its tank's inlet header |
-| `PIPE_INLET_n`, `PIPE_INLET_n_RISER` | The inlet header and the riser into the top of Tank n |
-| `PIPE_TANK_n_PUMP_n` | Tank n's outlet to its transfer pump |
-| `PIPE_PUMP_n_VALVE_D_n`, `PIPE_VALVE_D_n_TRUNK` | The pump through its discharge valve to the trunk |
-| `PIPE_TRUNK_0` to `PIPE_TRUNK_6` | The trunk line, west to east, between `SWD_1`, each pump's tie-in, and `SWD_2` |
-| `PIPE_XO_34_W`, `PIPE_XO_34_E` | The crossover, on each side of `VALVE_XO_34` |
-| `PIPE_TANK_n_LOADOUT_n` | Tank n's load-out line to the truck hookup |
+| `PIPE_<well>_<tank>` | A well's flowline to its tank's inlet header |
+| `PIPE_INLET_n`, `PIPE_INLET_n_RISER` | The inlet header and the riser into the top of the tank |
+| `PIPE_<tank>_<pump>` | The tank's outlet to a transfer pump |
+| `PIPE_<pump>_<valve>`, `PIPE_<valve>_TRUNK` | The pump through its discharge valve to the trunk. A pump with no valve has `PIPE_<pump>_TRUNK` instead. |
+| `PIPE_TRUNK_0` to `PIPE_TRUNK_k` | The trunk line, west to east, between the end disposal wells and each pump's tie-in. Today that is `PIPE_TRUNK_0` to `PIPE_TRUNK_6` between `SWD_1` and `SWD_2`. |
+| `PIPE_TRUNK_<swd>` | A branch from the trunk to a disposal well that is not at a trunk end |
+| `PIPE_<xo>_W`, `PIPE_<xo>_E` | A crossover on each side of its valve, where `<xo>` is the valve ID without `VALVE_`. `_W` joins the more westerly tank. Today: `PIPE_XO_34_W` and `PIPE_XO_34_E`. |
+| `PIPE_<tank>_LOADOUT_n` | The tank's load-out line to the truck hookup |
 
 **Truck routes:** Empty nodes mark the road, so the console can drive a truck along it:
-- `STOP_YARD_1`, `STOP_TANK_1` to `STOP_TANK_6`, `STOP_SWD_1`, and `STOP_SWD_2` are where a truck parks. `STOP_TANK_n` sits beside `LOADOUT_n`, the stand where a truck hooks up to drain the tank.
-- `ROAD_JCT_*` is where each of those driveways meets the lease road, and the road runs straight along X between `ROAD_END_W` and `ROAD_END_E`.
+- `STOP_<tank>`, `STOP_<swd>`, and `STOP_<yard>` are where a truck parks. `STOP_<tank>` sits beside `LOADOUT_n`, the stand where a truck hooks up to drain the tank.
+- `ROAD_JCT_<tank>`, `ROAD_JCT_<swd>`, and `ROAD_JCT_<yard>` are where each of those driveways meets the lease road. The road runs straight along X on plan y = 0 between `ROAD_END_W` and `ROAD_END_E`.
 - A route is the start stop, its junction, along the road, the target's junction, then the target stop.
 
 **Other names:** None of these are clickable assets:
@@ -101,9 +165,9 @@ It writes `blender/field.blend` and `blender/field.glb`. Change the model in the
 - `CAM_OVERVIEW` is a camera framing the whole field.
 - Names ending in `_label`, `_sign`, or `_tag` are painted numbers and signs.
 
-**Size:** About 200,000 triangles and 8 MB, inside the 300,000 triangle and 30 MB budget.
+**Size:** Today's field is about 144,000 triangles and 6 MB, and the 12-tank sample is about 279,000 triangles and 11.5 MB, inside the 300,000 triangle and 30 MB budget. The generator estimates the size before it builds. If a field has more than 12 tanks, or full detail would pass the budget, it drops small detail: bolts, small labels, tags, signs, and containment and fence posts, then wellhead trim if that is still too much. `detail` in the report says what was dropped. Asset nodes, tank numbers (`<tank>_label`), lights, sensors, moving parts, pipes, and waypoints are never dropped.
 
-**Scale and axes:** The field runs about 450 m along X. In three.js, Y is up and the lease road runs along X near Z = 0, with the tank pads toward negative Z.
+**Scale and axes:** Today's field runs 450 m along X, and the report gives `layout.road_m` for any field. In three.js, Y is up and the lease road runs along X near Z = 0, with the first row of tank pads toward negative Z and a second row, if any, toward positive Z.
 
 ## Status colors
 
@@ -228,3 +292,25 @@ Turns a plan into the steps the 3D scene walks through.
   "radio_script": "Field, this is control. Pump 3 is down..."
 }
 ```
+
+### `POST /api/ingest`
+
+Upload a blueprint as multipart form field `file`. That can be a PNG, JPEG, WebP, GIF, or PDF site plan, a CSV equipment list, or a blueprint JSON. The response is the parsed blueprint plus what a human must confirm before the field is built. Code: `ingest/`. Mount it with `app.include_router(ingest.router.router)`.
+
+```json
+{
+  "ok": true,
+  "errors": [],
+  "review": [
+    { "id": "TANK_3", "label": "Tank 3", "issue": "Missing shutdown_pct. The backend won't forecast it until these are set." },
+    { "id": "WELL_10", "label": "unlabeled pumpjack", "issue": "Claude is only 60% sure about this one. Check it." }
+  ],
+  "counts": { "tanks": 2, "pumps": 1, "valves": 1, "wells": 2, "disposal_wells": 1, "trucks": 0, "yards": 0 },
+  "source": { "file": "plan.png", "read_by": "claude", "model": "claude-opus-5-5" },
+  "blueprint": { "name": "North Lease", "tanks": [{ "id": "TANK_3", "capacity_bbl": 500, "x": -40.0, "y": 0.0 }] }
+}
+```
+
+- `blueprint` has the same shape as `scenario/field.json`, plus `x` and `y` in meters where the plan shows a position. Each asset also carries `_ingest` with its original label, Claude's confidence, and the evidence.
+- `errors` block a build: duplicate IDs, bad IDs, or references to missing IDs. `review` items don't block a build, but the console should show them for a human to confirm or fill in.
+- Error statuses: 400 for a bad file, 413 for a file too large, 415 for an unsupported type, 422 when Claude declines or can't read it, 429 when rate limited, and 502 or 503 for server and API problems. The `detail` says what to do.
