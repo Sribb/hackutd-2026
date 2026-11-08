@@ -232,3 +232,7 @@ With a backend that has `/api/runs`, Hold to approve starts a plan run (`POST /a
 - **Controls:** Pause, Resume and Hold to cancel run.
 - **Updates:** from `/ws` `run` and `proposal` events, plus a 10 s re-read while a run is active.
 - **Elsewhere:** the approved plan's card, the shift log and the handoff follow the run's step statuses.
+- **Lone-worker check-in:**
+  - When a step that sends the rover to a manual valve is confirmed, the run card shows "People out" with a check-in time 20 field minutes ahead, plus Checked in and Back in.
+  - A missed check-in turns red and is logged once. The handoff lists everyone still out.
+  - Why: NIOSH/OSHA counted 9 deaths at production tanks in 2010–2015, and all were workers alone (OSHA 3843).
