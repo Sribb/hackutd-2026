@@ -296,11 +296,12 @@ body:not(.fb-console) .gm-strip, body.two-nights .gm-strip, body.cs-canvas-off .
 .gm-strip.is-red { border-color: rgba(255,90,60,.4); }
 .gm-strip.is-amber { border-color: rgba(224,178,82,.32); }
 .gm-in { display: flex; align-items: stretch; gap: 6px 14px; }
-.gm-tanks { display: flex; gap: 10px; flex: 1 1 auto; min-width: 0; }
+.gm-tanks { display: flex; gap: 10px; flex: 1 1 auto; min-width: 0; overflow-x: auto; scrollbar-width: none; } /* a big network scrolls inside the strip */
+.gm-tanks::-webkit-scrollbar { display: none; }
 .gm-stats { display: flex; gap: 14px; flex: none; align-items: center; padding-left: 14px; border-left: 1px solid rgba(255,255,255,.08); }
 .gm-tank, .gm-stat { all: unset; box-sizing: border-box; display: flex; flex-direction: column; justify-content: center; gap: 3px; min-width: 0; cursor: pointer;
   border-radius: 8px !important; transition: background .3s ease; }
-.gm-tank { flex: 1 1 0; max-width: 104px; }
+.gm-tank { flex: 1 1 0; min-width: 44px; max-width: 104px; }
 .gm-tank:hover, .gm-stat:hover { background: rgba(255,255,255,.05); }
 .gm-tank:focus-visible, .gm-stat:focus-visible { outline: 1px solid rgba(255,255,255,.4); }
 .gm-l { display: flex; justify-content: space-between; gap: 6px; white-space: nowrap; }
@@ -333,10 +334,10 @@ body:not(.fb-console) .gm-strip, body.two-nights .gm-strip, body.cs-canvas-off .
 }
 @container (max-width: 600px) {
   .gm-age { display: none; }
-  .gm-in, .gm-tanks { flex-wrap: wrap; }
-  .gm-in { gap: 4px; }
+  .gm-in { flex-wrap: wrap; gap: 4px; }
+  .gm-tanks { gap: 6px; }
   .gm-stats { flex: 1 1 100%; padding: 4px 0 0; border-left: 0; border-top: 1px solid rgba(255,255,255,.08); justify-content: space-between; }
-  .gm-tank { flex: 1 1 38px; }
+  .gm-tank { flex: 1 1 0; min-width: 34px; }
 }
 
 /* ----------------------------- the alert notification (#154, notify.js) ---- */
