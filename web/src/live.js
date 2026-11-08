@@ -154,9 +154,19 @@ export function reading(id) {
   if (!a) return null;
   const stale = a.stale === true || (typeof a.stale === "number" && a.stale > 0) || !!live.lostSince;
   const out = { ...a, stale };
-  // A stale reading is UNKNOWN, whatever it last said. The last status is kept so the
-  // panel can say "last known ALARM", but it is never shown as the current state.
-  if (stale) { out.last_status = a.status && a.status !== "UNKNOWN" ? a.status : a.last_known; out.status = "UNKNOWN"; }
+  // A stale reading is never shown as OK or WARNING: it becomes UNKNOWN, with the last
+  // status kept so the panel can say "last known ...". The one exception is ALARM, which
+  // stays ALARM (CONTRACT.md: an alarm is never hidden by a lost signal) until a fresh
+  // reading clears it.
+  if (stale) {
+    const last = a.status && a.status !== "UNKNOWN" ? a.status : a.last_known;
+    out.last_status = last;
+    if (last === "ALARM") {
+      const age = staleMinutes(id);
+      out.status = "ALARM";
+      out.reason = `${a.reason ? `${a.reason} ` : ""}No fresh reading${age != null ? ` for ${age < 1 ? "under a minute" : `${age} min`}` : ""}, so it stays in ALARM until a reading clears it.`;
+    } else out.status = "UNKNOWN";
+  }
   return out;
 }
 

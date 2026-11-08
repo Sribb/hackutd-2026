@@ -7,7 +7,7 @@ import "@fontsource/azeret-mono/400.css";
 import "@fontsource/azeret-mono/600.css";
 import "./phone.css";
 import * as liveFeed from "./live.js";
-import { holdButton } from "./fx.js";
+import { holdButton, afterHold, isHolding } from "./fx.js";
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
@@ -99,6 +99,8 @@ function describe(a) {
 }
 
 function draw() {
+  // Never swap a hold-to-confirm button out from under a finger: redraw when the hold ends.
+  if (isHolding()) { afterHold(draw); return; }
   // Active alerts first, newest first; resolved ones (active: false) sink and dim.
   const list = [...alerts.values()].sort((a, b) => (a.active === false) - (b.active === false)
     || (String(b.t) > String(a.t) ? 1 : String(b.t) < String(a.t) ? -1 : 0)).slice(0, 12);
