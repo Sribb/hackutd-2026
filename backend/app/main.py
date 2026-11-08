@@ -152,6 +152,7 @@ async def post_plans(req: PlansRequest = PlansRequest()) -> dict:
     for p in out["plans"]:
         _plans[p["id"]] = p
     out["clock"], out["clock_source"] = n.plant.start_clock, n.source
+    out.setdefault("warnings", [w[:1].upper() + w[1:] for w in dict.fromkeys(n.plant.warnings)])
     return out
 
 
@@ -183,7 +184,7 @@ async def post_approve(plan_id: str, caller: Caller = Depends(require_role(OPERA
         out["recorded_actions"] = len(plan["actions"])
     audit = getattr(app.state, "audit", None)
     if audit is not None:
-        audit.append("plan_approved", source=caller.source(), role=caller.role, plan_id=plan["id"],
+        audit.append("approved", source=caller.source(), role=caller.role, plan_id=plan["id"],
                      proposals=out.get("proposals", []))
     threading.Thread(target=_push_plan, args=(out,), daemon=True).start()
     return out

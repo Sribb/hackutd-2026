@@ -206,3 +206,93 @@ def test_spacetime_module_accepts_every_status_the_state_can_show():
     src = (Path(__file__).resolve().parents[1] / "spacetime" / "src" / "index.ts").read_text(encoding="utf-8")
     line = next(ln for ln in src.splitlines() if ln.startswith("const STATUSES"))
     assert all(f"'{s}'" in line for s in STATUSES), json.dumps(line)
+
+
+# ---------- never falsely safe: no fresh reading means the worst case ----------
+
+def _says(out: dict, text: str) -> bool:
+    return any(text in w for w in out.get("warnings", []))
+
+
+def _end_level(fc: dict, tank: str) -> float:
+    return fc["timeline"][-1]["tanks"][tank]
+
+
+def test_a_pump_with_no_fresh_reading_counts_as_off(live):
+    advance(live, 2)
+    assert not any(a["type"] == "SET_PUMP" and a["asset_id"] == "PUMP_1" for a in now.get(app).actions)
+    live.registry.sim.inject({"asset_id": "PUMP_1", "type": "SENSOR_STALE"})
+    advance(live, 10)
+    n = now.get(app)
+    assert {"type": "SET_PUMP", "asset_id": "PUMP_1", "value": "OFF", "at_min": 0.0} in n.actions
+    assumed = forecast(n.scenario, list(n.actions), with_range=False, plant=n.plant)
+    hopeful = forecast(n.scenario, [a for a in n.actions if a["asset_id"] != "PUMP_1"], with_range=False,
+                       plant=n.plant)
+    assert _end_level(assumed, "TANK_1") > _end_level(hopeful, "TANK_1"), "unknown pump must not drain Tank 1"
+    text = "Pump 1 has no fresh run or flow reading"
+    assert _says(client.post("/api/forecast", json={}).json(), text)
+    assert _says(client.post("/api/plans", json={}).json(), text)
+
+
+def test_a_discharge_valve_with_no_fresh_position_counts_as_closed(live):
+    advance(live, 2)
+    assert now.get(app).plant.positions["VALVE_D_2"] == "OPEN"
+    live.registry.sim.inject({"asset_id": "VALVE_D_2", "type": "SENSOR_STALE"})
+    advance(live, 10)
+    n = now.get(app)
+    assert n.plant.positions["VALVE_D_2"] == "CLOSED"
+    fc = client.post("/api/forecast", json={}).json()
+    assert _says(fc, "Pump 2 discharge valve has no fresh position reading"), fc["warnings"]
+    assert _says(fc, "Pump 2 can't drain its tank"), fc["warnings"]
+
+
+def test_a_crossover_with_no_fresh_position_counts_as_closed_and_says_so(live):
+    advance(live, 2)
+    p = client.post("/api/actions", json={"type": "SET_VALVE", "asset_id": "VALVE_XO_34", "value": "OPEN"}).json()
+    assert client.post(f"/api/actions/{p['id']}/confirm", json={}).json()["status"] == "CONFIRMED"
+    advance(live, 2)
+    assert now.get(app).plant.positions["VALVE_XO_34"] == "OPEN"
+    live.registry.sim.inject({"asset_id": "VALVE_XO_34", "type": "SENSOR_STALE"})
+    advance(live, 10)
+    assert now.get(app).plant.positions["VALVE_XO_34"] == "CLOSED"
+    fc = client.post("/api/forecast", json={}).json()
+    assert _says(fc, "Tank 3 to 4 crossover has no fresh position reading")
+    assert _says(fc, "fills faster than shown"), fc["warnings"]
+
+
+def test_a_reading_that_is_not_open_or_closed_is_unknown():
+    for raw, want in (("OPEN", "OPEN"), ("closed", "CLOSED"), (1, "OPEN"), (0, "CLOSED"), (True, "OPEN"),
+                      ("TRAVEL", None), ("FAULT", None), ("", None), (None, None), (0.5, None)):
+        assert now._position(raw) == want, raw
+
+
+def test_pump_running_falls_back_to_flow_then_unknown():
+    from types import SimpleNamespace
+
+    def fake(values, stale=()):
+        return SimpleNamespace(detector=SimpleNamespace(is_stale=lambda a, s: (a, s) in stale),
+                               value=lambda a, s: values.get((a, s)))
+    pump = {"id": "PUMP_9", "rate_bbl_hr": 150}
+    assert now.pump_running(fake({("PUMP_9", "running"): "RUNNING"}), pump) is True
+    assert now.pump_running(fake({("PUMP_9", "running"): 0, ("PUMP_9", "flow_bbl_hr"): 140}), pump) is False
+    assert now.pump_running(fake({("PUMP_9", "flow_bbl_hr"): 140}), pump) is True
+    assert now.pump_running(fake({("PUMP_9", "flow_bbl_hr"): 5}), pump) is False
+    stale = {("PUMP_9", "running"), ("PUMP_9", "flow_bbl_hr")}
+    assert now.pump_running(fake({("PUMP_9", "running"): 1, ("PUMP_9", "flow_bbl_hr"): 140}, stale), pump) is None
+    assert now.pump_running(fake({}), pump) is None
+
+
+# ---------- audit (CF-10): approving and activating are on the record ----------
+
+def test_approving_and_activating_write_audit_entries(live, monkeypatch):
+    monkeypatch.setenv("OPERATOR_PIN", "4321")
+    pin = {"X-Freeboard-Token": "4321"}
+    advance(live, 5)
+    since = len(client.get("/api/audit").json()["entries"])
+    plan = client.post("/api/plans", json={}).json()["plans"][0]
+    assert client.post(f"/api/plans/{plan['id']}/approve", headers=pin).status_code == 200
+    assert client.post("/api/blueprints/default/activate", headers=pin).status_code == 200
+    new = client.get("/api/audit").json()["entries"][since:]
+    approved = [e for e in new if e["event"] == "approved"]
+    assert approved and approved[0]["plan_id"] == plan["id"] and approved[0]["role"] == "operator"
+    assert any(e["event"] == "blueprint_activated" and e["blueprint_id"] == "default" for e in new)

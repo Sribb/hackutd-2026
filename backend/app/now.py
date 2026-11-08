@@ -12,9 +12,18 @@ are the truth, not the simulator:
 - a well's water rate is its live flow reading, so a confirmed choke or shut-in counts.
   A missing or stale reading keeps the design rate: never assume less water than we know.
 - a pump that reads not running counts as off from its first reading, before its trip
-  alarm is confirmed, so the forecast never shows a tank as safe in that gap.
-- a valve's position is its live reading (live.live_scenario does that).
+  alarm is confirmed, so the forecast never shows a tank as safe in that gap. Its run
+  reading comes first, then its flow (over 10% of its rate means running).
+- a pump with neither a fresh run nor a fresh flow reading counts as off, with a warning:
+  never assume it is still draining its tank.
+- a valve's position is its live reading. A valve with no fresh OPEN or CLOSED reading
+  counts as closed, with a warning. For a discharge valve that is the worst case for its
+  tank. For a crossover, closed gives the earliest shutdown of the two tanks it joins
+  (an open crossover only moves water from the higher tank to the lower), and the warning
+  says the lower tank could fill faster than shown.
 - a tank with a stale level has no level, so the forecast warns instead of calling it safe.
+- these warnings ride in the scenario as `live_assumptions`, so every forecast, plan, and
+  Last Call from this moment carries them (build_plant adds them to its warnings).
 - trucks already on the road (the simulator's jobs) arrive, load, and haul on their real
   timetable with the barrels they can still take, and a plan never sends them twice.
 """
@@ -26,7 +35,7 @@ import threading
 from dataclasses import dataclass
 from typing import Optional
 
-from .forecast import Plant, build_plant, clock_at
+from .forecast import Plant, build_plant, clock_at, nice
 from .scenario import state_payload
 
 _lock = threading.RLock()
@@ -91,13 +100,42 @@ def _truthy(v) -> bool:
     return bool(v)
 
 
+_OPEN = {"OPEN", "OPENED", "1", "TRUE", "ON"}
+_CLOSED = {"CLOSED", "CLOSE", "SHUT", "0", "FALSE", "OFF"}
+
+
+def _position(v) -> Optional[str]:
+    """OPEN, CLOSED, or None for anything else (missing, TRAVEL, FAULT, ...)."""
+    if isinstance(v, bool):
+        return "OPEN" if v else "CLOSED"
+    if v is None:
+        return None
+    s = str(v).strip().upper()
+    return "OPEN" if s in _OPEN else "CLOSED" if s in _CLOSED else None
+
+
+def pump_running(live, pump: dict) -> Optional[bool]:
+    """From a fresh run reading, else a fresh flow reading (over 10% of its rate means
+    running). None when neither is fresh: unknown, never assumed to be running."""
+    running = _fresh(live, pump["id"], "running")
+    if running is not None:
+        return _truthy(running)
+    flow = _fresh(live, pump["id"], "flow_bbl_hr")
+    if flow is None:
+        return None
+    try:
+        return float(flow) > 0.1 * float(pump.get("rate_bbl_hr") or 0.0)
+    except (TypeError, ValueError):
+        return None
+
+
 def under_way(live, scenario: dict) -> list[dict]:
-    """Actions already in motion on the live field, timed from now. Pure: reads only."""
+    """Actions already in motion on the live field, timed from now. Pure: reads only.
+    A pump that reads off, or has no fresh reading at all, runs OFF from now."""
     actions: list[dict] = []
     tripped = {f["asset_id"] for f in scenario.get("failures", [])}
     for p in scenario["field"]["pumps"]:
-        running = _fresh(live, p["id"], "running")
-        if running is not None and not _truthy(running) and p["id"] not in tripped:
+        if p["id"] not in tripped and not pump_running(live, p):
             actions.append({"type": "SET_PUMP", "asset_id": p["id"], "value": "OFF", "at_min": 0.0})
 
     sim = getattr(getattr(live, "registry", None), "sim", None)
@@ -124,8 +162,11 @@ def under_way(live, scenario: dict) -> list[dict]:
 
 
 def live_scenario(live) -> dict:
-    """live.live_scenario() plus wells at their live flow, so a confirmed choke counts."""
+    """live.live_scenario() plus wells at their live flow (so a confirmed choke counts), and
+    the worst case for anything with no fresh reading, each with a warning in
+    `live_assumptions`."""
     sc = live.live_scenario()
+    notes: list[str] = []
     for w in sc["field"]["wells"]:
         flow = _fresh(live, w["id"], "flow_bbl_hr")
         if flow is None:
@@ -134,6 +175,36 @@ def live_scenario(live) -> dict:
             w["water_bbl_hr"] = max(0.0, float(flow))
         except (TypeError, ValueError):
             pass
+
+    tanks = {t["id"] for t in sc["field"]["tanks"]}
+    pumps = {p["id"] for p in sc["field"]["pumps"]}
+    for v in sc["field"]["valves"]:
+        pos = _position(_fresh(live, v["id"], "position"))
+        if pos is not None:
+            v["position"] = pos
+            continue
+        v["position"] = "CLOSED"
+        # By what it connects: not every field file has `kind` (backend/data/scenario.json doesn't).
+        ends = [a for a in (v.get("connects") or []) if isinstance(a, str)]
+        pump = v.get("pump_id") if v.get("pump_id") in pumps else next((a for a in ends if a in pumps), None)
+        joined = [a for a in ends if a in tanks]
+        if pump:
+            notes.append(f"{nice(v['id'])} has no fresh position reading, so the forecast assumes it is closed "
+                         f"and {nice(pump)} can't drain its tank. Check it in the field.")
+        elif len(joined) == 2:
+            notes.append(f"{nice(v['id'])} has no fresh position reading, so the forecast assumes it is closed. "
+                         f"If it is open, the lower of {nice(joined[0])} and {nice(joined[1])} fills faster "
+                         f"than shown.")
+        else:
+            notes.append(f"{nice(v['id'])} has no fresh position reading, so the forecast assumes it is closed.")
+
+    tripped = {f["asset_id"] for f in sc.get("failures", [])}
+    for p in sc["field"]["pumps"]:
+        if p["id"] not in tripped and pump_running(live, p) is None:
+            tank = f" and {nice(p['tank_id'])} is filling" if p.get("tank_id") else ""
+            notes.append(f"{nice(p['id'])} has no fresh run or flow reading, so the forecast assumes it is off"
+                         f"{tank}. Check it in the field.")
+    sc["live_assumptions"] = notes
     return sc
 
 

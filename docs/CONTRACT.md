@@ -213,6 +213,10 @@ Every backend endpoint starts from the same moment (`backend/app/now.py`):
   `POST /api/forecast`, `/api/plans`, and `/api/lastcall` start from the live clock and readings, and count what's
   already under way: confirmed chokes (wells at their live flow), pumps that read off, and trucks on the road on
   their real timetable. A plan never sends a truck that's already out.
+- **No fresh reading means the worst case, said out loud.** A pump with neither a fresh run nor a fresh flow reading
+  counts as off. A valve with no fresh `OPEN`/`CLOSED` reading counts as closed (for a crossover that gives the
+  earliest shutdown of the two tanks; the warning says the lower tank could fill faster). Each assumption is a line
+  in `warnings` on `POST /api/forecast`, `POST /api/plans` (new top-level `warnings`), and Last Call.
 - **Without it** (or `FREEBOARD_ONE_CLOCK=0`): the active scenario, plus the plans approved on it.
 - `GET /api/state`, `POST /api/forecast`, and `POST /api/plans` add `"clock_source": "live" | "static"`. Forecast and
   plans also add `"clock"`, the moment they start from. `GET /api/health` has `clock_source` too.
@@ -222,6 +226,8 @@ Every backend endpoint starts from the same moment (`backend/app/now.py`):
     again returns the proposals still pending instead of new ones. `proposal_errors` lists any step it couldn't propose.
   - static: `"recorded_actions": N`. `/api/state` shows them (`applied_actions`), and later forecasts and plans count them.
 - Activating a blueprint moves the live layer to it (`app.state.live_reload`), so the clock never follows the old field.
+- Audit (`GET /api/audit`): approving a plan logs `"approved"` (`plan_id`, `proposals`), and activating a blueprint
+  logs `"blueprint_activated"` (`blueprint_id`), each with the caller's `source` and `role`.
 - SpacetimeDB follows the live field: every change in status, level (0.1 %), position, or reason is pushed within
   `SPACETIME_MIRROR_S` (1 s). `asset_state.status` may be `UNKNOWN`.
 

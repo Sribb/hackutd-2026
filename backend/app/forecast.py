@@ -86,6 +86,8 @@ def build_plant(scenario: dict) -> Plant:
     levels = {tid: assets.get(tid, {}).get("level_pct") for tid in tanks}
     warnings = [f"{tid} has no level reading, so its future is unknown. Treat it as at risk."
                 for tid, lv in levels.items() if lv is None]
+    # now.py's worst-case assumptions for live readings that aren't fresh (#42)
+    warnings += [str(w) for w in scenario.get("live_assumptions") or []]
     pumps = {p["id"]: p for p in f["pumps"]}
     valves = {v["id"]: v for v in f["valves"]}
     pump_swd = {}

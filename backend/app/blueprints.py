@@ -424,13 +424,25 @@ def get_glb(bid: str):
                         headers={"X-Freeboard-Model": model, "Cache-Control": "no-cache"})
 
 
+def _audit_activation(request: Request, caller: Caller, bid: str) -> None:
+    """One audit entry per activation (CF-10), next to the live layer's own entries."""
+    audit = getattr(getattr(request.app, "state", None), "audit", None)
+    if audit is None:
+        return
+    try:
+        audit.append("blueprint_activated", source=caller.source(), role=caller.role, blueprint_id=bid)
+    except Exception:  # noqa: BLE001 - the audit must never undo an activation that happened
+        log.exception("audit entry for activating %s failed", bid)
+
+
 @router.post("/api/blueprints/{bid}/activate")
-def activate_blueprint(bid: str, caller: Caller = Depends(require_role(OPERATOR))) -> dict:
+def activate_blueprint(bid: str, request: Request, caller: Caller = Depends(require_role(OPERATOR))) -> dict:
     if bid == DEFAULT_ID:
         with _lock:
             if _use and "scenario" in _default:
                 _use(copy.deepcopy(_default["scenario"]))
             _active["id"] = DEFAULT_ID
+        _audit_activation(request, caller, DEFAULT_ID)
         return {"id": DEFAULT_ID, "active": True, "status": "ready", "note": "Back on the default scenario."}
     rec = _get(bid)
     if rec["status"] == "failed":
@@ -439,5 +451,6 @@ def activate_blueprint(bid: str, caller: Caller = Depends(require_role(OPERATOR)
         _activate(rec)
     except Exception as e:  # noqa: BLE001
         raise HTTPException(409, f"{bid} couldn't be loaded: {e}") from None
+    _audit_activation(request, caller, bid)
     with _lock:
         return _public(rec)
