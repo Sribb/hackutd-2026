@@ -172,12 +172,12 @@ def last_call(scenario: dict, forecast_fn: Optional[ForecastFn] = None,
     # A tank with no reading is never counted as safe. The reference sim drops it;
     # a backend forecast handles it itself. Either way it is named in the answer.
     unknown = sorted(t["id"] for t in scenario["tanks"] if t.get("level_pct") is None)
-    if unknown and forecast_fn is None:
-        scenario = _known(scenario, set(unknown))
-    if unknown and not scenario["tanks"]:
+    if unknown and len(unknown) == len(scenario["tanks"]):
         return {"status": "UNKNOWN", "clock": scenario.get("clock"), "text": _unknown_text(unknown),
                 "unknown_tanks": unknown, "options": [], "curve": [], "cliffs": [], "assets": {},
                 "do_nothing": None, "warnings": [_unknown_text(unknown)]}
+    if unknown and forecast_fn is None:
+        scenario = _known(scenario, set(unknown))
 
     full_fc = (lambda acts, scale=1.0: sim.forecast(scenario, acts, horizon_minutes, step_minutes, scale))
     baseline = (forecast_fn or full_fc)([], 1.0)
