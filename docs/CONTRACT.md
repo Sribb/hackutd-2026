@@ -63,6 +63,8 @@ Change the model in the scripts, not by hand in the `.blend`, or the next rebuil
 - `blender/field_parts.py` builds each core asset.
 - `blender/detail_equipment.py` adds gauges, sensors, panels, wellhead trees, labels, and load-outs.
 - `blender/detail_site.py` adds power, light towers, containment, disposal well and yard equipment, and truck detail.
+- `blender/siting.py` finds free spots for anything added after the core layout, and `blender/equipment_parts.py` builds the blueprint's `equipment`.
+- `blender/scenery_parts.py` generates the scenery the CC0 kit lacks: barbed wire fence, yucca, prickly pear, and a cattle guard. `blender/parts_preview.py` builds every generated model in a row to look at.
 - `blender/names.py` lists the names every build must contain. Each build checks itself against it before it exports.
 
 ### The blueprint
@@ -78,6 +80,7 @@ A blueprint follows [BLUEPRINT.md](BLUEPRINT.md), format v1. The generator reads
 | `disposal_wells[]`: `id` | 1 to 4, fed by the trunk line. |
 | `trucks[]`: `id`, `home_id` | Up to 6, parked in the yard. |
 | `yards[]`: `id` | One yard, or none. |
+| `equipment[]`: `id`, `type`, `label`, `tank_id`, `connects` | Up to 30. `SEPARATOR`, `HEATER_TREATER`, `FLARE`, `COMPRESSOR`, `LACT`, and `METER_RUN` get a generated model. Any other type, or none, builds as a labeled placeholder box, so a blueprint never fails over a missing model. Without `x` and `y`, an item with a `tank_id` goes beside that tank's pad, one with `connects` goes near the first asset it names, and the rest go near the middle of the field, always off pads, roads, pipes, and truck routes. |
 | `x`, `y` on any asset | Optional position in meters. Assets without one, or with a null `x` and `y`, are placed automatically. Valves always sit on their pipe, so their `x` and `y` are ignored with a warning. |
 | `connections` | Checked for unknown IDs, not drawn yet. An end may be a connector ID. |
 | `site`, `connectors` | Read for the report: `site` and the connector IDs appear in `build_report.json`. |
@@ -104,7 +107,7 @@ Positions are plan meters. The lease road runs along x on y = 0, and y points no
 {
   "ok": true, "errors": [], "warnings": [],
   "blueprint": "scenario/field.json",
-  "counts": { "tanks": 6, "pumps": 6, "discharge_valves": 6, "crossover_valves": 1, "wells": 24, "disposal_wells": 2, "trucks": 2, "yards": 1 },
+  "counts": { "tanks": 6, "pumps": 6, "discharge_valves": 6, "crossover_valves": 1, "wells": 24, "disposal_wells": 2, "trucks": 2, "yards": 1, "equipment": 0 },
   "kinds": { "disposal_well": 2, "pump": 6, "tank": 6, "truck": 2, "valve": 7, "well": 24, "yard": 1 },
   "placed": { "given": [], "auto": ["PUMP_1", "..."] },
   "layout": { "rows": 1, "road_m": 450.0, "crossovers": { "VALVE_XO_34": "straight" } },
@@ -117,7 +120,9 @@ Positions are plan meters. The lease road runs along x on y = 0, and y points no
 
 **Names in this section:** `<tank>`, `<pump>`, `<valve>`, `<well>`, `<swd>`, `<truck>`, and `<yard>` are blueprint IDs, and `n` is a tank ID without its `TANK_` prefix, so `TANK_3` gives `PAD_3`. For today's field they are the same names as before.
 
-**Finding what was clicked:** Every asset is an empty node named with its ID. Static parts are child meshes, like `TANK_3_tank` and `TANK_3_steel`. Walk up from the clicked mesh until a node has `userData.asset_id`. Three.js puts glTF extras in `userData`, and `userData.kind` is `tank`, `pump`, `valve`, `well`, `disposal_well`, `truck`, or `yard`.
+**Finding what was clicked:** Every asset is an empty node named with its ID. Static parts are child meshes, like `TANK_3_tank` and `TANK_3_steel`. Walk up from the clicked mesh until a node has `userData.asset_id`. Three.js puts glTF extras in `userData`, and `userData.kind` is `tank`, `pump`, `valve`, `well`, `disposal_well`, `truck`, `yard`, or `equipment`.
+
+**Equipment:** each `equipment` item is an asset node named with its ID, with `userData.kind` `equipment`, `userData.equipment_type` (like `SEPARATOR`), `userData.model` (`generic` or `placeholder`), and `userData.label` when the blueprint gives one. A placeholder has its type and ID painted on top as `<id>_label`. Equipment is display and context only: it is not in `/api/field`, so the console can show its ID and type but has nothing to forecast.
 
 **Moving parts:** Each one has its origin at its pivot, with no rotation in the file. Animate it with one property:
 

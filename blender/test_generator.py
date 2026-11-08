@@ -30,6 +30,7 @@ import blueprint  # noqa: E402
 from glb_read import Glb, touch  # noqa: E402
 import layout  # noqa: E402
 import names  # noqa: E402
+import test_parts  # noqa: E402
 
 BLENDER = os.environ.get("BLENDER", "/Applications/Blender.app/Contents/MacOS/Blender")
 SAMPLE1 = os.path.join(ROOT, "scenario", "samples", "sample1_pecos_8tank.json")
@@ -202,8 +203,8 @@ def test_layout():
 
 # ---------- 2. builds ----------
 
-def blender(args):
-    cmd = [BLENDER, "--background", "--factory-startup", "--python", os.path.join(HERE, "build_field.py"), "--"]
+def blender(args, script=os.path.join(HERE, "build_field.py")):
+    cmd = [BLENDER, "--background", "--factory-startup", "--python", script, "--"]
     return subprocess.run(cmd + args, cwd=ROOT, capture_output=True, text=True, timeout=600)
 
 
@@ -328,7 +329,8 @@ def variants(tmp):
         big["wells"] += [{"id": f"WELL_{n}_{j}", "tank_id": f"TANK_{n}"} for j in range(1, 4)]
     big["valves"].append({"id": "VALVE_XO_10_11", "kind": "CROSSOVER", "connects": ["TANK_10", "TANK_11"]})
     out = {}
-    for name, data in (("given", given), ("crossovers", xo), ("max20", big)):
+    for name, data in (("given", given), ("crossovers", xo), ("max20", big),
+                       ("equipment", test_parts.equipment_blueprint(small))):
         out[name] = os.path.join(tmp, f"{name}.json")
         with open(out[name], "w") as f:
             json.dump(data, f, indent=1)
@@ -343,7 +345,8 @@ def test_builds(tmp):
              ("large", os.path.join(HERE, "samples", "large.json"), "full"),
              ("sample1", SAMPLE1, "full"),
              ("sample2_draft", draft, "full")]
-    cases += [(k, v, None) for k, v in variants(tmp).items()]
+    paths = variants(tmp)
+    cases += [(k, v, None) for k, v in paths.items()]
     reports, glbs = {}, {}
     for label, path, level in cases:
         out = HERE if path is None else os.path.join(tmp, label)
@@ -378,6 +381,8 @@ def test_builds(tmp):
     if "crossovers" in reports:
         styles = reports["crossovers"]["layout"]["crossovers"]
         ok(list(styles.values()).count("rack") == 4, f"crossovers: far pairs route on the rack {styles}")
+    if "equipment" in reports:
+        test_parts.check_build(ok, reports["equipment"], glbs["equipment"], load(paths["equipment"]))
     return reports
 
 
@@ -416,10 +421,12 @@ def test_tools_check():
 def main():
     test_format_v1()
     test_validation()
+    test_parts.test_validation(ok, load(os.path.join(HERE, "samples", "small.json")))
     test_layout()
     if "--quick" not in sys.argv:
         with tempfile.TemporaryDirectory() as tmp:
             test_builds(tmp)
+            test_parts.test_preview(ok, blender, tmp)
             test_failure(tmp)
         test_tools_check()
     print(f"\n{'FAIL' if FAILS else 'PASS'}: {len(FAILS)} failed")
