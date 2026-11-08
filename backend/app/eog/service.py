@@ -541,6 +541,16 @@ class Service:
         """Raise Unavailable (503) unless dataset mode is on and has a dataset to show."""
         self._ensure_active()
 
+    def active_id(self) -> Optional[str]:
+        """The id of the dataset in use, or None while there is none: dataset mode is off, or no
+        dataset has been picked yet (any /api/eog view or an activation picks one). Never
+        discovers or loads anything, so the legacy routes (legacy.py) can ask on every request."""
+        root = dsmod.root()
+        with self._lock:
+            if self._active is None or root is None or self._root != root.resolve():
+                return None
+            return self._active
+
     def dataset(self) -> Dataset:
         """The active dataset. Parsing is cached by dataset.load until one of its files changes."""
         ds_id, path = self._ensure_active()
