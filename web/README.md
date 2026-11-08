@@ -124,3 +124,14 @@ It starts the backend on `127.0.0.1:8000` (with `.venv/bin/python` if the repo h
 The Vite server proxies `/api` and `/ws` to the backend (`VITE_API=same-origin`), so the laptop and phones on the same Wi-Fi use one origin, and the backend needs no CORS change. The **Pager** button in the console shows the same QR code: a judge scans it, and their phone becomes the night pager.
 
 If the backend can't start, the console still runs on recorded data and says so. The backend needs Python 3.10 or newer, because `anthropic` 2.x doesn't install on 3.9.
+
+## Two nights (counterfactual replay)
+
+`[ Two nights ]` on the time bar replays tonight twice in about 35 seconds, side by side. The same pump trip and the same water run once with nobody acting and once with the plan.
+
+- **The plan side** uses the approved plan, or else the cheapest plan that keeps every well online. Its "start by" minute comes from Last Call, matched by the plan's asset IDs.
+- **The 3D tanks** show the plan's water. A red x-ray column and waterline show where the water goes if nobody acts. The waterline pulses once it reaches shutdown, and it only shows where the two nights differ.
+- **The two ledgers** count dollars and wells online minute by minute, and log events as the clock passes them: the shutdown and wells lost on one side, each plan step, the Last Call minute and the closest call on the other.
+- **Every final number** is the backend forecast's own `cost.total_usd`. The running counters follow the forecast's events (wells lost, chokes, first truck), scaled so they land on those totals.
+- **Controls:** playback slows near each event. Click the bar to jump, press Space to pause, press Esc to close. Closing restores your what-ifs and time. The end card can approve the plan with hold-to-approve. With reduced motion, it opens on the end.
+- **Code:** everything lives in `src/twonights.js`. main.js passes hooks to `mountTwoNights()` and adds nothing else.

@@ -291,3 +291,47 @@ button { white-space: nowrap; }
 .pager-qr svg { width: 100%; height: auto; display: block; }
 .pager-card p { margin: 0; font-size: 12px; line-height: 1.6; color: var(--ink-2); }
 .pager-card code { font: 12px var(--mono); color: var(--ink); word-break: break-all; }
+
+/* ---- Two nights: counterfactual replay (twonights.js) ---- */
+.twobtn { margin-left: auto; font: 11px var(--mono); letter-spacing: .08em; text-transform: uppercase; padding: 4px 10px;
+          border-color: var(--alarm); color: var(--alarm); }
+.twobtn::before { content: "[ "; } .twobtn::after { content: " ]"; }
+.twobtn:disabled { opacity: .6; }
+#twonights { position: absolute; inset: 56px 14px 118px 14px; z-index: 6; pointer-events: none; font: 12px/1.45 var(--mono); }
+#twonights > * { pointer-events: auto; background: rgba(5,5,5,.88); border: 1px solid var(--line); }
+#twonights .tn-top { position: absolute; top: 0; left: 50%; transform: translateX(-50%); width: min(330px, 34%); padding: 8px 12px; }
+#twonights .tn-col { position: absolute; top: 0; width: min(260px, 27%); max-height: 100%; overflow: auto; padding: 10px 12px; }
+#twonights .tn-col.none { left: 0; } #twonights .tn-col.with { right: 0; }
+#twonights .tn-end { position: absolute; bottom: 0; left: 50%; transform: translateX(-50%); width: min(480px, 44%); padding: 12px 14px; }
+#twonights .tn-head { display: flex; align-items: baseline; gap: 12px; }
+#twonights .tn-clock { font: 400 24px var(--display); font-variant-numeric: tabular-nums; white-space: nowrap; }
+#twonights .tn-head .kicker { white-space: nowrap; }
+#twonights .tn-ctl { margin-left: auto; display: flex; gap: 6px; }
+#twonights .tn-ctl button { font: 11px var(--mono); padding: 3px 9px; }
+#twonights .tn-bar { height: 3px; background: var(--line); margin: 6px 0 6px; cursor: pointer; }
+#twonights .tn-bar i { display: block; height: 100%; background: var(--ink); width: 0; }
+#twonights .tn-col { border-top: 2px solid var(--alarm); }
+#twonights .tn-col.with { border-top-color: var(--good); }
+#twonights .tn-usd { font: 400 34px/1.1 var(--display); font-variant-numeric: tabular-nums; margin: 4px 0 2px; }
+#twonights .tn-col.none .tn-usd { color: var(--alarm); }
+#twonights .tn-col.with .tn-usd { color: var(--good); }
+#twonights .tn-wells { color: var(--ink-2); }
+#twonights .tn-wells.down { color: var(--alarm); }
+#twonights .tn-log { list-style: none; margin: 8px 0 0; padding: 0; }
+#twonights .tn-log li { padding: 3px 0; color: var(--muted); opacity: .28; transition: opacity .4s, color .4s; }
+#twonights .tn-log li.on { opacity: 1; color: var(--ink); }
+#twonights .tn-log li.on.bad { color: var(--alarm); }
+#twonights .tn-log li.on.good { color: var(--good); }
+#twonights .tn-legend { margin-top: 0; color: var(--muted); font-size: 11px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+#twonights .sw { display: inline-block; width: 10px; height: 10px; }
+#twonights .sw.ghost { background: rgba(255,75,31,.45); }
+#twonights .sw.water { background: #3d6b8c; margin-left: 8px; }
+#twonights .tn-verdict { font: 400 24px var(--display); }
+#twonights .tn-verdict b { color: var(--good); font-weight: 400; }
+#twonights .tn-end p { margin: 6px 0 10px; color: var(--ink-2); }
+@media (max-width: 720px) {
+  #twonights { overflow: auto; pointer-events: auto; }
+  #twonights > * { position: static !important; transform: none !important; width: auto !important; margin-bottom: 8px; }
+  #twonights .tn-usd { font-size: 26px; }
+}
+@media (prefers-reduced-motion: reduce) { #twonights .tn-log li { transition: none; } }

@@ -12,6 +12,7 @@ import { mountUpload } from "./upload.js";
 import { mountHands } from "./hands.js";
 import { mountJarvis, jarvisSelectionChanged } from "./jarvis.js";
 import * as liveFeed from "./live.js";
+import { mountTwoNights } from "./twonights.js";
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
@@ -429,7 +430,7 @@ function viewAt(t) {
 
 // ------------------------------------------------------------- what-if ----
 let pending = 0;
-async function setActions(next, note = "") {
+async function setActions(next, note = "", quiet = false) {
   const ticket = ++pending;
   const prev = actions;
   actions = next;
@@ -441,7 +442,7 @@ async function setActions(next, note = "") {
     whatifNote = out.warnings[0];
   } else {
     fc = out;
-    logWhatif(next);
+    if (!quiet) logWhatif(next);
   }
   renderAll();
 }
@@ -1030,6 +1031,25 @@ liveFeed.on("state", () => { if (data) { renderFeed(); render(); } });
 liveFeed.on("feed", () => { if (data) { renderFeed(); render(); } });
 mountUpload();
 mountPager();
+// Two nights (counterfactual replay): all of it lives in twonights.js. These hooks are its only door in.
+mountTwoNights({
+  field: () => field,
+  baseline: () => data.baseline,
+  fc: () => fc,
+  plans: () => (data && data.plans && data.plans.plans) || [],
+  lastCall: () => (data && data.lc) || null,
+  approved: () => (approved ? approved.plan : null),
+  incident: () => data.state.incident,
+  getActions: () => actions.map((a) => ({ ...a })),
+  setActions: (list, quiet) => setActions(list, "", quiet),
+  getTime: () => tMin,
+  setTime: (t) => { tMin = t; $("time").value = String(t); render(); },
+  levelMesh: (id) => (assets.get(id) || {}).levelMesh || null,
+  approve: (plan) => startWalk(plan),
+  focusIncident: () => { const id = incidentTank(); if (id) select(id, true); },
+  log: (text) => { shiftlog.add("whatif", text); renderLog(); },
+  describe, nice, clockAt, usd,
+});
 mountJarvis({
   stage: $("stage"),
   selected: () => selectedId,
