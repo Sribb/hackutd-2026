@@ -7,13 +7,13 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import * as api from "./api.js";
 import { buildPlaceholder } from "./placeholder.js";
 import { decode, holdButton } from "./fx.js";
+import { mountIot3d } from "./iot3d.js";
 import * as shiftlog from "./shiftlog.js";
 import { mountUpload } from "./upload.js";
 import { mountHands } from "./hands.js";
 import { mountJarvis, jarvisSelectionChanged } from "./jarvis.js";
 import * as liveFeed from "./live.js";
 import { mountTwoNights } from "./twonights.js";
-import { mountIot3d } from "./iot3d.js";
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
