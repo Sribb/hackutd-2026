@@ -206,3 +206,29 @@ The cheapest fix usually sends people out to the tank battery at night: truck dr
   - NWS Midland tells drivers in blowing dust to pull off and park.
 - **When it can't check:** offline, or with no answer from NWS, it says "Weather not checked. Look outside before sending anyone." It never says clear.
 - **Rehearsal:** `?wx=storm` runs a labeled DRILL, a made-up Severe Thunderstorm Warning.
+
+## Seismic check (real quakes, `src/seismic.js`)
+
+Every plan ends at a saltwater disposal well. In the Permian, the Texas Railroad Commission responds to induced-earthquake clusters area by area. In the Northern Culberson-Reeves Seismic Response Area it suspended every deep disposal permit (23 wells), effective January 12, 2024. A cluster near the lease is a reason to confirm the SWDs can take water before a plan leans on them.
+
+- **Source:** the USGS event service (no key; it runs in the browser and carries the TexNet catalog). It reads M2+ quakes within 31 mi over the last 30 days, cached for 30 min.
+- **Quiet line:** for example "none within 10 mi; 60 M2+ within 31 mi, last 30 days". Hover for the largest and the nearest.
+- **Flag:** an M3.0+ quake within 10 mi gives "M3.2 4 mi away, 2 days ago. Confirm SWD 1, SWD 2 can take water." It is logged once and goes into the handoff. It is planning context, not an alarm: it never pages anyone and never says the well caused the quake.
+- **When it can't check:** it says "not checked", never "no risk".
+- **Rehearsal:** `?quake=drill` adds a labeled made-up M3.4 nearby.
+
+## Plan runs (#75, `src/runs.js`)
+
+With a backend that has `/api/runs`, Hold to approve starts a plan run (`POST /api/plans/{id}/execute`) instead of the static walk. Every step is a proposal that waits for a person.
+
+- **The run card shows:**
+  - each step's status: waiting, needs you, sending, checking, done, not seen, uncertain, rejected or failed;
+  - when each step is released;
+  - Reject and Hold to confirm on each step that is waiting for you.
+- **A stale plan (409):**
+  - The card says why and offers the backend's current plan, which takes one more hold.
+  - If the re-scored plan has the same commands with new times, it starts right away, because that is what you held to approve.
+- **A paused run** (an effect not seen, a step rejected or failed): the card shows the reason and Jarvis's re-plan, with Hold to run it.
+- **Controls:** Pause, Resume and Hold to cancel run.
+- **Updates:** from `/ws` `run` and `proposal` events, plus a 10 s re-read while a run is active.
+- **Elsewhere:** the approved plan's card, the shift log and the handoff follow the run's step statuses.

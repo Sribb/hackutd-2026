@@ -6,6 +6,7 @@ import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { MeshoptDecoder } from "three/addons/libs/meshopt_decoder.module.js";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { mountSky, DEFAULT_SITE } from "./sky.js";
+import { startSeismic, onQuakes, seismicSummary } from "./seismic.js";
 import { startWeather, onWeather, hazards, exposure, remoteOnly, weather, summary as wxSummary } from "./weather.js";
 import * as api from "./api.js";
 import { phoneToken } from "./auth.js";
@@ -697,7 +698,10 @@ function renderPlans() {
   const robustI = list.findIndex((p) => p.robust === true && p.keeps_running !== false);
   const show = new Set([0, robustI, safe ? safe.i : -1, approved ? list.findIndex((p) => p.id === approved.plan.id) : -1].filter((i) => i >= 0));
   const hidden = allPlans ? 0 : list.length - show.size;
-  box.innerHTML = `<div class="kicker">Cheapest plans</div>${wx}` + list.map((p, i) => {
+  // Seismic check (seismic.js): quakes near the lease, for disposal capacity. Context, not an alarm.
+  const sq = seismicSummary(undefined, (field.disposal_wells || []).map((d) => nice(d.id)));
+  const quake = `<div class="wx ${sq.flag ? "hot" : "quiet"}" title="${esc(sq.detail)}"><span class="wx-k">Seismic check</span> ${esc(sq.line)}${sq.flag ? `<div class="wx-pick">${esc(sq.detail)}</div>` : ""}</div>`;
+  box.innerHTML = `<div class="kicker">Cheapest plans</div>${wx}${quake}` + list.map((p, i) => {
     if (!allPlans && !show.has(i)) return "";
     const dl = deadlineFor(p);
     const hold = p.robust === true ? "Holds even if inflow runs 15% high" : p.robust === false ? "Holds at the forecast inflow, not at +15%" : "";
@@ -1034,6 +1038,8 @@ function handoffText() {
   L.push(`  On screen${actions.length ? ` (with ${actions.map(describe).join(" + ")})` : ""}: ${now ? `${nice(now.asset_id)} reaches shutdown at ${clockAt(now.t_min)}.` : noShutdownText(blindTanks())}`);
 
   L.push(`  Weather: ${wxSummary()}`);
+  const sq = seismicSummary(undefined, (field.disposal_wells || []).map((d) => nice(d.id)));
+  L.push(`  Seismic: ${sq.line}${sq.flag ? ` ${sq.detail}` : ""}`);
   if (approved && hazards().length) {
     const out = exposure(approved.plan, field);
     if (out.length) L.push(`  The approved plan sends ${out.length} out (${out.map((o) => `${o.who}, ${nice(o.asset_id)}`).join("; ")}) in ${hazards().map((h) => h.text).join(", ")}.`);
@@ -1398,6 +1404,14 @@ async function boot() {
     if (data) renderPlans();
   });
   startWeather(field.site || DEFAULT_SITE, { offline: api.OFFLINE });
+  // Seismic check: USGS quakes near the lease, read in the browser. Logged once if flagged.
+  let quakeLogged = false;
+  onQuakes(() => {
+    const sq = seismicSummary(undefined, (field.disposal_wells || []).map((d) => nice(d.id)));
+    if (sq.flag && !quakeLogged) { quakeLogged = true; shiftlog.add("note", `Seismic check: ${sq.line}`); renderLog(); }
+    if (data) renderPlans();
+  });
+  startSeismic(field.site || DEFAULT_SITE, { offline: api.OFFLINE });
   // CF-1 alarm list: all of it lives in alarms.js. These hooks are its only door in.
   mountAlarms($("alarms"), {
     base: api.usingBackend ? api.BASE : "",

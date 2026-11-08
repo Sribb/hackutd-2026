@@ -506,3 +506,4 @@ body.two-nights .sky-ctl { display: none; }
 .sky-ctl:not(:hover):not(:focus-within) .sky-modes,
 .sky-ctl:not(:hover):not(:focus-within) .sky-pick { display: none; }
 .sky-ctl:not(:hover):not(:focus-within) { width: auto; }
+.wx.quiet { padding: 5px 10px; margin-bottom: 6px; }
