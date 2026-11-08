@@ -2,7 +2,7 @@
 
     FREEBOARD_TOKEN        operator token (the console's #k=... link)
     OPERATOR_PIN           also operator: a short PIN a person can type (CF-5's prompt)
-    FREEBOARD_PHONE_TOKEN  phone token (the QR's #k=...): confirm, reject, and ack only
+    FREEBOARD_PHONE_TOKEN  phone token (the QR's #k=...): confirm, reject, ack, shelve, unshelve only
 
 With none of them set, nothing changes: every route is open, as before. With any of them
 set, a write needs the header `X-Freeboard-Token`:

@@ -15,9 +15,16 @@ asset a real connector feeds but has no command path for is FAILED at once, neve
 sent to the simulator. A send whose acknowledgement timed out is UNCERTAIN (it may
 have reached the device) and is never sent again by the backend.
 
-Every proposal, decision, send result, and alert ack goes into `audit` (audit.py, CF-10),
-with who did it: `role` (operator or phone, from the control token, see auth.py) and
-`source` (console, phone, jarvis, blueprint).
+Every proposal, decision, send result, alert ack, shelve, and unshelve goes into `audit`
+(audit.py, CF-10), with who did it: `role` (operator or phone, from the control token, see
+auth.py) and `source` (console, phone, jarvis, blueprint, timer).
+
+Alert priority (CF-7): after each evaluation that raises or resolves an alert, and at least
+every REPRIORITIZE_MIN live minutes while any alert is active, the baseline forecast (no
+actions) is rerun from the live readings and every active alert gets its priority, minutes
+to consequence, and dollars at risk (detect.consequence_of). An alert whose priority, root,
+or consequence moved goes out again over /ws as `{"type": "alert", "event": "updated"}`.
+A shelved alert comes back by itself at `shelved_until_t` (`"event": "unshelved"`).
 
 This layer is additive. GET /api/state and the forecast keep reading the scenario file.
 reload() points it at a newly activated blueprint (live_api installs app.state.live_reload).
@@ -35,14 +42,19 @@ from typing import Optional
 from .audit import AuditLog
 from .connectors import NoCommandPath, Registry
 from .connectors.sim import _fraction, _on
-from .detect import Detector, new_history, now_iso
+from .detect import Detector, consequence_of, new_history, now_iso
 from .fieldmap import COMMANDS, FieldMap, name
+from .forecast import DEFAULT_COSTS, forecast
 from .hub import Hub
 from .notify import Notifier
 
 log = logging.getLogger("freeboard.live")
 
 TICK_S = 1.0
+REPRIORITIZE_MIN = 1.0       # rerun the baseline forecast for priorities at least this often (live min)
+PRIORITY_HORIZON_MIN = 360   # the forecast's own horizon: past it, an alarm is P3
+MOVED_MIN = 2.0              # a consequence that moves this much is broadcast again
+SHELVE_MIN, SHELVE_MAX = 15, 240   # live minutes an alert may be shelved for (CF-7)
 
 
 class ActionError(Exception):
@@ -99,6 +111,9 @@ class LiveField:
         self.paused = False
         self.auto_confirm_sim = os.environ.get("JARVIS_CONFIRM", "1") == "0"
         self.audit = AuditLog(lambda: (self.fmap.clock(self.t), round(self.t, 2)))
+        self.updates: list[tuple[str, dict]] = []    # (event, alert) from the last step, for publish
+        self._prio_t: Optional[float] = None         # live time priorities were last computed
+        self._told: dict[str, tuple] = {}            # alert id -> (priority, consequence asset, time) last broadcast
         self._task: Optional[asyncio.Task] = None
         self.loop: Optional[asyncio.AbstractEventLoop] = None   # the loop start() ran on
         self.ingest(self.registry.read())
@@ -128,24 +143,149 @@ class LiveField:
                 log.exception("live tick failed")
 
     def step(self, dt_min: float) -> list[dict]:
-        """Advance, read, detect. Returns alerts raised or resolved. Synchronous."""
+        """Advance, read, detect, then rank. Returns alerts raised or resolved; alerts that
+        only changed (priority, root, shelf) are left in self.updates for publish. Synchronous."""
         self.registry.advance(dt_min)
         self.t += dt_min
         self.ingest(self.registry.read())
-        return self.detector.evaluate(self.t, self.latest, self.history, self.commanded, self.fmap.clock(self.t))
+        changed = self.detector.evaluate(self.t, self.latest, self.history, self.commanded, self.fmap.clock(self.t))
+        self.updates = self._follow_up(changed)
+        return changed
 
     async def tick(self, dt_min: float) -> list[dict]:
         changed = self.step(dt_min)
-        await self.publish(changed)
+        updates, self.updates = self.updates, []
+        await self.publish(changed, updates)
         return changed
 
-    async def publish(self, changed: list[dict]) -> None:
+    async def publish(self, changed: list[dict], updates: list[tuple[str, dict]] = ()) -> None:
         await self.hub.broadcast("state", {"state": self.state()})
         for alert in changed:
-            await self.hub.broadcast("alert", {"alert": alert})
+            await self.hub.broadcast("alert", {"alert": alert, "event": "raised" if alert["active"] else "resolved"})
             self.notifier.push(alert)
             if alert["active"] and alert["severity"] == "ALARM":
                 await self.focus(alert["asset_id"], alert["message"], source="detector")
+        for event, alert in updates:
+            await self.hub.broadcast("alert", {"alert": alert, "event": event})
+            if event == "unshelved":
+                self.notifier.push(alert)   # the shelf ran out and the alarm still holds: it is back
+
+    # ---------- priority, root cause, and shelving (CF-7) ----------
+    def _follow_up(self, changed: list[dict]) -> list[tuple[str, dict]]:
+        """After an evaluation: end the shelf of any alert that resolved, link roots that
+        appeared, unshelve what ran out, and rerank. Returns (event, alert) to broadcast."""
+        for a in changed:
+            if not a["active"] and a.get("shelved_until_t") is not None:
+                self._end_shelf(a, "resolved", source="detector")
+        out: dict[str, tuple[str, dict]] = {}
+        for a in self.detector.link_roots():
+            out[a["id"]] = ("updated", a)
+        for a in self.prioritize(force=bool(changed) or bool(out)):
+            out.setdefault(a["id"], ("updated", a))
+        for a in self._expire_shelves():
+            out[a["id"]] = ("unshelved", a)
+        raised = {a["id"] for a in changed}
+        return [u for aid, u in out.items() if aid not in raised]
+
+    def prioritize(self, force: bool = False) -> list[dict]:
+        """Rank every active alert from the baseline forecast of the live field. Runs when
+        forced, or when REPRIORITIZE_MIN live minutes have passed. Returns the alerts whose
+        priority, root, or consequence moved enough to tell the screens again."""
+        active = list(self.detector.active.values())
+        if not active:
+            self._prio_t = None
+            return []
+        if not force and self._prio_t is not None and self.t - self._prio_t < REPRIORITIZE_MIN - 1e-9:
+            return []
+        self._prio_t = self.t
+        sc = self.live_scenario()
+        try:
+            fc = forecast(sc, [], horizon=PRIORITY_HORIZON_MIN, step=60)
+        except Exception:  # noqa: BLE001 - a forecast problem must never stop detection
+            log.exception("priority forecast failed")
+            return []
+        shutdowns: dict[str, dict] = {}
+        for ev in fc["events"]:
+            if ev["type"] == "SHUTDOWN_LEVEL":
+                shutdowns.setdefault(ev["asset_id"], ev)
+        costs = {**DEFAULT_COSTS, **(sc.get("field", {}).get("costs") or {})}
+        restart = float(costs.get("well_restart_usd") or 0)
+        moved = []
+        self._told = {k: v for k, v in self._told.items() if k in {a["id"] for a in active}}
+        for a in active:
+            new = consequence_of(self.fmap, a, shutdowns, PRIORITY_HORIZON_MIN, restart,
+                                 now_t=self.t, start_clock=sc["start_clock"])
+            at, told = new["consequence_t"], self._told.get(a["id"])
+            # Broadcast again only when the priority or the consequence changed, or its time
+            # moved MOVED_MIN from what the screens were last told. A countdown is not news,
+            # and neither is a shutdown that already happened being "now" again.
+            moved_time = at is not None and told is not None and told[2] is not None and \
+                abs(at - told[2]) >= MOVED_MIN and not (told[2] <= self.t and at <= self.t + 1.0)
+            if (told is None or told[0] != new["priority"] or told[1] != new["consequence_asset_id"]
+                    or (told[2] is None) != (at is None) or moved_time):
+                self._told[a["id"]] = (new["priority"], new["consequence_asset_id"], at)
+                moved.append(a)
+            a.update(new)
+        return moved
+
+    def _alert(self, alert_id: str) -> dict:
+        for a in self.detector.alerts:
+            if a["id"] == alert_id:
+                return a
+        raise ActionError(404, f"No alert {alert_id}.")
+
+    async def shelve(self, alert_id: str, minutes: float, reason: str, by: str = "",
+                     role: Optional[str] = None, source: Optional[str] = None) -> dict:
+        """Shelve an active alert for SHELVE_MIN to SHELVE_MAX live minutes, with a reason.
+        It stays active (and keeps its priority current); it comes back at the end by
+        itself. Shelving again replaces the timer. Logged as `shelved`."""
+        a = self._alert(alert_id)
+        why = (reason or "").strip()
+        if not why:
+            raise ActionError(422, "A reason is required to shelve an alert.")
+        try:
+            minutes = float(minutes)
+        except (TypeError, ValueError):
+            minutes = -1.0
+        if not SHELVE_MIN <= minutes <= SHELVE_MAX:
+            raise ActionError(422, f"Shelve for {SHELVE_MIN} to {SHELVE_MAX} minutes.")
+        if not a["active"]:
+            raise ActionError(409, f"Alert {alert_id} has already cleared, so there is nothing to shelve.")
+        until = self.t + minutes
+        a.update(shelved_until_t=round(until, 2), shelved_until=self.fmap.clock_text(until), shelve_reason=why,
+                 shelved_by=by or None, shelved_t=now_iso())
+        self.audit.append("shelved", source=source or by or None, role=role, by=by or None,
+                          asset_id=a["asset_id"], alert_id=a["id"], kind=a["kind"], priority=a.get("priority"),
+                          minutes=minutes, reason=why, shelved_until=a["shelved_until"],
+                          shelved_until_t=a["shelved_until_t"])
+        await self.hub.broadcast("alert", {"alert": a, "event": "shelved"})
+        return a
+
+    async def unshelve(self, alert_id: str, by: str = "", role: Optional[str] = None,
+                       source: Optional[str] = None) -> dict:
+        """Bring a shelved alert back before its timer ends. 409 if it isn't shelved."""
+        a = self._alert(alert_id)
+        if a.get("shelved_until_t") is None:
+            raise ActionError(409, f"Alert {alert_id} is not shelved.")
+        self._end_shelf(a, "by hand", source=source or by or None, role=role, by=by or None)
+        await self.hub.broadcast("alert", {"alert": a, "event": "unshelved"})
+        return a
+
+    def _end_shelf(self, a: dict, why: str, source: Optional[str], role: Optional[str] = None,
+                   by: Optional[str] = None) -> dict:
+        was = {"shelve_reason": a.get("shelve_reason"), "shelved_until": a.get("shelved_until")}
+        a.update(shelved_until=None, shelved_until_t=None, shelve_reason=None, shelved_by=None, shelved_t=None)
+        self.audit.append("unshelved", source=source, role=role, by=by, asset_id=a["asset_id"], alert_id=a["id"],
+                          kind=a["kind"], priority=a.get("priority"), why=why, **was)
+        return a
+
+    def _expire_shelves(self) -> list[dict]:
+        out = []
+        for a in list(self.detector.active.values()):
+            until = a.get("shelved_until_t")
+            if until is not None and self.t >= until - 1e-9:
+                out.append(self._end_shelf(a, "expired", source="timer"))
+        return out
 
     # ---------- following the active blueprint ----------
     def reload(self, scenario: dict, raw: Optional[dict] = None) -> dict:
@@ -180,7 +320,12 @@ class LiveField:
             alert.update(active=False, resolved_t=now_iso(), resolved_reason=(
                 f"{name(aid)} is not in the activated blueprint." if aid not in present else
                 "The field was reloaded from a new blueprint. It is checked again from fresh readings."))
+            if alert.get("shelved_until_t") is not None:
+                self._end_shelf(alert, "reloaded", source="blueprint")
             resolved.append(alert)
+        self._prio_t = None
+        self._told = {}
+        self.updates = []
 
         closed = []
         for p in self.proposals.values():
@@ -219,7 +364,7 @@ class LiveField:
         for p in changes.get("closed_proposals", []):
             await self.hub.broadcast("proposal", {"proposal": p})
         for alert in changes.get("resolved_alerts", []):
-            await self.hub.broadcast("alert", {"alert": alert})
+            await self.hub.broadcast("alert", {"alert": alert, "event": "resolved"})
         await self.hub.broadcast("state", {"state": self.state()})
 
     async def reload_and_publish(self, scenario: dict, raw: Optional[dict] = None) -> dict:
@@ -461,7 +606,7 @@ class LiveField:
                     a.update(acked=True, acked_t=now_iso(), acked_by=by or None)
                     self.audit.append("acked", source=source or by or None, role=role, by=by or None,
                                       asset_id=a["asset_id"], alert_id=a["id"], kind=a["kind"],
-                                      severity=a["severity"], message=a["message"])
+                                      severity=a["severity"], message=a["message"], priority=a.get("priority"))
                 return a
         return None
 
