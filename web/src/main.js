@@ -501,7 +501,7 @@ function minutesSinceData() {
   const now = ((+m[1] % 12) + (m[3] === "PM" ? 12 : 0)) * 60 + +m[2];
   const raw = (((now - (h0 * 60 + m0)) % 1440) + 1440) % 1440;
   let d;
-  if (since.key !== key || since.d === 0) d = raw > 720 ? 0 : raw; // a clock behind the data (just re-read): nothing to subtract
+  if (since.key !== key) d = raw > 720 ? 0 : raw; // a clock behind the data (just re-read): nothing to subtract
   else d = Math.max(0, raw + 1440 * Math.round((since.d - raw) / 1440));
   since = { key, d };
   return d;

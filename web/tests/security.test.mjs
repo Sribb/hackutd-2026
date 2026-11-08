@@ -19,7 +19,7 @@ const box = { hidden: true, innerHTML: "", querySelector: () => ({}) };
 assert.equal(S.isWrite({ kind: "auth_failed", method: "POST", path: "/api/actions/act_1/confirm" }), true);
 assert.equal(S.isWrite({ kind: "auth_failed", method: "GET", path: "/api/actions" }), false);
 assert.equal(S.isWrite({ kind: "cross_site", method: "POST", path: "/api/anything" }), true);
-assert.equal(S.isWrite({ kind: "ws_auth_failed", method: "", path: "/ws" }), true);
+assert.equal(S.isAttempt({ kind: "ws_auth_failed", method: "", path: "/ws" }), false, "a /ws reconnect with an old token is not a write attempt");
 
 // Burst: deduped counts add up. 3 refused writes in 10 min.
 const a = S.assess([
@@ -79,4 +79,42 @@ answer = { status: 200, body: { events: [{ id: 9, kind: "auth_failed", method: "
 S6.mountSecurity(box, "http://b");
 await new Promise((r) => setTimeout(r, 10));
 assert.doesNotMatch(box.innerHTML, /<img/);
+// Write routes: anything but GET/HEAD under /api/ (approve, activate, ack...).
+assert.equal(S.isWrite({ kind: "auth_failed", method: "POST", path: "/api/blueprints/b1/activate" }), true);
+assert.equal(S.isWrite({ kind: "auth_failed", method: "POST", path: "/api/plans/p1/approve" }), true);
+// Uploads too big and rate limits don't count toward a burst.
+const up = S.assess([1, 2, 3].map((i) => ({ id: i, kind: "upload_rejected", method: "POST", path: "/api/ingest", count: 1, first_t: iso(1), last_t: iso(1) })));
+assert.equal(up.burst, false, "three oversize uploads are not an attack");
+
+// Backend restart: ids start at 1 again. The next GET replaces what we had.
+const S7 = await import(`${SRC}/security.js?restart`);
+const box7 = { hidden: true, innerHTML: "", querySelector: () => ({}) };
+let sends = 0;
+const ev = (id, minAgo, count, path) => ({ id, kind: "auth_failed", method: "POST", path, client: "10.0.0.x", count, first_t: iso(minAgo + 1), last_t: iso(minAgo) });
+answer = { status: 200, body: { events: [ev(1, 120, 5, "/api/old"), ev(2, 119, 5, "/api/old")] } };
+S7.mountSecurity(box7, "http://b", () => sends++);
+await new Promise((r) => setTimeout(r, 10));
+assert.equal(box7.hidden, true, "two-hour-old events: no card");
+answer = { status: 200, body: { events: [ev(1, 1, 1, "/api/actions/a/confirm"), ev(2, 1, 1, "/api/actions/b/confirm"), ev(3, 0, 1, "/api/runs/r/cancel")] } };
+try { sessionStorage.clear(); } catch { /* no Web Storage in this Node */ } // earlier cases logged a burst this "session"
+const S7b = await import(`${SRC}/security.js?restart2`); // a fresh module reads the restarted log the same way a poll does
+S7b.mountSecurity(box7, "http://b", () => sends++);
+await new Promise((r) => setTimeout(r, 10));
+assert.match(box7.innerHTML, /3 refused writes in 10 min/, "the restarted log's events are not hidden behind old ids");
+assert.equal(sends, 1, "one shift-log line for the burst");
+
+// A read that fails after a good one: "Not checked since", never "none".
+const S8 = await import(`${SRC}/security.js?stale`);
+answer = { status: 200, body: { events: [] } };
+let tick = null;
+const realSI = globalThis.setInterval;
+globalThis.setInterval = (fn, ms) => { if (ms === 30000) tick = fn; return 0; };
+S8.mountSecurity(box, "http://b");
+await new Promise((r) => setTimeout(r, 10));
+assert.match(S8.securityLines()[0], /No refused requests/);
+answer = { status: 500, body: {} };
+await tick();
+assert.match(S8.securityLines()[0], /Not checked since/, "a backend that stopped answering is not 'no refused requests'");
+globalThis.setInterval = realSI;
+
 console.log("security.js: all checks pass");

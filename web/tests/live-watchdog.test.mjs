@@ -77,6 +77,20 @@ s3.send('{"type":"ping"}'); // pong seen
 pong = false;
 for (let i = 0; i < 4; i++) { now += 2000; watchdog(); }
 assert.ok(s3.closed && L.live.lostSince, "a socket opened during a pause still gets the half-open check");
+// (F) The server's tick died (pongs only, not paused). Replaced once; the new socket gets its
+// one state on connect and then nothing: the feed is lost, not "live" forever.
+const r3 = timers.at(-1); r3.fn();
+const s4 = socks.at(-1); s4.onopen();
+pong = true; st.paused = false;
+for (let i = 0; i < 4; i++) { tick(s4); now += 1000; }
+for (let i = 0; i < 4; i++) { now += 2000; watchdog(); }
+assert.ok(s4.closed, "replaced for pongs without state");
+timers.at(-1).fn();
+const s5 = socks.at(-1); s5.onopen();
+tick(s5); // the state every socket gets on connect
+for (let i = 0; i < 4; i++) { now += 2000; watchdog(); }
+assert.ok(L.live.lostSince, "still no ticking after the replacement: the feed is lost");
+assert.equal(s5.closed, undefined, "and not replaced again in a loop");
 globalThis.setInterval = realSI;
 console.log("live.js watchdog: all checks pass");
 process.exit(0);

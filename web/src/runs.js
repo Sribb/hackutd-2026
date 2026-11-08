@@ -83,11 +83,10 @@ export async function runsSupported() {
     supported = r.ok ? true : r.status === 404 ? false : null;
     if (r.ok) {
       const j = await r.json();
+      // People out are never dropped because the server forgot their run (it keeps runs in
+      // memory; a restart empties the list): only a person pressing "Back in" ends a clock.
       const known = new Set((j.runs || []).map(runKey));
-      let pruned = false;
-      for (const [k, c] of crew) if (!c.run || !known.has(c.run)) { crew.delete(k); pruned = true; }
       for (const k of [...returned]) if (!known.has(k.slice(0, k.lastIndexOf(":")))) returned.delete(k);
-      if (pruned) { saveCrew(); draw(); }
       const active = (j.runs || []).filter((x) => ACTIVE.has(x.status) && x.started !== false);
       if (active.length) setRun(active[active.length - 1]);
     }
@@ -385,8 +384,8 @@ export async function execute(plan, opts = {}) {
 }
 
 export function currentRun() { return run; }
-// Synchronous: true once GET /api/runs has answered (approving then re-scores on the live state).
-export const runsOn = () => supported === true;
+// Synchronous: a backend that hasn't said "no plan runs" (404). Approving then re-scores on the live state.
+export const runsOn = () => !!base && supported !== false;
 // For the handoff: who is still out, and when they last checked in.
 export function peopleOut() {
   const t = nowT();

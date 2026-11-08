@@ -17,6 +17,7 @@ let authed = false, authTimer = 0;
 let sentAuth = "", rejected = "";
 let lastMsgAt = 0, ticks = 0;  // a socket that ticks state every second and then goes quiet is lost
 let lastStateAt = 0, pongSeen = false; // per socket: the last state message, and whether it answers ping
+let stateStopped = false; // the last socket was replaced for pongs without state: the next must tick
 const subs = new Map(); // type -> Set(fn)
 
 export const live = {
@@ -86,7 +87,9 @@ async function poll() {
     if (r.ok) {
       mergeState(await r.json());
       if (!live.connectors.length) await healthConnectors();
-      markLost(false); // the REST poll works even while the socket is down
+      // The REST poll works even while the socket is down. Not when the server's tick has
+      // stopped: the poll then reads the same frozen field, which is no sign of life.
+      if (!(stateStopped && live.connected && !live.paused)) markLost(false);
       emit("state", live);
     } else if (r.status === 404) {
       return; // this backend has no live layer yet; stay quiet and don't mark anything
@@ -154,6 +157,7 @@ function connect() {
       mergeState(msg.state || msg);
       ticks++;
       lastStateAt = Date.now();
+      if (ticks >= 2) stateStopped = false;
       markLost(false);
       emit("state", live);
     } else {
@@ -166,8 +170,12 @@ function connect() {
     // A token the server refused (1008 after our auth message): reconnect read-only rather
     // than knock with it forever. A new token (the PIN prompt) is tried again.
     // A lockout ("Too many wrong PINs") refuses even the right token for a while: not a verdict on it.
-    if (ev && ev.code === 1008 && sentAuth && !/too many/i.test(ev.reason || "")) rejected = sentAuth;
-    else if (!heard && !queryToken && token() && [1008, 4001, 4003, 4401, 4403].includes(ev && ev.code)) queryToken = true;
+    const lockout = /too many/i.test((ev && ev.reason) || "");
+    if (ev && ev.code === 1008 && sentAuth && !lockout) rejected = sentAuth;
+    // A ?token= the server refused (a backend without first-message auth): same verdict.
+    // Reconnect read-only instead of knocking every 15 s (each knock is a security-log event).
+    else if (ev && ev.code === 1008 && queryToken && token() && !lockout) { rejected = token(); queryToken = false; }
+    else if (!heard && !queryToken && token() && token() !== rejected && [1008, 4001, 4003, 4401, 4403].includes(ev && ev.code)) queryToken = true;
     sentAuth = "";
     const was = live.connected;
     live.connected = false;
@@ -203,7 +211,11 @@ setInterval(() => {
   const now = Date.now();
   const silent = (ticks >= 3 || pongSeen) && now - lastMsgAt > 6000;
   const noState = !silent && !live.paused && ticks >= 3 && now - lastStateAt > 6000;
+  // Replaced once for that, and the new socket still sends one state and then nothing: the
+  // server's tick has stopped. Replacing again wouldn't help; the feed is lost.
+  if (!silent && !noState && stateStopped && !live.paused && ticks < 2 && now - lastStateAt > 6000) { markLost(true); return; }
   if (!silent && !noState) return;
+  stateStopped = noState;
   const dead = ws;
   dead.onopen = dead.onmessage = dead.onclose = dead.onerror = null;
   try { dead.close(); } catch { /* gone */ }
