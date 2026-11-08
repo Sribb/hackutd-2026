@@ -22,6 +22,14 @@ are the truth, not the simulator:
   (an open crossover only moves water from the higher tank to the lower), and the warning
   says the lower tank could fill faster than shown.
 - a tank with a stale level has no level, so the forecast warns instead of calling it safe.
+- a field connector's own quality counts at once (#126). When a connector reports a
+  signal as anything but good (bad, uncertain, fault, out_of_range, comm_lost, stale,
+  null), that signal has no fresh reading here, even if its last good value is still
+  inside stale_after_min: a tank has no level, a valve counts as closed and a pump as off
+  (with the warnings above), and a well keeps its design rate. /api/state shows the asset
+  UNKNOWN, with a reason naming the connector and the quality.
+- a pump with neither a fresh run nor a fresh flow reading shows UNKNOWN in /api/state,
+  never OK.
 - these warnings ride in the scenario as `live_assumptions`, so every forecast, plan, and
   Last Call from this moment carries them (build_plant adds them to its warnings).
 - trucks already on the road (the simulator's jobs) arrive, load, and haul on their real
@@ -87,9 +95,41 @@ def live_of(app) -> Optional[object]:
     return live if live is not None and one_clock() else None
 
 
-def _fresh(live, asset_id: str, signal: str):
-    """The latest reading, or None when there is none or it's stale."""
+GOOD = "good"
+
+
+def bad_quality(live) -> dict[tuple, dict]:
+    """{(asset_id, signal): {"connector", "quality", "detail"}} for every signal a field
+    connector reports as not good right now (its `quality` dict, #126). Connectors without
+    a quality dict (the simulator, the webhook) report nothing here."""
+    out: dict[tuple, dict] = {}
+    for c in getattr(getattr(live, "registry", None), "connectors", None) or []:
+        q = getattr(c, "quality", None)
+        if not isinstance(q, dict) or not q:
+            continue
+        items = None
+        for _ in range(3):   # the connector's I/O thread may be adding a key right now
+            try:
+                items = list(q.items())
+                break
+            except RuntimeError:
+                continue
+        for key, entry in items or []:
+            quality = entry.get("quality") if isinstance(entry, dict) else entry
+            if quality == GOOD:
+                continue
+            detail = str(entry.get("detail") or "") if isinstance(entry, dict) else ""
+            out[tuple(key)] = {"connector": str(getattr(c, "id", "?")), "quality": str(quality or "unknown"),
+                               "detail": detail}
+    return out
+
+
+def _fresh(live, asset_id: str, signal: str, bad: Optional[dict] = None):
+    """The latest reading, or None when there is none, it's stale, or its connector says
+    its quality isn't good (`bad`: bad_quality(live), worked out here when not given)."""
     if live.detector.is_stale(asset_id, signal):
+        return None
+    if (asset_id, signal) in (bad_quality(live) if bad is None else bad):
         return None
     return live.value(asset_id, signal)
 
@@ -167,6 +207,11 @@ def live_scenario(live) -> dict:
     `live_assumptions`."""
     sc = live.live_scenario()
     notes: list[str] = []
+    levels = sc.get("initial_levels_pct")
+    if isinstance(levels, dict):
+        for (aid, sig) in bad_quality(live):
+            if sig == "level_pct" and aid in levels:
+                levels[aid] = None   # a level its connector doesn't vouch for is no level
     for w in sc["field"]["wells"]:
         flow = _fresh(live, w["id"], "flow_bbl_hr")
         if flow is None:
@@ -277,9 +322,50 @@ def state(app) -> dict:
                 entry["last_level_pct"] = la["level_pct"]
             else:
                 entry["level_pct"] = la["level_pct"]
+    _unknown_pumps(live, sc, st)
+    _mark_quality(live, st)
     st["clock_source"] = "live"
     st["t"] = lv.get("t")
     return st
+
+
+def _unknown_pumps(live, sc: dict, st: dict) -> None:
+    """A pump with neither a fresh run nor a fresh flow reading is UNKNOWN, never OK
+    (live.py's own pump status can say OK when only another signal is fresh). A pump in
+    ALARM stays in ALARM."""
+    bad = bad_quality(live)
+    for p in sc["field"]["pumps"]:
+        entry = st["assets"].get(p["id"])
+        if entry is None or entry.get("status") == "ALARM":
+            continue
+        if _fresh(live, p["id"], "running", bad) is None and _fresh(live, p["id"], "flow_bbl_hr", bad) is None:
+            entry["status"] = "UNKNOWN"
+            entry["stale"] = True
+            if not entry.get("reason"):
+                entry["reason"] = "No fresh run or flow reading. Treat as unknown, not safe."
+
+
+def _mark_quality(live, st: dict) -> None:
+    """Every asset with a signal its connector reports as not good shows UNKNOWN at once
+    (ALARM stays ALARM), with a reason naming the connector and the quality. A level or
+    position it doesn't vouch for is not shown as the reading."""
+    for (aid, sig), q in sorted(bad_quality(live).items()):
+        entry = st["assets"].get(aid)
+        if entry is None:
+            continue
+        if entry.get("status") != "ALARM":
+            entry["status"] = "UNKNOWN"
+        entry["stale"] = True
+        entry.setdefault("quality", {})[sig] = q["quality"]
+        if sig == "level_pct" and entry.get("level_pct") is not None:
+            entry["last_level_pct"] = entry["level_pct"]
+            entry["level_pct"] = None
+        elif sig == "position":
+            entry["position"] = None
+        detail = f" ({q['detail']})" if q["detail"] else ""
+        note = f"{q['connector']} reports {sig} as {q['quality']}{detail}. Treat as unknown, not safe."
+        old = entry.get("reason")
+        entry["reason"] = f"{old} {note}" if old and note not in old else note
 
 
 def _overlay(st: dict, n: Now) -> None:

@@ -229,7 +229,8 @@ Every backend endpoint starts from the same moment (`backend/app/now.py`):
 - Audit (`GET /api/audit`): approving a plan logs `"approved"` (`plan_id`, `proposals`), and activating a blueprint
   logs `"blueprint_activated"` (`blueprint_id`), each with the caller's `source` and `role`.
 - SpacetimeDB follows the live field: every change in status, level (0.1 %), position, or reason is pushed within
-  `SPACETIME_MIRROR_S` (1 s). `asset_state.status` may be `UNKNOWN`.
+  `SPACETIME_MIRROR_S` (1 s). `asset_state.status` may be `UNKNOWN`. With #126 the mirror also sends alerts,
+  proposals, and connector status in one `apply_batch` call (see SpacetimeDB v2 below).
 
 ### `GET /api/history` (CF-14)
 
@@ -610,7 +611,10 @@ Clients may send `{"type": "ping"}` (answered with `pong`) and `{"type": "ui", "
 | `OPERATOR_PIN` | unset | Operator PIN, same role as `FREEBOARD_TOKEN` (CF-15). Never commit it. |
 | `FREEBOARD_PHONE_TOKEN` | unset | Phone control token: confirm, reject, and ack only. |
 | `FREEBOARD_AUDIT_FILE` | unset | Also append the audit log here as JSON lines (relative = under `backend/data/`). |
-| `*_env` in connector config | | Names the variable holding a connector secret, e.g. `"token_env": "HOOK_TOKEN"`. |
+| `*_env` in connector config | | Names the variable holding a connector secret, e.g. `"token_env": "HOOK_TOKEN"`. For the #126 connectors (opcua, sparkplug) the name must start with `FREEBOARD_CONN_`. |
+| `FREEBOARD_SECURITY_DEDUPE_S` | `60` | Seconds in which repeats of one security event add to its count (#126). |
+| `SPACETIME_MIRROR_S` | `1` | Seconds between SpacetimeDB mirror batches. |
+| `SPACETIME_RESYNC_S` | `60` | Seconds between full SpacetimeDB batches (#126). |
 
 ### `POST /api/ingest`
 
@@ -682,3 +686,158 @@ The response, and **`GET /api/blueprints/{id}`**, is one record:
 **`GET /api/blueprints`** returns `{"active": "<id or default>", "blueprints": [record, ...]}`, newest first.
 
 While a blueprint with new IDs is active (such as `TANK_7`), `/api/field` lists IDs the Asset IDs table above doesn't have, and `tools/check` against that server reports them. Activate `default` before running `tools/check`.
+
+## Field connectors, security events, SpacetimeDB v2 (#126)
+
+### What the backend wires up
+
+- `backend/app/connectors/extra.py` registers the field connector kinds built for #126 into the registry's `KINDS`: `opcua` (the real client, replacing the stub) and `sparkplug`. main.py imports it before the live layer is installed. A protocol library that isn't installed makes that connector `unavailable` with the pip hint in its `detail`; the backend still starts. The libraries are pinned in `backend/requirements-connectors.txt`.
+- Connector quality counts at once. Every #126 connector keeps `quality[(asset_id, signal)] = {quality, detail, t}`. When a signal's quality is anything but `good`, `/api/state`, the forecast, plans, and Last Call treat it as having no fresh reading, even if its last good value is younger than `sensors.stale_after_min`:
+  - a tank has no level (`level_pct: null`, `last_level_pct` keeps the old one);
+  - a valve counts as closed and a pump as off in the forecast, with the usual `live_assumptions` warnings;
+  - a well keeps its design rate (never assume less water than we know);
+  - the asset shows `UNKNOWN` (an asset already in `ALARM` stays in `ALARM`), with `stale: true`, `quality: {"<signal>": "<quality>"}`, and a `reason` like `"CONN_OPCUA reports level_pct as bad (StatusCode BadSensorFailure). Treat as unknown, not safe."`
+- A pump with neither a fresh run nor a fresh flow reading shows `UNKNOWN` in `/api/state` with `reason` `"No fresh run or flow reading. Treat as unknown, not safe."`, never `OK`. A pump in `ALARM` stays in `ALARM`.
+- `security_log.install(app)` runs right after `origin_guard.install(app)`, and the SpacetimeDB mirror is `spacetime_mirror.run` (both below).
+
+**Demo.** `python -m backend.fakes` starts a fake OPC UA server (127.0.0.1:4840) and a fake Sparkplug B edge node with its own MQTT broker (127.0.0.1:1886), and prints the `FREEBOARD_CONN_*` variables to export. Start the backend in that shell, then upload and activate `backend/data/samples/connectors_demo.json` (`POST /api/blueprints`). That blueprint is the team field (`scenario/field.json`) plus two connectors: OPC UA reads TANK_6, PUMP_6, VALVE_D_6 and WELL_1, and Sparkplug B reads TANK_3, PUMP_3 and VALVE_D_3. The simulator keeps every other asset. It needs the blueprint schema with the `sparkplug` kind (on main).
+
+### Connector foundation
+
+`backend/app/connectors/signalmap.py` is the shared code for every field connector built for #126 (OPC UA, Sparkplug B, and the rest). It doesn't change the API.
+
+**Secrets.** A config key ending in `_env` names an environment variable, and the name must match `FREEBOARD_CONN_[A-Za-z0-9_]+`. Any other name (say `ANTHROPIC_API_KEY`) makes the connector `unavailable` with `bad config: config password_env must name an environment variable that starts with FREEBOARD_CONN_ ...`. The message names the key and never repeats the value. Nested config objects are checked too. A secret's value is never logged, returned in a status, or put in an error.
+
+**Signal rules.** A signal's own `scale` multiplies the raw number first. Then the rule in `config.signal_map["ASSET_ID.signal"]` runs:
+
+```json
+"config": {
+  "host": "10.0.0.7",
+  "password_env": "FREEBOARD_CONN_PLANT_PASSWORD",
+  "max_age_s": 60,
+  "signal_map": {
+    "TANK_3.level_pct":     { "ma420": true, "eng": [0, 100], "range": [0, 100] },
+    "PUMP_3.flow_bbl_hr":   { "raw": [0, 27648], "eng": [0, 300], "unit": "gpm" },
+    "TANK_4.level_pct":     { "unit": "ft", "height_ft": 16 },
+    "SWD_1.pressure_psi":   { "unit": "bar", "range": [0, 150] },
+    "PUMP_3.running":       { "invert": true },
+    "VALVE_XO_34.position": { "open_values": [1], "closed_values": [0] }
+  }
+}
+```
+
+| Key | Signals | Meaning |
+|---|---|---|
+| `raw`, `eng` | analog | `[lo, hi]` each: linear scaling from the raw number to engineering units. One needs the other. |
+| `ma420` | analog | `true` for a 4-20 mA input. Needs `eng`, the values at 4 and 20 mA. NAMUR NE43: at or below 3.6 mA, or at or above 21 mA, is `fault`. 3.6-3.8 and 20.5-21 mA is saturated (`uncertain`). 3.8-20.5 mA reads linearly. |
+| `unit` | analog | flow `bbl_hr` (default), `gpm`, `bbl_day`, `m3_h`, `l_s`; pressure `psi` (default), `kpa`, `bar`, `mpa`; level `pct` (default), or `ft`, `in`, `m` with `height_ft` or `height_m` (the liquid height that reads 100%); motor_amps `a`. |
+| `range` | analog | `[lo, hi]` in the live layer's unit (after conversion), inclusive. Outside it is `out_of_range`. |
+| `invert` | running, position | Flips contacts: booleans, numbers, `1`/`0`, `true`/`false`. Words like `STOPPED` are taken as written. |
+| `open_values`, `closed_values` | position | Both or neither. Then only the listed values count; anything else is `bad`. |
+| `max_age_s` | any | The oldest device timestamp accepted. Defaults to the connector's `config.max_age_s`, else 60 s. |
+
+A rule for a signal the connector doesn't declare, an unknown rule key, or a bad value in a rule makes the connector `unavailable` with the reason. Keys that start with `_` are comments. Factors: 1 bbl = 42 US gal (1 gpm = 60/42 bbl/hr), 1 m3 = 6.28981 bbl, 1 L/s = 3.6 m3/h, 1 kPa = 0.145038 psi, 1 bar = 14.5038 psi, 1 MPa = 145.038 psi, 1 ft = 0.3048 m.
+
+**Quality.** Every mapped value has a quality: `good`, `uncertain`, `bad`, `fault`, `out_of_range`, `comm_lost`, `stale`, or `null`. Only a `good` value is used. A retained, replayed, or historical message is `stale`, and so is a device timestamp older than `max_age_s` (or that far ahead). A value that isn't good is never replaced by the last good one. It is no reading at all, and the connector's `quality` entry makes the asset `UNKNOWN` in `/api/state` at once (see above).
+
+**Commands.** A connector writes only from `send()`, and the live layer calls that only from confirm. `SET_VALVE` OPEN/CLOSED and `SET_PUMP` ON/OFF become true/false. `CHOKE_WELL` is a fraction from 0 (shut in) to 1 (full flow), so 50 is refused, not read as 50%. Anything else is refused before it is sent. A write whose acknowledgement never comes is `{"ok": false, "uncertain": true, "detail": "sent; delivery not confirmed - check the field before retrying"}` and is never sent again. Reconnects back off from 1 s, doubling up to 30 s, with up to 20% jitter either way.
+
+### OPC UA connector (`kind: "opcua"`)
+
+A real OPC UA client (asyncua) on its own thread. It reads declared signals through subscriptions and writes declared commands only after a person confirms them.
+
+```json
+{"id": "CONN_OPCUA", "kind": "opcua",
+ "config": {"endpoint": "opc.tcp://10.0.0.5:4840",
+            "security_policy": "Basic256Sha256", "security_mode": "SignAndEncrypt",
+            "cert_path_env": "FREEBOARD_CONN_OPCUA_CERT", "key_path_env": "FREEBOARD_CONN_OPCUA_KEY",
+            "server_cert_path_env": "FREEBOARD_CONN_OPCUA_SERVER_CERT",
+            "username": "freeboard", "password_env": "FREEBOARD_CONN_OPCUA_PASSWORD",
+            "publish_ms": 500, "timeout_s": 5, "max_age_s": 300},
+ "signals":  [{"asset_id": "TANK_6", "signal": "level_pct", "address": "ns=2;s=TANK_6.Level"}],
+ "commands": [{"asset_id": "VALVE_D_6", "command": "SET_VALVE", "address": "ns=2;s=VALVE_D_6.Command"}]}
+```
+
+- `address` is a NodeId string. Commands can be SET_VALVE (OPEN/CLOSED), SET_PUMP (ON/OFF) or CHOKE_WELL (0..1). Each is written once to the command's NodeId using the variable's own VariantType: Boolean takes True/False, numbers take the number, String takes OPEN/CLOSED or ON/OFF.
+- Security: `security_policy` is Basic256Sha256 (default), Aes128Sha256RsaOaep or Aes256Sha256RsaPss. `security_mode` is SignAndEncrypt (default) or Sign. `None` is allowed only with `allow_insecure: true` and an endpoint on 127.0.0.1 or localhost. Certificate and key are file paths held in FREEBOARD_CONN_ variables. `server_cert_path_env` pins the server certificate; without it, the client takes the certificate the server lists for its endpoint.
+- Every `*_env` value must name a FREEBOARD_CONN_ variable. Otherwise the connector shows `unavailable` with the reason. Secret values never appear in status or results.
+- Values: a reading is made only when the StatusCode is Good and the SourceTimestamp is no older than `max_age_s`. Bad, Uncertain, old, or a value its `config.signal_map` rule rejects gives no reading, and the connector's `quality[(asset_id, signal)]` says why: good, bad, uncertain, comm_lost, stale, out_of_range, fault.
+- Session loss: status turns `unavailable` with the reason, every declared signal becomes `comm_lost`, and the connector reconnects with backoff and subscribes again.
+- `send()` results: `{"ok": true, "detail"}`, `{"ok": false, "detail"}` (nothing was sent: no session, refused, wrong type), or `{"ok": false, "uncertain": true, "detail": "sent; delivery not confirmed - check the field before retrying"}` when no answer came within `timeout_s`. Nothing is retried.
+- Fake for demos: `python -m backend.fakes.opcua --port 4840 --workdir <gitignored dir>` (127.0.0.1, SignAndEncrypt, username `freeboard`, password from FREEBOARD_CONN_OPCUA_PASSWORD). It prints the endpoint and the certificate paths to export, never the password.
+
+### Sparkplug B connector (`kind: "sparkplug"`)
+
+Freeboard acts as a Sparkplug 3.0 **host application** on an MQTT 3.1.1 broker (paho-mqtt).
+
+**Config:** `host` (required), `port` (1883), `group_id` (required), `host_id` (required; no `/ + #`), `client_id` (default `freeboard-<host_id>-<id>`), `username`, `password_env` (must name a `FREEBOARD_CONN_*` variable), `tls` (false), `keepalive_s` (30), `timeout_s` (5), `rebirth_min_interval_s` (10), `max_age_s` (60), `signal_map` (rules keyed `ASSET_ID.signal`, see above). Each signal's `scale` is applied too.
+
+**Addresses** are exact metric paths. MQTT wildcards are refused, and the group must equal `group_id`:
+- `group/edge_node/device/metric` for a device metric, e.g. `FREEBOARD/EDGE_1/PLC_1/TANK_3/Level`
+- `group/edge_node//metric` for an edge node metric
+
+The metric is everything after the third slash, so it may contain `/`.
+
+**Host behaviour:**
+- **STATE:** on connect the host publishes `spBv1.0/STATE/<host_id>` = `{"online": true, "timestamp": ms}`, retained at QoS 1. Its will is `{"online": false}` with the same timestamp. On a clean close it publishes offline.
+- **Tracking:** it subscribes to `spBv1.0/<group_id>/#` and keeps bdSeq, alias maps and datatypes from NBIRTH/DBIRTH, plus the last seq for each edge node it maps.
+- **Rebirth:** data before a birth, a retained message, a seq gap (mod 256) or an unreadable payload is ignored, and the host sends NCMD `Node Control/Rebirth` = true. This is a protocol message and moves no equipment. It is limited to one per node per `rebirth_min_interval_s`. After a seq gap the node's signals are `uncertain` until the next NBIRTH.
+- **Deaths:** an NDEATH with the node's bdSeq, or a DDEATH, sets every mapped signal of that node or device to quality `comm_lost` at once. Nothing from it counts until the next birth. An NDEATH with an older bdSeq is ignored.
+- **Values:** `is_historical` metrics are never live. `is_null`, a value that doesn't fit its datatype, a metric timestamp older than `max_age_s`, or a SignalMap fault produces no reading, and `quality` says why. Every signal starts as `comm_lost` until its device is born, and losing the broker sets every signal to `comm_lost`.
+
+**Commands:** only from `send()`, which is called only from confirm. The host publishes a DCMD (NCMD for a node metric) with the metric by name and its birth datatype, QoS 0, never retained.
+- SET_VALVE and SET_PUMP write true/false to a Boolean metric, 1/0 to an integer or float metric, or OPEN/CLOSED and ON/OFF to a String metric.
+- CHOKE_WELL writes the 0..1 fraction to a Float or Double metric.
+- The command is refused, and nothing is sent, unless the device is born and online with that metric in its birth.
+- `ok: true` means it was published. The next DDATA shows the change.
+- If the publish doesn't complete within `timeout_s`, the result is `{"ok": false, "uncertain": true, ...}`. A QoS 0 command is never re-sent after a reconnect.
+
+**Status:** available only while connected to the broker. The detail lists which edge nodes are online and which are still waiting for a birth.
+
+Fake for demos: `python -m backend.fakes.sparkplug --port 1886` starts its own MQTT broker on 127.0.0.1:1886 plus edge node `FREEBOARD/EDGE_1` with device `PLC_1`. `--broker-port N` attaches to a broker already running (`python -m backend.fakes.mqtt_broker --port 1885`).
+
+### Security events
+
+`backend/app/security_log.py` watches what the server answers and records refused requests. It never changes a response. There is no SMS and no outside service: alerts go only to the audit log and the console.
+
+| Seen on | Answer | kind |
+|---|---|---|
+| `/api/*` | 401 | `auth_failed` |
+| `/api/*` | 403 from origin_guard ("Refused: this request came from another site.") | `cross_site` |
+| `/api/*` | any other 403 (for example the phone token on an operator route) | `forbidden_role` |
+| `/api/*` | 429 (the PIN lockout from auth.py, or a rate limit) | `lockout` |
+| `/api/*` | 413 or 415 | `upload_rejected` |
+| `/ws` | close with code 1008 | `ws_auth_failed` |
+
+An event:
+
+```json
+{"id": 3, "kind": "auth_failed", "method": "POST", "path": "/api/actions/act_1/confirm",
+ "client": "192.168.1.x", "first_t": "2026-11-07T07:12:03+00:00",
+ "last_t": "2026-11-07T07:12:41+00:00", "count": 4, "detail": "401: missing or wrong token."}
+```
+
+- `path` never includes a query string, so a `?token=` is never recorded. `client` shows the last IPv4 octet as `x`, and an IPv6 address is cut to its /48. `method` is `WS` for /ws. Headers, bodies, tokens and PINs are never recorded.
+- The same (kind, path, client) within `FREEBOARD_SECURITY_DEDUPE_S` seconds (default 60) of the event's `first_t` adds to `count` and moves `last_t` instead of creating a new event.
+- Only the first occurrence is an alert. It writes an audit entry `security` with `source="security"`, `kind`, `path` and `client`, and sends `{"type": "security", "event": {...}}` to every screen on `/ws`. At most 30 alerts go out per minute; events beyond that are still kept.
+- The last 500 events are kept in memory.
+
+`GET /api/security/events?since=<id>` returns `{"events": [...]}`, oldest first, with ids greater than `since`. It is open like every read. An event's `count` and `last_t` keep changing during its window, so read without `since` to see the current values.
+
+### SpacetimeDB v2: alerts, proposals, connectors, apply_batch
+
+Module: `backend/spacetime/src/index.ts`. v2 only adds to v1. Every v1 table, column and reducer is unchanged, so a database published with v1 (hackutd-freeboard-live) takes v2 with `spacetime publish` and no `--delete-data`.
+
+New public tables (consoles subscribe; only the backend writes):
+
+| table | columns |
+|---|---|
+| `alert` | `id` (pk, e.g. `alert_7`), `asset_id`, `kind` (ID-style, e.g. `PUMP_TRIP`), `severity` (`WARNING`/`ALARM`), `message`, `active` (bool), `raised_clock`, `resolved_clock` ("" while active) |
+| `proposal` | `id` (pk, e.g. `act_3`), `type` (`SET_VALVE`/`SET_PUMP`/`CHOKE_WELL`/`SEND_TRUCK`), `asset_id`, `value` (text: `OPEN`, `ON`, `0.5`, or ""), `target_id`, `status` (`PENDING`/`SENDING`/`CONFIRMED`/`FAILED`/`REJECTED`/`UNCERTAIN`), `source`, `reason`, `decided_by`, `result` |
+| `connector_status` | `id` (pk, connector ID), `kind` (lowercase, e.g. `mqtt`), `status` (`connected`/`unavailable`), `detail`, `updated_clock` (live clock when status or detail last changed) |
+
+The `proposal` table only shows proposals. A command moves only when a person confirms it through the backend (`POST /api/actions/{id}/confirm`).
+
+New reducer `apply_batch(json: string)`, writer only. `json` is one object, and every key is optional: `clock` {clock, incident_root, incident_summary}; `assets` [{asset_id, status, level_pct, position, reason}]; `alerts` [...]; `proposals` [...]; `connectors` [...]; `removed_assets`, `removed_alerts`, `removed_proposals`, `removed_connectors` [id, ...]; `full` (bool). Missing text is "". Removals run first, then upserts, all in one transaction. One bad row (an unknown status or enum, an ID that is not a contract ID, a level outside 0-100 that is not -1, an unknown key) refuses the whole batch and writes nothing. A `full` batch must carry `clock` and all four lists (empty is fine), and it deletes every row it does not list. Asset `status` still allows `UNKNOWN` (no fresh reading, never shown as safe).
+
+Backend: `spacetime_sync.push_batch(payload)` sends one `apply_batch` call (it claims the writer role once, as before, and never logs `SPACETIME_TOKEN`). `spacetime_mirror.run(app, period_s)` runs every `SPACETIME_MIRROR_S` seconds (default 1). It reads `now.state(app)`, the live alerts, the proposals and `registry.status()`, and sends only what changed since SpacetimeDB last accepted a batch. It sends a full batch on the first push, after any `push_state()`, and every `SPACETIME_RESYNC_S` seconds (default 60). Failures keep the changes for the next try. `upsert_asset` and `set_clock` keep working for older callers.
