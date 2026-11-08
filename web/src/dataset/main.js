@@ -14,6 +14,8 @@ import { replay, doNothing, inputFor, planFromActions, planToActions, cheapestJo
 import { normAlerts, sortAlerts, actionLines, handoffText, durationText, categoryOf, trucksInUse } from "./alerts.js";
 
 const $ = (id) => document.getElementById(id);
+// A peak just under the limit must not print as the limit: 91.96% is "91.9%", not "92.0%".
+const peak1 = (v) => (Math.floor(v * 10 + 1e-9) / 10).toFixed(1);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const params = new URLSearchParams(location.search);
 const API = params.get("api") ?? import.meta.env.VITE_API ?? "";
@@ -248,12 +250,12 @@ function ownPlans() {
   const h = repairH();
   const failures = state.detection === "ok"
     ? state.alerts.filter((a) => a.status !== "resolved" && a.category === "pump_failure" && a.facility && a.onset !== null)
-        .map((a) => ({ system: a.system, facility: a.facility, onset: a.onset }))
+        .map((a) => ({ system: a.system, facility: a.facility, onset: a.onset, repairEnd: a.repairEnd }))
     : pumpFaults();
   const bySystem = new Map();
   for (const x of failures) {
     if (h === null) break;
-    const horizonMin = Math.round((x.onset + h * 3600 - state.at) / 60);
+    const horizonMin = Math.round(((x.repairEnd ?? x.onset + h * 3600) - state.at) / 60);
     if (horizonMin <= 0) continue;
     const built = inputFor({ network: state.network, ops: state.ops, facilityId: x.facility, ...readers(), horizonMin });
     if (!built.input || !built.opsFacility) continue;
@@ -352,7 +354,9 @@ function alertCard(a, rank) {
   if (a.category === "pump_failure") {
     const when = a.hours !== null ? fmtTime(state.at + a.hours * 3600) : null;
     const range = a.hoursP10 !== null && a.hoursP90 !== null ? ` <span class="ds-range">(${durationText(a.hoursP10)} to ${durationText(a.hoursP90)})</span>` : "";
-    body += a.hours !== null
+    body += a.tripped
+      ? `<div class="ds-count-big"><span class="kicker">Tank at shutdown</span><b>Wells shut in</b><span>${a.tripsAt !== null ? `since ${esc(fmtTime(a.tripsAt))} UTC, ` : ""}until the repair${a.repairEnd ? ` at ${esc(fmtTime(a.repairEnd))} UTC` : ""}</span></div>`
+      : a.hours !== null
       ? `<div class="ds-count-big"><span class="kicker">Shuts in at</span><b>${esc(when)} UTC</b><span>in ${esc(durationText(a.hours))}${range}</span></div>`
       : `<div class="ds-count-big quiet"><span class="kicker">Countdown</span><b>Will not trip</b><span>tank stays under shutdown until the repair</span></div>`;
     if (a.levelPct !== null) body += `<div class="ds-meta">Tank ${Math.round(a.levelPct)}% now</div>`;
@@ -378,8 +382,8 @@ function alertCard(a, rank) {
 // trips but the backend's plan says it won't (or the costs differ), the card says so.
 function replayCheck(a) {
   const h = repairH();
-  if (!a.facility || a.onset === null || h === null) return null;
-  const horizonMin = Math.round((a.onset + h * 3600 - state.at) / 60);
+  if (!a.facility || a.onset === null || (h === null && !a.repairEnd)) return null;
+  const horizonMin = Math.round(((a.repairEnd ?? a.onset + h * 3600) - state.at) / 60);
   if (horizonMin <= 0) return { tone: "ok", text: "Repair time is up: the pump should be back." };
   const plan = { ...planFromActions(a.actions, a.facility), fleet: undefined };
   const built = inputFor({ network: state.network, ops: state.ops, facilityId: a.facility,
@@ -393,7 +397,7 @@ function replayCheck(a) {
   const own = ownPlans().get(a.facility);
   if (own && own.result.cost.total < r.cost.total - Math.max(10, r.cost.total * 0.03))
     return { tone: "warning", text: `Gaia's own planner finds ${money(own.result.cost.total)} here (the backend's plan replays at ${money(r.cost.total)}). Open the plan to compare.` };
-  return { tone: "ok", text: r.safe ? `Replayed: peaks at ${r.peakPct.toFixed(1)}%, never reaches shutdown.` : "Replayed: matches the backend." };
+  return { tone: "ok", text: r.safe ? `Replayed: peaks at ${peak1(r.peakPct)}%, never reaches shutdown.` : "Replayed: matches the backend." };
 }
 
 // ---------- map ----------
@@ -606,7 +610,8 @@ function whatIf(f, s, alert) {
   const h = repairH();
   const key = alert ? `alert:${alert.id}@${state.at}` : `fac:${f.id}@${state.at}`;
   let horizonMin;
-  if (alert) horizonMin = alert.onset !== null && h !== null ? Math.round((alert.onset + h * 3600 - state.at) / 60) : null;
+  if (alert) horizonMin = alert.repairEnd ? Math.round((alert.repairEnd - state.at) / 60)
+    : alert.onset !== null && h !== null ? Math.round((alert.onset + h * 3600 - state.at) / 60) : null;
   else horizonMin = h !== null ? Math.round(h * 60) : null;
   if (horizonMin === null) { box.innerHTML = `<p class="ds-hint">ops.json has no pump repair time, so no plan can be checked.</p>`; return box; }
   if (horizonMin <= 0) { box.innerHTML = `<p class="ds-hint">The repair time is up at this moment: the pump should be running again.</p>`; return box; }
@@ -663,7 +668,7 @@ function whatIf(f, s, alert) {
       </div>
       <div class="ds-wi-result">
         <div class="ds-wi-verdict ${r.safe ? "ok" : "alarm"}">${r.safe
-          ? `<b>Stays under shutdown</b><span>peaks at ${r.peakPct.toFixed(1)}%</span>`
+          ? `<b>Stays under shutdown</b><span>peaks at ${peak1(r.peakPct)}%</span>`
           : `<b>Reaches shutdown at ${esc(fmtTime(state.at + r.tripsAtMin * 60))} UTC</b><span>wells shut in until the repair</span>`}</div>
         <table class="ds-costs"><tbody>
           <tr><th>Trucks</th><td>${money(r.cost.trucks)}</td><td class="ds-hint">${r.tripsMade} trip${r.tripsMade === 1 ? "" : "s"}, ${Math.round(r.removedBbl)} bbl</td></tr>
@@ -714,7 +719,9 @@ function whatIf(f, s, alert) {
       for (let k = 0; k < plan.trips; k++) marks.push({ t: t(fo.response_min + k * fo.cycle_min), label: k ? "" : `${plan.trucks} truck${plan.trucks > 1 ? "s" : ""}` });
     for (const si of plan.shutIns) marks.push({ t: t(si.startMin), label: "shut-in" });
     lineChart(box.querySelector(".ds-wi-chart"), {
-      title: "Tank level from now to the repair", unit: "% full", from: state.at, to: t(horizonMin), height: 150, yMin: 0, yMax: 100, gapS: 600,
+      title: "Tank level from now to the repair", unit: "% full", from: state.at, to: t(horizonMin), height: 150, gapS: 600,
+      // Zoom to the band that matters: from a little under the lowest level to 100%.
+      yMin: Math.max(0, Math.floor((Math.min(built.input.levelPct, ...r.points.map((p) => p[1])) - 10) / 10) * 10), yMax: 100,
       series: [
         { name: "this plan", points: r.points.filter((_, i) => i % 5 === 0 || i === r.points.length - 1).map(([m, v]) => [t(m), v]) },
         { name: "doing nothing", points: base.points.filter((_, i) => i % 5 === 0 || i === base.points.length - 1).map(([m, v]) => [t(m), v]) },

@@ -68,3 +68,19 @@ assert.deepEqual(sortFolders(["history/full_week", "test", "history/snapshot_1"]
 assert.ok(checkDataset({ systems: [] }, {}).length >= 3);
 
 console.log("dataset-alerts: all pass");
+
+// The backend's own Event shape with a nested Plan reads the same way.
+const ev = normAlerts([{ id: "EV-0001", category: "pump_failure", system: "S1", facility: "S1_FACILITY_C", asset: "S1_PUMP_C",
+  onset: 1791418800, end: null, status: "ongoing", confidence: 0.9, trips_at: 1791434940, repair_end: 1791440400,
+  hours_to_limit: { p50: 4.5 }, lost_revenue_per_hour: 3300, tripped: false,
+  plan: { actions: [{ type: "dispatch_truck", facility_id: "S1_FACILITY_C", trucks: 1, trips_per_truck: 1 }], cost: 905, summary: "1 truck, 1 trip (~$905)" },
+  do_nothing: { cost: 5016 } }])[0];
+assert.equal(ev.id, "EV-0001");
+assert.equal(ev.system, "S1");
+assert.equal(ev.onset, 1791418800);
+assert.equal(ev.repairEnd, 1791440400);
+assert.equal(ev.tripsAt, 1791434940);
+assert.equal(ev.estCost, 905);
+assert.equal(ev.doNothingCost, 5016);
+assert.equal(ev.actions.length, 1);
+console.log("dataset-alerts backend Event shape: pass");

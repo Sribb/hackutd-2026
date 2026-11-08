@@ -17,10 +17,16 @@ const num = (v) => (v === null || v === undefined || v === "" ? null : Number.is
 
 // Accepts a list, {alerts: [...]}, or {events: [...]} and fills in names the page uses.
 // Fields the backend did not send stay null; nothing is guessed.
+// Reads both the SPEC events.json shape (event_id, system_id, onset_unix,
+// recommended_actions, est_cost) and the backend's Event shape (id, system, onset,
+// trips_at, repair_end, lost_revenue_per_hour), with an optional nested `plan` (the
+// backend's Plan: actions, cost) and `do_nothing` ({ cost }).
 export function normAlerts(resp) {
   const list = Array.isArray(resp) ? resp : resp?.alerts || resp?.events || [];
   return list.map((a, i) => {
     const htl = a.hours_to_limit;
+    const plan = a.plan && typeof a.plan === "object" ? a.plan : null;
+    const actions = Array.isArray(a.recommended_actions) ? a.recommended_actions : Array.isArray(plan?.actions) ? plan.actions : [];
     return {
       raw: a,
       id: String(a.event_id ?? a.id ?? `alert_${i + 1}`),
@@ -29,19 +35,22 @@ export function normAlerts(resp) {
       system: a.system_id ?? a.system ?? null,
       facility: a.facility_id ?? a.facility ?? null,
       asset: a.asset_id ?? a.asset ?? null,
-      onset: num(a.onset_unix),
-      end: num(a.end_unix),
+      onset: num(a.onset_unix ?? a.onset),
+      end: num(a.end_unix ?? a.end),
       confidence: num(a.confidence),
       evidence: Array.isArray(a.evidence) ? a.evidence.map(String) : [],
       levelPct: num(a.level_pct),
       hours: htl && typeof htl === "object" ? num(htl.p50) : num(htl),
       hoursP10: htl && typeof htl === "object" ? num(htl.p10) : null,
       hoursP90: htl && typeof htl === "object" ? num(htl.p90) : null,
-      actions: Array.isArray(a.recommended_actions) ? a.recommended_actions : [],
-      estCost: num(a.est_cost),
-      doNothingCost: num(a.do_nothing_cost),
+      actions,
+      estCost: num(a.est_cost ?? plan?.cost),
+      doNothingCost: num(a.do_nothing_cost ?? a.do_nothing?.cost),
       lostRevPerHour: num(a.lost_revenue_per_hour),
-      tripsAt: num(a.trips_at_unix),
+      tripsAt: num(a.trips_at_unix ?? a.trips_at),
+      repairEnd: num(a.repair_end_unix ?? a.repair_end),
+      tripped: a.tripped === true,
+      planSummary: typeof plan?.summary === "string" ? plan.summary : null,
     };
   });
 }
