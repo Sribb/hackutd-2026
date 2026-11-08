@@ -16,7 +16,7 @@
     "equipment": 0
   },
   "look": {
-    "mode": "full",
+    "mode": "fast",
     "textures": true,
     "materials": {
       "M_BUILDING": 10,
@@ -24,34 +24,33 @@
       "M_CONTAINMENT": 12,
       "M_GALV": 98,
       "M_GLASS": 3,
-      "M_GRAVEL": 33,
       "M_HDPE": 24,
-      "M_LINER": 6,
+      "M_LINER": 8,
       "M_MOTOR": 12,
       "M_PIPE": 99,
       "M_PJ_DARK": 48,
       "M_PJ_PAINT": 48,
       "M_PUMP_PAINT": 6,
       "M_RUBBER": 12,
-      "M_STEEL": 6,
-      "M_STEEL_DARK": 119,
+      "M_STEEL": 8,
+      "M_STEEL_DARK": 121,
       "M_STENCIL": 64,
-      "M_TANK": 9,
+      "M_TANK": 10,
       "M_TRUCK_CAB": 2,
       "M_TRUCK_TANK": 2,
-      "M_WOOD": 2
+      "M_WOOD": 5
     },
-    "styled": 677,
-    "looks": 264,
-    "theirs": 3,
+    "styled": 654,
+    "looks": 272,
+    "theirs": 46,
     "gaps_filled": 0,
     "ao_uv_meshes": 0,
     "seconds": {
       "roles": 0.05,
-      "uvs": 0.16,
-      "weather": 0.06,
-      "ao": 1.36,
-      "total": 1.63
+      "uvs": 0.28,
+      "weather": 0.11,
+      "ao": 0.0,
+      "total": 0.44
     }
   },
   "outputs": {
@@ -146,7 +145,7 @@
       {
         "detail": "full",
         "estimated": 151698,
-        "triangles": 148435
+        "triangles": 154587
       }
     ]
   },
@@ -159,33 +158,37 @@
     "seed": "Avon field - night shift",
     "textures": [
       "ground_dry_soil",
-      "dirt_road_tracks"
+      "ground_caliche"
     ],
     "fence_m": 1216.0,
     "cattle_guards": 2,
+    "terrain_m": 5400.0,
+    "mesas": 24,
+    "other_leases": 10,
+    "power_spans": 18,
+    "brush_past_fence": 50,
     "items": {
-      "boulder": 6,
-      "branch": 6,
-      "creosote": 2,
-      "grass": 110,
+      "boulder": 4,
+      "branch": 4,
+      "creosote": 1,
+      "grass": 102,
       "lease_sign": 1,
-      "mesquite": 1,
-      "prickly_pear": 28,
-      "rock": 15,
+      "prickly_pear": 23,
+      "rock": 11,
       "yucca": 65
     },
     "dropped": [],
-    "triangles": 114650,
-    "field_triangles": 148435,
-    "images_mb": 12.02
+    "triangles": 103782,
+    "field_triangles": 154587,
+    "images_mb": 6.14
   },
-  "triangles": 263085,
-  "glb_mb": 26.16,
-  "nodes": 1013,
-  "objects": 1014,
+  "triangles": 258369,
+  "glb_mb": 21.05,
+  "nodes": 1017,
+  "objects": 1018,
   "budget": {
     "triangles": 300000,
     "mb": 30.0
   },
-  "seconds": 18.86
+  "seconds": 20.31
 }

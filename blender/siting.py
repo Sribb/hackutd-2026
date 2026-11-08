@@ -13,6 +13,7 @@ import math
 import random
 
 import layout as lay
+import terrain
 
 POWER_Y = -6.5            # must match detail_site.POLE_Y: the power line on the road's south shoulder
 # Footprints (along local X, along local Y) of each equipment model, guy wires and pads included.
@@ -22,6 +23,9 @@ FOOTPRINTS = {"SEPARATOR": (6.6, 3.0), "HEATER_TREATER": (3.8, 3.8), "FLARE": (8
 PAD_SPOTS = ((22.0, 20.0), (22.0, 36.0), (-24.0, 20.0), (-24.0, 36.0), (31.0, 20.0), (31.0, 36.0))
 CLEAR = 1.5               # meters kept between a new thing and anything already there
 STEP = 3.0                # search grid
+# A pad's low berm (#98), pad-local: along x = -x and +x from y0 to y and across the back at y.
+BERM = {"x": 14.2, "y0": 31.0, "y": 63.2, "half": 0.9, "top": 0.17}
+BERM_RECT = (-15.2, 15.2, 29.0, 64.3)   # the pad with its soft edges and berm
 
 
 def grow(r, m):
@@ -57,6 +61,7 @@ def occupied(L):
     for p in L["pads"]:
         f, name = p["frame"], f"PAD_{p['n']}"
         add(f.rect(*lay.PAD_RECT), name)
+        add(f.rect(*BERM_RECT), f"{name}'s berm")
         add(f.rect(-13.5, 13.5, lay.ROAD_HALF, lay.PAD_RECT[2]), f"{name}'s pump lines")
         add(f.rect(-6.0, 6.0, 54.0, 63.0), f"{name}'s inlet header")
     for w in L["wells"]:
@@ -185,6 +190,77 @@ def place_equipment(L, bp):
                        min(gy0, min(r[2] for r in rects) - 4), max(gy1, max(r[3] for r in rects) + 4))
 
 
+def berm_blockers(L, pad):
+    """[(rect, what)] a pad's berm must stay off: other pads, wells, crossover supports, power
+    drops, disposal wells, the yard, and equipment. Flowlines get their own gaps (field_build)."""
+    out = []
+    for p in L["pads"]:
+        if p is not pad:
+            out.append((p["frame"].rect(*BERM_RECT), f"PAD_{p['n']}"))
+    out += [(around(*w["pos"], 3.0, 5.8), w["id"]) for w in L["wells"]]
+    out += [(around(s[0], s[1], 0.6, 0.6), x["id"]) for x in L["crossovers"] for s in x["supports"]]
+    out += [(around(dx, dy, 1.0, 1.0), "a power drop") for dx, dy in L["drops"]]
+    out += [(grow(s["frame"].rect(-13.0, 13.0, -11.0, 11.0), 1.0), s["id"]) for s in L["swds"]]
+    out.append((grow(L["yard"]["frame"].rect(-22.0, 22.0, -12.0, 12.0), 1.0), "the truck yard"))
+    out += [(around(*a["pos"], 4.0, 4.0), a["id"]) for key in ("pumps", "trucks") for a in L[key] if a["given"]]
+    out += [(e["rect"], e["id"]) for e in L.get("equipment", [])]
+    return out
+
+
+def berm_runs(lines, blockers, frame):
+    """Pad-local runs of a pad's low caliche berm along its sides and back, with gaps where a
+    flowline (pad-local polylines) crosses or anything in blockers (plan rects) sits.
+    Returns [[(x, y), ...], ...], each run at least two points."""
+    b = BERM
+    corners = [(-b["x"], b["y0"]), (-b["x"], b["y"]), (b["x"], b["y"]), (b["x"], b["y0"])]
+    pts = []
+    for p, q in zip(corners, corners[1:]):
+        n = max(1, round(math.dist(p, q) / 4.0))
+        pts += [(p[0] + (q[0] - p[0]) * i / n, p[1] + (q[1] - p[1]) * i / n) for i in range(n)]
+    pts.append(corners[-1])
+    clear = b["half"] + 0.35
+
+    def free(x, y):
+        for line in lines:
+            for (ax, ay), (bx, by) in zip(line, line[1:]):
+                if min(ax, bx) - clear < x < max(ax, bx) + clear and min(ay, by) - clear < y < max(ay, by) + clear:
+                    return False
+        wx, wy = frame.world(x, y)
+        return not clash(around(wx, wy, clear, clear), blockers, 0.0)
+
+    runs, run = [], []
+    for p in pts:
+        if free(*p):
+            run.append(p)
+        else:
+            if len(run) > 1:
+                runs.append(run)
+            run = []
+    if len(run) > 1:
+        runs.append(run)
+    return runs
+
+
+def dust(L):
+    """near(x, y): meters to the nearest road, driveway, or pad, for the caliche dust in the
+    ground's color (terrain.tint). Far from everything it is None."""
+    rects = [(-1e9, 1e9, -lay.ROAD_HALF, lay.ROAD_HALF)] + list(L["driveways"])   # the road runs out of the lease
+    rects += [p["frame"].rect(*lay.PAD_RECT) for p in L["pads"]]
+    rects += [s["frame"].rect(-13.0, 13.0, -11.0, 11.0) for s in L["swds"]]
+    rects.append(L["yard"]["frame"].rect(-22.0, 22.0, -12.0, 12.0))
+    reach = 40.0
+
+    def near(x, y):
+        best = None
+        for x0, x1, y0, y1 in rects:
+            dx, dy = max(x0 - x, 0.0, x - x1), max(y0 - y, 0.0, y - y1)
+            if dx < reach and dy < reach:
+                d = math.hypot(dx, dy)
+                best = d if best is None or d < best else best
+        return best
+    return near
+
+
 # ---------- scenery (#88) ----------
 
 # name: (triangles each, share of the scatter budget, most allowed, clearance radius in m).
@@ -201,15 +277,16 @@ SCATTER_MAX = 115_000       # most triangles the scatter may use, however much b
 SCATTER_M2 = 1.6            # and at most this many per square meter inside the fence (today's density)
 CELL = 5.0                  # scatter grid
 NEAR = 45.0                 # plants are thicker within this many meters of a pad or well, where close-ups look
+FENCE_BAND = 9.0            # and thickest within this many meters of the fence
 
 
-def plan_scenery(L, budget, seed):
+def plan_scenery(L, budget, seed, keep_off=()):
     """Everything the scenery pass builds, inside budget triangles, deterministic for a seed.
 
     Returns {"fence": [polylines], "guards": [(x, y)], "stubs": [rects], "sign": (x, y) or None,
     "scatter": [(species, x, y, rot, scale)], "dropped": [...]}. The fence runs FENCE_INSET
     inside the ground's edge, with a cattle guard where the lease road leaves at each end.
-    Nothing lands on anything in occupied().
+    Nothing lands on anything in occupied() or on the keep_off rects.
     """
     rng = random.Random(f"freeboard-scenery:{seed}")
     gx0, gx1, gy0, gy1 = L["ground"]
@@ -227,6 +304,7 @@ def plan_scenery(L, budget, seed):
     else:
         out["dropped"].append("fence and cattle guards")
     taken = occupied(L) + [(grow(r, 1.0), "a road stub") for r in out["stubs"]]
+    taken += [(r, "a sign or marker") for r in keep_off]
     sign = (x0 + 4.0, -lay.ROAD_HALF - 4.0)
     if out["fence"] and not clash(around(*sign, 0.8, 0.8), taken):
         out["sign"] = sign
@@ -247,9 +325,13 @@ def plan_scenery(L, budget, seed):
     for cx, cy in cells:
         if not tokens:
             break
-        density = 0.5 + sum(math.sin(cx * a + cy * b + p) for a, b, p in waves) / 6
+        density = 0.35 + sum(math.sin(cx * a + cy * b + p) for a, b, p in waves) / 6
         if any(abs(cx - sx) < NEAR and abs(cy - sy) < NEAR for sx, sy in spots):
-            density += 0.35
+            density += 0.2
+        # brush grows thick along the fence, where nothing is ever cleared, and in clumps
+        fence_d = min(cx - x0, x1 - cx, cy - y0, y1 - cy)
+        density += 0.6 * max(0.0, 1.0 - fence_d / FENCE_BAND)
+        density += 1.2 * max(0.0, terrain.noise(cx / 23.0, cy / 23.0, 41) - 0.6)
         if rng.random() > 0.25 + 0.75 * density:
             continue
         x, y = cx + rng.uniform(-0.35, 0.35) * CELL, cy + rng.uniform(-0.35, 0.35) * CELL
@@ -265,4 +347,40 @@ def plan_scenery(L, budget, seed):
                                round(rng.uniform(0.8, 1.2), 3)))
     if tokens:
         out["dropped"].append(f"{len(tokens)} plants and rocks with no free spot")
+    return out
+
+
+OUTSIDE = 45.0              # meters of brush past the fence, on the terrain
+OUTSIDE_KINDS = (("grass", 0.4), ("yucca", 0.35), ("prickly_pear", 0.15), ("rock", 0.1))
+
+
+def plan_outside(L, budget, seed):
+    """Brush past the fence, so the lease doesn't end at a clean line: a band OUTSIDE meters
+    wide around the lease ground, thickest at the fence, off the lease road's line.
+    Deterministic for a seed. Returns [(species, x, y, rot, scale)] inside budget triangles;
+    the scenery pass sets each on the terrain."""
+    rng = random.Random(f"freeboard-outside:{seed}")
+    gx0, gx1, gy0, gy1 = L["ground"]
+    tokens = [k for k, share in OUTSIDE_KINDS for _ in range(int(max(0, budget) * share / SPECIES[k][0]))]
+    rng.shuffle(tokens)
+    cells = []
+    for i in range(int((gx1 - gx0 + 2 * OUTSIDE) / CELL)):
+        for j in range(int((gy1 - gy0 + 2 * OUTSIDE) / CELL)):
+            x, y = gx0 - OUTSIDE + CELL * (i + 0.5), gy0 - OUTSIDE + CELL * (j + 0.5)
+            if not (gx0 - 1 < x < gx1 + 1 and gy0 - 1 < y < gy1 + 1):
+                cells.append((x, y))
+    rng.shuffle(cells)
+    out = []
+    for cx, cy in cells:
+        if not tokens:
+            break
+        d = max(gx0 - cx, cx - gx1, gy0 - cy, cy - gy1, 0.0)
+        density = 0.12 + 0.6 * max(0.0, 1.0 - d / OUTSIDE) + 1.2 * max(0.0, terrain.noise(cx / 23.0, cy / 23.0, 41) - 0.6)
+        if rng.random() > density:
+            continue
+        x, y = cx + rng.uniform(-0.35, 0.35) * CELL, cy + rng.uniform(-0.35, 0.35) * CELL
+        if abs(y) < 8.0 or (gx0 - 1.5 < x < gx1 + 1.5 and gy0 - 1.5 < y < gy1 + 1.5):
+            continue
+        out.append((tokens.pop(), round(x, 3), round(y, 3), round(rng.uniform(0, 2 * math.pi), 4),
+                    round(rng.uniform(0.8, 1.2), 3)))
     return out
