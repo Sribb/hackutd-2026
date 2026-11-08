@@ -91,6 +91,16 @@ class Detector:
             else:
                 changed += self._set(aid, "SENSOR_STALE", "WARNING", "", False, t, clock, confirm=1)
 
+        # Observed fill rate for every tank, every tick, so it never goes stale after a trip.
+        # The pump check below fills in expected_bbl_hr when it can explain the rate.
+        for tid, tank in self.f.tanks.items():
+            obs = None
+            if fresh((tid, "level_pct")):
+                pts = [(tt, v) for tt, v in history.get((tid, "level_pct"), ()) if tt >= t - RATE_WINDOW_MIN]
+                obs = slope_bbl_hr(pts, float(tank["capacity_bbl"]))
+            self.rates[tid] = {"observed_bbl_hr": None if obs is None else round(obs, 1),
+                               "expected_bbl_hr": None}
+
         # PUMP_TRIP
         for pid, pump in self.f.pumps.items():
             if not (fresh((pid, "flow_bbl_hr")) or fresh((pid, "running"))):
