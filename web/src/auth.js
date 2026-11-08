@@ -67,6 +67,11 @@ export async function authFetch(url, init) {
   }
   // A phone token (or any limited token) asking for an operator action.
   if (r.status === 403 && isWrite(init)) notice("This device can't do that. Nothing was sent.");
+  // #57 locks out a burst of wrong PINs (429 + Retry-After).
+  if (r.status === 429 && isWrite(init)) {
+    const s = Number(r.headers.get("Retry-After"));
+    notice(`Too many wrong PINs. Nothing was sent. Try again in ${s > 0 ? (s >= 90 ? `${Math.ceil(s / 60)} min` : `${s} s`) : "a minute"}.`);
+  }
   return r;
 }
 
