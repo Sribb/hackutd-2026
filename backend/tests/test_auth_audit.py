@@ -250,9 +250,9 @@ def test_how_long_until_shutdown_never_vouches_for_an_unknown_tank():
     assert live.state()["assets"]["TANK_2"]["status"] == "UNKNOWN"
     out = asyncio.run(jarvis.handle("How long until shutdown?"))
     reply = out["reply"]
-    assert "No tank reaches shutdown" not in reply, reply
-    assert "can't vouch for Tank 2" in reply and "at risk" in reply, reply
+    assert "no tank reaches shutdown" not in reply.lower(), reply
+    assert "I have no current reading for Tank 2, so I can't say it's safe." in reply and "at risk" in reply, reply
     assert "TANK_2 has no level reading" not in reply, reply   # said once, in plain words
-    if "No tank reaches shutdown" in before:   # nothing else at risk: say only the tanks with readings are fine
-        assert "No tank with a fresh reading reaches shutdown" in reply
+    if "no tank reaches shutdown" in before.lower():   # nothing else at risk: say only the tanks with readings are fine
+        assert "no tank with a fresh reading reaches shutdown" in reply
         assert out["ui"][-1]["asset_id"] == "TANK_2"
