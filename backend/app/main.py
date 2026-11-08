@@ -180,3 +180,24 @@ except ImportError as e:
     INGEST = f"not installed ({e})"
 except RuntimeError as e:  # FastAPI raises this when python-multipart is missing
     INGEST = f"not mounted ({e})"
+
+# ---------- Blueprints (#41): upload, validate, build, serve, activate ----------
+try:
+    from . import blueprints
+
+    def _use_scenario(scenario: dict) -> None:
+        """Swaps the scenario every endpoint reads (POST /api/blueprints/{id}/activate)."""
+        global SCENARIO, _PLANT
+        SCENARIO = scenario
+        _plans.clear()
+        if LASTCALL == "mounted":
+            _PLANT = build_plant(scenario)
+        threading.Thread(target=spacetime_sync.push_state, args=(state_payload(scenario),), daemon=True).start()
+        reload_live = getattr(app.state, "live_reload", None)  # #57: the live layer follows the active field
+        if reload_live:
+            reload_live(scenario)
+
+    blueprints.setup(default=SCENARIO, use=_use_scenario)
+    app.include_router(blueprints.router)
+except ImportError as e:  # e.g. a checkout without backend/app/blueprints.py
+    log.warning("Blueprints API not mounted: %s", e)
