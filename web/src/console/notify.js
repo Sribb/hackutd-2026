@@ -1,28 +1,44 @@
 // The alert notification (#154): a big card that slides in over the 3D field when a new
-// root alert arrives (a pump trips), with a short tone if the browser allows it and the tab
-// title and favicon flashing until someone acts on it.
+// alert arrives (a pump trips, in the demo or in an EOG dataset), with a short tone if the
+// browser allows it, the tab title and favicon flashing until someone acts on it, and one
+// plain sentence to the judge's phone (window.gaiaPhone, #160; a no-op without a provider).
 //
 //   const n = makeNotifier(H)
-//   n.consider(alert, event, becameP1)   the console's alert source (index.js onAlert) calls this
+//   n.consider(alert, event, becameP1)   the console's alert source (index.js onAlert: /ws in the
+//                                        demo, the /api/alerts poll in dataset mode) calls this
+//   n.incident(inc)                      /api/state's incident, every second: a new one notifies
+//                                        too, through its alert when the console has it
 //   n.show(alert)                        show one now (window.gaiaNotify uses it)
-//   n.top()                              the alert a tour would show: the most urgent active root
+//   n.top()                              the most urgent active root alert (for the judge tour)
 //
-// Every number on the card comes from what the console already has: the shutdown clock from
-// the same brief the status line reads (H.brief), else the alert's own consequence; the fix
-// and its cost from the brief's plans. Nothing is invented: no plan says so in words.
-// The same alert notifies once (by id), whichever path asked first.
+// Every number comes from what the console already has: the shutdown clock from the same brief
+// the status line reads (H.brief), else the alert's own consequence; the fix and its cost from
+// the brief's plans, once they have been re-read after the alert. Nothing is invented: no plan
+// says so in words. The same alert notifies once (by id), whichever path asked first.
 
+import * as liveFeed from "../live.js";
 import { esc } from "./stream.js";
 import { toMin, clock12, minsUntil, usd, prioOf, levelOf, watchText } from "./agents.js";
 
 const reduced = () => matchMedia("(prefers-reduced-motion: reduce)").matches;
-const PLAN_WAIT_MS = 20000; // plans re-read after an alert; say "checking" for this long first
+const PLAN_WAIT_MS = 20000;  // a new alert: say "checking the plans" until they are re-read, at most this long
+const PHONE_WAIT_MS = 12000; // the phone sentence waits this long at most for the re-read plans
+const rank = (a) => (levelOf(a) === "red" ? 0 : 10) + Number(String(prioOf(a)).slice(1) || 3);
+// The console's clock: "2:48 AM" on the demo field, "14:05 UTC" on an EOG dataset (its own time).
+const clockOf = (min) => {
+  if (min == null || !isFinite(min)) return "--:--";
+  if (!liveFeed.live.dataset) return clock12(min);
+  const x = ((Math.round(min) % 1440) + 1440) % 1440;
+  return `${String(Math.floor(x / 60)).padStart(2, "0")}:${String(x % 60).padStart(2, "0")} UTC`;
+};
 
 export function makeNotifier(H) {
   const seen = new Set();
-  let cur = null;        // { a, at } on screen
+  let cur = null;        // { a, at, fresh } on screen
+  let lastInc = undefined;
   let flashT = null, flashOn = false, title0 = document.title, icon0 = null;
   let audio = null;
+  const phoned = new Map(); // alert id -> { at, sent }
 
   const card = document.createElement("section");
   card.id = "gaiaNotify";
@@ -96,13 +112,17 @@ export function makeNotifier(H) {
   }
 
   // ----------------------------------------------------------- content ----
-  const headOf = (a) => String(a.message || a.kind || "new alert").split(/[:.]/)[0].trim();
-  function whatFailed(a) {
-    const w = watchText(a, "raised", H.nice);
+  // IDs inside the backend's sentences read as names: "S4_PUMP_C failed" -> "S4 Pump C failed".
+  const pretty = (t) => String(t || "").replace(/\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\b/g, (id) => H.nice(id));
+  const headOf = (a) => pretty(String(a.message || a.kind || "new alert").split(/[:.]/)[0].trim());
+  // The rest of the alert's sentence, unless it only says the shutdown again (the next line does).
+  function whatFailed(a, sd) {
+    const w = pretty(watchText(a, "raised", H.nice));
     const head = headOf(a);
-    const rest = w.startsWith(head) ? w.slice(head.length).replace(/^[.:]\s*/, "") : w;
-    return rest.trim();
+    const rest = (w.startsWith(head) ? w.slice(head.length).replace(/^[.:]\s*/, "") : w).trim();
+    return sd && /shutdown/i.test(rest) ? "" : rest;
   }
+  const inMin = (m) => { m = Math.round(m); return m < 90 ? `${m} min` : `${Math.floor(m / 60)} h${m % 60 ? ` ${m % 60} min` : ""}`; };
 
   // The shutdown this alert leads to: the brief's countdown when it is about the same tank
   // (one clock everywhere), else the alert's own consequence.
@@ -110,49 +130,56 @@ export function makeNotifier(H) {
     const b = H.brief();
     const cd = b && b.countdown;
     const tank = a.consequence_asset_id || null;
-    if (cd && (!tank || cd.asset_id === tank)) {
+    if (cd && cd.at != null && (!tank || cd.asset_id === tank)) {
       return { tank: cd.asset_id, at: cd.at, low: cd.low, high: cd.high, wells: cd.wells,
         src: b.source === "brief" ? "the live brief" : b.from === "alerts" ? "the live alert forecast" : "the shift forecast" };
     }
     if (tank && a.consequence_clock) {
       const at = toMin(a.consequence_clock);
       const spread = a.minutes_to_consequence != null && a.minutes_to_consequence_low != null ? a.minutes_to_consequence - a.minutes_to_consequence_low : null;
-      const w = /(\d+) wells?/.exec(a.consequence || "");
-      return { tank, at, low: spread != null ? at - spread : null, high: spread != null ? at + spread : null, wells: w ? Number(w[1]) : 0, src: "the alert's own forecast" };
+      const w = Array.isArray(a.wells_lost) ? a.wells_lost.length : Number((/(\d+) wells?/.exec(a.consequence || "") || [])[1] || 0);
+      return { tank, at, low: spread != null ? at - spread : null, high: spread != null ? at + spread : null, wells: w, src: "the alert's own forecast" };
     }
     return null;
   }
+
+  // The plan to show: the brief's cheapest robust plan (the Planner's, the status line's),
+  // only once the plans have been re-read since a new alert (else it could be the last incident's).
+  function planFor() {
+    if (cur && !cur.fresh && H.plansAt() > cur.at) cur.fresh = true;
+    const waiting = cur && !cur.fresh && Date.now() - cur.at < PLAN_WAIT_MS;
+    const b = H.brief() || { plans: {} };
+    const plan = waiting ? null : (b.plans && (b.plans.robust || b.plans.cheapest)) || null;
+    return { plan, waiting, wait: b.do_nothing_usd, src: b.source === "brief" ? "the live brief" : "the shift plans" };
+  }
+  const firstOf = (s) => (String(s || "").split(/(?<=\.)\s/)[0] || "").replace(/\.$/, "");
 
   function render() {
     if (!cur) return;
     const a = cur.a;
     const red = levelOf(a) === "red";
-    const b = H.brief() || { plans: {} };
     const sd = shutdownOf(a);
-    const now = H.nowMin();
-    const left = sd ? minsUntil(sd.at, now) : null;
-    const plan = (b.plans && (b.plans.robust || b.plans.cheapest)) || null;
-    const wait = b.do_nothing_usd;
+    const left = sd ? minsUntil(sd.at, H.nowMin()) : null;
+    const { plan, waiting, wait, src } = planFor();
     const unknown = (H.unknown && H.unknown()) || [];
     const sdHtml = sd
-      ? `<p class="gn-sd"><b>${esc(H.nice(sd.tank))} reaches shutdown at ${esc(clock12(sd.at))}</b>${left == null ? "" : left <= 0 ? ", now" : `, in <b>${Math.round(left)} min</b>`}.${sd.wells ? ` ${sd.wells} well${sd.wells === 1 ? "" : "s"} go${sd.wells === 1 ? "es" : ""} down with it.` : ""}</p>
-        <p class="gn-src">${sd.low != null && sd.high != null ? `between ${esc(clock12(sd.low))} and ${esc(clock12(sd.high))}, ` : ""}from ${esc(sd.src)}${a.clock ? `, alert raised ${esc(clock12(toMin(a.clock)))}` : ""}</p>`
-      : `<p class="gn-sd">${esc(a.consequence || (unknown.length ? `no shutdown time: no fresh reading from ${unknown.map(H.nice).join(", ")}. treat it as unknown, not safe.` : "no shutdown forecast for this alert."))}</p>`;
+      ? `<p class="gn-sd"><b>${esc(H.nice(sd.tank))} reaches shutdown at ${esc(clockOf(sd.at))}</b>${left == null ? "" : left <= 0 ? ", now" : `, in <b>${esc(inMin(left))}</b>`}.${sd.wells ? ` ${sd.wells} well${sd.wells === 1 ? "" : "s"} go${sd.wells === 1 ? "es" : ""} down with it.` : ""}</p>
+        <p class="gn-src">${sd.low != null && sd.high != null ? `between ${esc(clockOf(sd.low))} and ${esc(clockOf(sd.high))}, ` : ""}from ${esc(sd.src)}${a.clock ? `, alert raised ${esc(clockOf(toMin(a.clock)))}` : ""}</p>`
+      : `<p class="gn-sd">${esc(pretty(a.consequence) || (unknown.length ? `no shutdown time: no fresh reading from ${unknown.map(H.nice).join(", ")}. treat it as unknown, not safe.` : "no shutdown forecast for this alert."))}</p>`;
     let fixHtml;
     if (plan && plan.total_usd != null) {
-      const first = (String(plan.summary || "").split(/(?<=\.)\s/)[0] || "").replace(/\.$/, "");
-      fixHtml = `<p class="gn-fix"><span class="gn-k">cheapest fix</span>${esc(first || "the plan")}: <b class="gn-usd">${esc(usd(plan.total_usd))}</b>${wait != null ? ` vs ${esc(usd(wait))} if nobody acts` : ""}.${plan.expires_clock ? ` start by ${esc(plan.expires_clock)}.` : ""}</p>
-        <p class="gn-src">from ${b.source === "brief" ? "the live brief" : "the shift plans"}. nothing is sent until a person holds to confirm.</p>`;
-    } else if (Date.now() - cur.at < PLAN_WAIT_MS) {
+      fixHtml = `<p class="gn-fix"><span class="gn-k">cheapest fix</span>${esc(pretty(firstOf(plan.summary)) || "the plan")}: <b class="gn-usd">${esc(usd(plan.total_usd))}</b>${wait != null ? ` vs ${esc(usd(wait))} if nobody acts` : ""}.${plan.expires_clock ? ` start by ${esc(plan.expires_clock)}.` : ""}</p>
+        <p class="gn-src">from ${esc(src)}. nothing is sent until a person holds to confirm.</p>`;
+    } else if (waiting) {
       fixHtml = `<p class="gn-fix muted"><span class="gn-k">cheapest fix</span>checking the plans for this incident…</p>`;
     } else {
       fixHtml = `<p class="gn-fix muted"><span class="gn-k">cheapest fix</span>no plan keeps every well running yet. ask gaia for options.</p>`;
     }
     const html = `
-      <div class="gn-top"><span class="cs-dot ${red ? "red" : "amber"}"></span><span>${red ? "alarm" : "warning"} · ${esc(prioOf(a))}${a.clock ? ` · ${esc(clock12(toMin(a.clock)))}` : ""}</span>
+      <div class="gn-top"><span class="cs-dot ${red ? "red" : "amber"}"></span><span>${red ? "alarm" : "warning"} · ${esc(prioOf(a))}${a.clock ? ` · ${esc(clockOf(toMin(a.clock)))}` : ""}</span>
         <span class="gn-grow"></span><span class="gn-id">${esc(a.asset_id || "")}</span></div>
       <h2 id="gnHead" class="gn-head">${esc(headOf(a))}</h2>
-      ${whatFailed(a) ? `<p class="gn-what">${esc(whatFailed(a))}</p>` : ""}
+      ${whatFailed(a, sd) ? `<p class="gn-what">${esc(whatFailed(a, sd))}</p>` : ""}
       ${sdHtml}
       ${fixHtml}
       <div class="gn-row"><button type="button" class="gn-show" data-gn="show">show me</button><button type="button" class="gn-dismiss" data-gn="dismiss">dismiss</button></div>`;
@@ -165,6 +192,40 @@ export function makeNotifier(H) {
     card.classList.toggle("red", red);
     card.classList.toggle("amber", !red);
     place();
+  }
+
+  // The phone gets one plain sentence: what failed, when the tank shuts down, the cheapest fix
+  // and its cost. Same numbers as the card. window.gaiaPhone (#160) is a no-op without a provider.
+  function phoneText(a) {
+    const sd = shutdownOf(a);
+    const left = sd ? minsUntil(sd.at, H.nowMin()) : null;
+    const { plan, wait } = planFor();
+    const head = headOf(a);
+    const what = sd
+      ? `${H.nice(sd.tank)} reaches shutdown at ${clockOf(sd.at)}${left != null && left > 0 ? `, in ${inMin(left)}` : left != null ? " (now)" : ""}${sd.wells ? `, taking ${sd.wells} well${sd.wells === 1 ? "" : "s"} down` : ""}`
+      : pretty(a.consequence || "no shutdown is forecast").replace(/\.$/, "");
+    const how = pretty(firstOf(plan && plan.summary)).replace(/^./, (c) => c.toLowerCase());
+    const fix = plan && plan.total_usd != null
+      ? `the cheapest fix costs ${usd(plan.total_usd)}${wait != null ? ` vs ${usd(wait)} if nobody acts` : ""}${how ? `: ${how}` : ""}`
+      : "no plan keeps every well running yet, so ask gaia for options";
+    return `gaia: ${head}${a.clock ? ` at ${clockOf(toMin(a.clock))}` : ""}; ${what}; ${fix}.`;
+  }
+  // Only when a judge left a number on /start and is signed up (no POST otherwise). One send
+  // per alert id here; the backend also keeps track.
+  const phoneOn = () => !!(window.gaiaPhone && window.gaiaPhone.send && (!window.gaiaPhone.subscription || window.gaiaPhone.subscription()));
+  function phoneTick() {
+    for (const [id, p] of phoned) {
+      if (p.sent) continue;
+      if (!phoneOn()) { if (Date.now() - p.at > PHONE_WAIT_MS) p.sent = "off"; continue; }
+      const ready = (cur && cur.a.id === id ? cur.fresh : H.plansAt() > p.at) || Date.now() - p.at > PHONE_WAIT_MS;
+      if (!ready) continue;
+      p.sent = true;
+      p.text = phoneText(cur && cur.a.id === id ? cur.a : p.a);
+      try {
+        const r = window.gaiaPhone && window.gaiaPhone.send ? window.gaiaPhone.send(id, p.text) : null;
+        if (r && r.catch) r.catch(() => {});
+      } catch { /* the phone is a convenience; the card is the alert */ }
+    }
   }
 
   // Over the 3D field, under the status line and the monitoring strip, never down on the time bar
@@ -204,8 +265,14 @@ export function makeNotifier(H) {
   function show(a, opts = {}) {
     if (!a || !a.id) return { shown: false, reason: "no alert" };
     if (cur && cur.a.id === a.id && !card.hidden) { cur.a = { ...cur.a, ...a }; render(); return { shown: true, id: a.id, again: true }; }
+    const isNew = !seen.has(a.id);
     seen.add(a.id);
-    cur = { a, at: Date.now(), via: opts.via || "alert" };
+    // A new alert re-reads the plans (index.js poll), and the phone hears about it once.
+    if (isNew && H.onNew) H.onNew(a);
+    if (isNew) phoned.set(a.id, { at: Date.now(), a, sent: false });
+    // The plans on hand belong to this alert only if they were read after the console first had it.
+    const fresh = opts.fresh != null ? !!opts.fresh : H.plansAt() > (H.seenAt(a.id) || Infinity);
+    cur = { a, at: Date.now(), fresh, via: opts.via || "alert" };
     card.hidden = false;
     card.classList.remove("in");
     card._html = "";
@@ -215,22 +282,8 @@ export function makeNotifier(H) {
     const sound = opts.sound === false ? false : tone(levelOf(a) === "red");
     startFlash(headOf(a).toLowerCase(), levelOf(a) === "red");
     if (H.log) H.log("alert", `Notified: ${a.message || a.id}`);
-    phoneLater(a.id);
-    return { shown: true, id: a.id, sound };
-  }
-
-  // The judge's phone (#163): the same words as the card, as one text and one voice call,
-  // once per alert id (the backend keeps track). Waits for the plan line so the text carries
-  // the cheapest fix and its cost. A no-op without a provider or a signed-up number.
-  function phoneLater(id) {
-    if (!window.gaiaPhone || !window.gaiaPhone.subscription()) return;
-    setTimeout(() => {
-      if (!cur || cur.a.id !== id) return;
-      const t = (sel) => (card.querySelector(sel)?.textContent || "").replace(/\s+/g, " ").trim();
-      const fix = t(".gn-fix").replace(/^cheapest fix/, "cheapest fix:").replace(/checking the plans.*$/, "");
-      const text = [t(".gn-head"), t(".gn-sd"), fix, "hold to confirm in the console."].filter(Boolean).join(" ");
-      window.gaiaPhone.send(id, text);
-    }, 2500);
+    phoneTick();
+    return { shown: true, id: a.id, sound, phone: isNew };
   }
   function dismiss(why = "dismissed") {
     if (!cur) return;
@@ -250,25 +303,44 @@ export function makeNotifier(H) {
     H.showMe(a);
   }
 
-  // The console's alert source: a new root alert, P1 or P2, active and not shelved. Once per id.
+  const isRoot = (a) => !a.root_id || a.root_id === a.id;
+  // The console's alert source: a new root alert (an alarm or a warning), active and not shelved.
+  // Once per id. While a more urgent alert's card is up, a less urgent one stays in the chat.
   function consider(a, event, becameP1) {
     if (!a || !a.id || seen.has(a.id)) return false;
-    const root = !a.root_id || a.root_id === a.id;
-    const p = prioOf(a);
-    if (!root || a.active === false || a.shelved_until) return false;
-    if (!((event === "raised" && (p === "P1" || p === "P2")) || becameP1)) return false;
+    if (!isRoot(a) || a.active === false || a.shelved_until || levelOf(a) === "gray") return false;
+    if (!(event === "raised" || becameP1)) return false;
+    if (cur && !card.hidden && rank(a) > rank(cur.a)) { seen.add(a.id); return false; }
     return show(a).shown;
+  }
+
+  // /api/state's incident (the demo's, or the dataset's top alert). The first one seen is
+  // what was there at load; a new one after that notifies, through its alert when the console
+  // has one (same id, same dedupe), else from the incident's own words.
+  function incident(inc) {
+    const key = inc ? String(inc.event_id || `${inc.root_asset_id || ""}|${inc.summary || ""}`) : null;
+    if (lastInc === undefined) { lastInc = key; return; }
+    if (key === lastInc) return;
+    lastInc = key;
+    if (!inc || !key) return;
+    const list = (H.alerts() || []).filter((x) => x.active !== false && isRoot(x));
+    const a = list.find((x) => x.id === inc.event_id) || list.find((x) => x.asset_id === inc.root_asset_id);
+    if (a) { consider(a, "raised"); return; }
+    if (seen.has(key)) return;
+    const pump = /pump/i.test(String(inc.category || inc.root_asset_id || ""));
+    consider({ id: key, asset_id: inc.root_asset_id || "", message: inc.summary || "New incident.", severity: inc.severity || (pump || !inc.category ? "ALARM" : "WARNING"), active: true }, "raised");
   }
 
   // The alert a tour would show: the most urgent active root (P1 first, then the soonest shutdown).
   function top() {
-    const list = (H.alerts() || []).filter((a) => a.active !== false && !a.shelved_until && (!a.root_id || a.root_id === a.id));
-    list.sort((x, y) => (prioOf(x) === prioOf(y) ? (x.consequence_t ?? 1e9) - (y.consequence_t ?? 1e9) : prioOf(x) < prioOf(y) ? -1 : 1));
+    const list = (H.alerts() || []).filter((a) => a.active !== false && !a.shelved_until && isRoot(a));
+    list.sort((x, y) => (rank(x) === rank(y) ? (x.consequence_t ?? 1e9) - (y.consequence_t ?? 1e9) : rank(x) - rank(y)));
     return list[0] || null;
   }
 
-  // Once a second: keep the minutes and the plan current, and drop it if the alert cleared.
+  // Once a second: keep the minutes and the plan current, drop it if the alert cleared, phone.
   function tick() {
+    phoneTick();
     if (!cur) return;
     const live = (H.alerts() || []).find((x) => x.id === cur.a.id);
     if (live) cur.a = { ...cur.a, ...live };
@@ -279,7 +351,8 @@ export function makeNotifier(H) {
   document.addEventListener("visibilitychange", () => { if (!document.hidden && cur) place(); });
 
   return {
-    consider, show, dismiss, top, tick, place,
-    state: () => ({ shown: !!cur && !card.hidden, id: cur ? cur.a.id : null, seen: [...seen], flashing: flashT != null }),
+    consider, incident, show, dismiss, top, tick, place,
+    state: () => ({ shown: !!cur && !card.hidden, id: cur ? cur.a.id : null, seen: [...seen], flashing: flashT != null,
+      phone: [...phoned].map(([id, p]) => ({ id, sent: p.sent, text: p.text || null })) }),
   };
 }

@@ -9,7 +9,7 @@
 // A missing or stale reading says "no reading", never a level, and never counts as up or online.
 //
 //   const m = mountMonitor(stage, { focus, openAlerts })
-//   m.render(s)   s = { field, view, unknown, alerts, down, countdown, left, src, vouch, asOf }
+//   m.render(s)   s = { field, view, unknown, alerts, down, countdown, left, src, vouch, asOf, inSystem }
 
 import * as liveFeed from "../live.js";
 import { frozen } from "../trend.js";
@@ -19,8 +19,12 @@ import { clock12 } from "./agents.js";
 const BLIND = new Set(["NO_DATA", "UNKNOWN"]);
 const blind = (v) => !v || BLIND.has(v.status) || v.stale === true;
 const lc = (s) => String(s).toLowerCase();
-// "tank 3" in full, "t3" where the canvas is narrow (CSS picks one).
-const label = (name) => { const m = /^(\D+?)\s*(\d+)$/.exec(name); return m ? `<i class="lg">${esc(m[1])} </i><i class="sm">${esc(m[1][0])}</i>${m[2]}` : esc(name); };
+// A sponsor id's system prefix ("s4 tank c" from S4_TANK_C): the strip shows one system's assets.
+const bare = (name) => String(name).replace(/^s\d+\s+/, "");
+// "tank 3" or "tank c" in full, "t3" or "tc" where the canvas is narrow (CSS picks one).
+const label = (name) => { const m = /^(\D+?)\s+(\w{1,3})$/.exec(bare(name)); return m ? `<i class="lg">${esc(m[1])} </i><i class="sm">${esc(m[1][0])}</i>${esc(m[2])}` : esc(bare(name)); };
+// The console's clock: "2:48 AM" on the demo field, "14:05 UTC" on an EOG dataset.
+const clockOf = (min) => (liveFeed.live.dataset && min != null ? `${String(Math.floor((((min % 1440) + 1440) % 1440) / 60)).padStart(2, "0")}:${String((((Math.round(min) % 60) + 60) % 60)).padStart(2, "0")} UTC` : clock12(min));
 
 export function mountMonitor(host, H) {
   const el = document.createElement("div");
@@ -85,16 +89,19 @@ export function mountMonitor(host, H) {
     el,
     render(s) {
       if (!s || !s.field) return;
-      const tanks = s.field.tanks || [];
+      // Dataset mode: the 3D shows one system, so the strip does too (alerts and the countdown stay field-wide).
+      const here = (x) => !s.inSystem || s.inSystem(x.id);
+      const tanks = (s.field.tanks || []).filter(here);
       set(tanksEl, tanks.map((t) => tankHtml(t, s)).join(""));
       const live = liveFeed.live.available ? "the live feed" : `the ${s.asOf || "boot"} snapshot`;
-      const pumps = count(s.field.pumps || [], s, (v) => v.status !== "ALARM" && v.running !== false && v.status !== "OFFLINE");
-      const wells = count(s.field.wells || [], s, (v) => v.status !== "OFFLINE" && v.status !== "ALARM");
-      const np = (s.field.pumps || []).length, nw = (s.field.wells || []).length;
+      const pumpList = (s.field.pumps || []).filter(here), wellList = (s.field.wells || []).filter(here);
+      const pumps = count(pumpList, s, (v) => v.status !== "ALARM" && v.running !== false && v.status !== "OFFLINE");
+      const wells = count(wellList, s, (v) => v.status !== "OFFLINE" && v.status !== "ALARM");
+      const np = pumpList.length, nw = wellList.length;
       const unk = (o) => (o.unknown.length ? ` <small>· ${o.unknown.length} no reading</small>` : "");
-      const pumpsTxt = pumps.down.length === 1 ? `${esc(lc(s.nice(pumps.down[0])))} down` : `${pumps.up} of ${np} up`;
+      const pumpsTxt = pumps.down.length === 1 ? `${esc(bare(lc(s.nice(pumps.down[0]))))} down` : `${pumps.up} of ${np} up`;
       const pumpsSm = pumps.down.length === 1 ? pumpsTxt : `pumps ${pumps.up}/${np}`;
-      const cdName = s.countdown ? lc(s.nice(s.countdown.asset_id)) : "";
+      const cdName = s.countdown ? bare(lc(s.nice(s.countdown.asset_id))) : "";
       const cdLeft = s.countdown ? (s.left != null && s.left <= 0 ? "now" : `in ${Math.max(0, Math.round(s.left))} min`) : "";
       const html = [
         stat(pumps.down.length ? "red" : pumps.unknown.length ? "unknown" : "", "pumps", [`${pumpsTxt}${unk(pumps)}`, `${pumpsSm}${pumps.unknown.length ? "?" : ""}`],
@@ -108,8 +115,8 @@ export function mountMonitor(host, H) {
             `${s.alerts.n} active root alert${s.alerts.n === 1 ? "" : "s"} from /api/alerts and the live socket${s.alerts.rel ? `, ${s.alerts.rel} related` : ""}.`, "data-alerts"),
         s.countdown
           ? stat(s.left != null && s.left <= 60 ? "red" : "amber", "shutdown",
-            [`${esc(cdName)} ${cdLeft}`, `${esc(cdName.replace(/^(\D)\D*\s*(\d+)$/, "$1$2"))} ${cdLeft === "now" ? "at shutdown" : cdLeft}`],
-            `${s.nice(s.countdown.asset_id)} reaches shutdown at ${clock12(s.countdown.at)} if nobody acts, from ${s.src}.`, `data-focus="${esc(s.countdown.asset_id)}"`)
+            [`${esc(cdName)} ${cdLeft}`, `${esc(cdName.replace(/^(\D)\D*?\s+(\w{1,3})$/, "$1$2"))} ${cdLeft === "now" ? "at shutdown" : cdLeft}`],
+            `${s.nice(s.countdown.asset_id)} reaches shutdown at ${clockOf(s.countdown.at)} if nobody acts, from ${s.src}.`, `data-focus="${esc(s.countdown.asset_id)}"`)
           : stat(s.vouch ? "" : "unknown", "shutdown", s.vouch ? ["none in 6 h", "no shutdown"] : ["can't vouch", "can't vouch"], s.vouch ? `No tank reaches shutdown in the next 6 hours, from ${s.src}.` : `No shutdown forecast, but the console can't vouch for the field (no live feed or a tank without a reading). From ${s.src}.`),
       ].join("");
       set(statsEl, html);
