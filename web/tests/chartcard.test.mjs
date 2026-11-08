@@ -88,6 +88,11 @@ assert.match(chart("plot S4 tank A pressure").error, /S4_TANK_A has no pressure 
 assert.match(chart("plot S4 pump C temperature").error, /S4_PUMP_C has no temperature reading in the sponsor data\. I can plot its flow \(bbl\/day\) or pressure \(psi\)/, "never swaps in another reading");
 assert.match(chart("S4 pump C vibration since midnight").error, /no vibration reading/);
 assert.match(chart("graph pump 3 temperature").error, /pump 3 has no temperature reading on this field\. I can plot its flow/);
+{
+  const ds = { hasId: (id) => ["S2_TANK_A", "S2_PUMP_A"].includes(id), ids: () => ["S2_TANK_A", "S2_PUMP_A"], selected: () => null };
+  assert.match(chartIntent(normalize("plot tank 3"), ds).error, /I can plot the sponsor tanks.*"plot S2 tank A level since midnight"/, "dataset mode suggests sponsor ids");
+  assert.equal(chartIntent(normalize("plot S2 tank A"), ds).items[0].id, "S2_TANK_A");
+}
 assert.match(canPlot(ctx()), /pump 3 to 4 \(flow\)/);
 
 // Not charts: these keep their old routes.

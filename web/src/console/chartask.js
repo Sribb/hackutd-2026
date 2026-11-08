@@ -185,7 +185,7 @@ export function makeCharts(D) {
       refs, series, fcShown: false,
       caption: [`sponsor data, ${clock.dataset}`, `newest reading ${clockText(nowMin)} utc (data time)`, clock.live === false ? "clock is before the end of the data" : "", spec.cut ? `showing the first ${MAX_SERIES} of ${MAX_SERIES + spec.cut}` : ""].filter(Boolean).join(" · "),
       title: `${items.map((i) => i.id).join(", ")} ${metricWord(it0.metric)}`,
-      src: "GET /api/eog/series", ids: [], focusId: null,
+      src: "GET /api/eog/series", ids: items.map((i) => i.id).filter((id) => D.hasId(id)), focusId: items.map((i) => i.id).find((id) => D.hasId(id)) || null,
     };
   }
 

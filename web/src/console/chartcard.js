@@ -92,7 +92,11 @@ export function canPlot(ctx) {
     return n.length === 1 ? `${w} ${n[0]}` : `${w} ${n[0]} to ${n[n.length - 1]}`;
   };
   const parts = [span("TANK") && `${span("TANK")} (level and forecast)`, span("PUMP") && `${span("PUMP")} (flow)`, span("WELL") && `${span("WELL")} (flow)`].filter(Boolean);
-  return parts.length ? `I can plot ${parts.join(", ")}, like "plot tank 3 level" or "compare tank 3 and tank 4".` : `Try "plot tank 3 level".`;
+  if (parts.length) return `I can plot ${parts.join(", ")}, like "plot tank 3 level" or "compare tank 3 and tank 4".`;
+  // The sponsor network (dataset mode): its asset ids are the sponsor's.
+  const tank = ids.find((id) => /^S\d+_TANK_[A-Z]$/.test(id));
+  if (tank) { const [sys, , f] = tank.split("_"); return `I can plot the sponsor tanks, pumps, pipelines, wells and facilities by id, like "plot ${sys} tank ${f} level since midnight".`; }
+  return `Try "plot tank 3 level".`;
 }
 
 function windowOf(t) {

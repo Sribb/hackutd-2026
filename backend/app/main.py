@@ -95,6 +95,8 @@ async def _mirror(_app: FastAPI) -> None:
 
 app = FastAPI(title="Freeboard backend", lifespan=lifespan)
 app.include_router(history.router)   # GET /api/history (CF-14)
+from . import phone_alerts  # noqa: E402
+app.include_router(phone_alerts.router)   # /api/phone: text and voice alerts (#160), off without TWILIO_*
 
 
 @app.exception_handler(Exception)
@@ -253,9 +255,13 @@ def _push_plan(out: dict) -> None:
         log.warning("SpacetimeDB set_plan failed: %s", e)
 
 
+# Bumped when a route's shape changes; clients can check it in /api/health.
+API_VERSION = "1.1"
+
+
 @app.get("/api/health")
 def health() -> dict:
-    return {"ok": True, "scenario": SCENARIO.get("_source"), "spacetime": spacetime_sync.status,
+    return {"ok": True, "api_version": API_VERSION, "scenario": SCENARIO.get("_source"), "spacetime": spacetime_sync.status,
             "clock_source": "live" if now.live_of(app) is not None else "static",
             "lastcall": LASTCALL, "ingest": INGEST}
 
