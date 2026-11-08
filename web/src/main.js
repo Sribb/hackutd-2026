@@ -13,6 +13,7 @@ import { mountHands } from "./hands.js";
 import { mountJarvis, jarvisSelectionChanged } from "./jarvis.js";
 import * as liveFeed from "./live.js";
 import { mountTwoNights } from "./twonights.js";
+import { mountIot3d } from "./iot3d.js";
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
@@ -1108,6 +1109,7 @@ async function boot() {
   fc = baseline;
   scene.add(model.root);
   indexModel(model.root);
+  mountIot3d({ root: model.root, field, live: liveFeed, base: api.BASE }); // #80: sensor and RTU lights, alert and run highlights
 
   const missing = [...ids].filter((id) => !assets.has(id));
   const notes = [...(baseline.warnings || [])];
