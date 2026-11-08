@@ -22,6 +22,7 @@ import os
 import re
 from typing import Any, Callable, Optional
 
+from . import jarvis_intents, jarvis_tools   # console tools and intents (docs/JARVIS_CONSOLE.md section 5)
 from .fieldmap import name
 from .live import ActionError, LiveField
 
@@ -109,6 +110,7 @@ TOOLS = [
                              "type": "string", "description": "One sentence: why, citing the tool result"}}},
     },
 ]
+TOOLS += jarvis_tools.extend_tools(TOOLS)
 
 
 class Jarvis:
@@ -146,8 +148,9 @@ class Jarvis:
         ctx: dict = {"ui": [], "proposals": [], "role": role}
         rules_first = mode == "rules" or (mode != "llm" and not (key and (COMPLEX.search(text.lower()) or
                                                                            (image_png_base64 and not selected))))
-        reply, source = None, "rules"
-        if rules_first:
+        # Deterministic intents first, even before COMPLEX sends a question to Claude.
+        reply, source = (None if mode == "llm" else await jarvis_intents.match(self, text, selected, ctx)), "rules"
+        if reply is None and rules_first:
             reply = await self._rules(text, selected, ctx)
         if reply is None:
             if mode == "rules":
@@ -156,10 +159,14 @@ class Jarvis:
                 raise JarvisUnavailable(NO_KEY)
             else:
                 reply, source = await self._claude(text, selected, image_png_base64, ctx), "claude"
-        return {"reply": reply, "source": source, "ui": ctx["ui"], "proposals": ctx["proposals"]}
+        return {"reply": reply, "source": source, "ui": ctx["ui"], "proposals": ctx["proposals"],
+                **jarvis_tools.extras(ctx)}
 
     # ---------- tools (both engines) ----------
     async def run_tool(self, tool: str, args: dict, ctx: dict) -> Any:
+        out = await jarvis_tools.run(self, tool, args, ctx)
+        if out is not jarvis_tools.PASS:
+            return out
         live = self.live
         if tool == "focus_camera":
             aid = str(args.get("asset_id", "")).upper()
@@ -207,13 +214,10 @@ class Jarvis:
         return {"error": f"Unknown tool {tool}."}
 
     def _note_ui(self, aid: str, ctx: dict) -> None:
-        d = {"type": "ui", "action": "focus", "asset_id": aid}
-        if not ctx["ui"] or ctx["ui"][-1] != d:
-            ctx["ui"].append(d)
+        jarvis_tools.note_focus(self.live, aid, ctx)
 
     async def _focus(self, aid: str, ctx: dict) -> None:
-        await self.live.focus(aid, source="jarvis")
-        self._note_ui(aid, ctx)
+        await jarvis_tools.focus(self, aid, ctx)
 
     @staticmethod
     def _forecast_action(a: dict) -> dict:
@@ -253,6 +257,7 @@ class Jarvis:
             "waiting for their confirmation on the console. Never claim equipment has changed.\n"
             "- Name assets like a person would ('Tank 3', 'the Tank 3 to 4 crossover'), not by ID.\n\n"
             f"Asset IDs: {json.dumps(ids)}\nTanks: {json.dumps(tanks)}"
+            + jarvis_tools.PROMPT
         )
 
     def _anthropic(self):
