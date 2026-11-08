@@ -379,3 +379,8 @@ body.two-nights .sky-ctl { display: none; }
 .loading.down .down-btns { display: flex; gap: 14px; justify-content: center; align-items: center; margin-top: 8px; }
 .loading.down a { color: var(--ink-2); }
 .badge.down { color: var(--alarm); border-color: var(--alarm); }
+
+/* auth.js notice: wrong PIN, or a device without the right to do that. */
+.auth-notice { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); z-index: 60; max-width: calc(100% - 32px);
+  background: var(--bg, #050505); color: var(--warning, #c9a14a); border: 1px solid currentColor; padding: 10px 14px; font: 13px var(--mono, monospace); }
+.auth-notice[hidden] { display: none; }

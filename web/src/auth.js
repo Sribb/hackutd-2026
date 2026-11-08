@@ -59,9 +59,29 @@ export async function authFetch(url, init) {
     if (pin) {
       setToken(pin);
       r = await fetch(url, withToken(init));
+      // CF-5: a wrong PIN is forgotten at once, and the operator is told nothing moved.
+      if (r.status === 401) { setToken(""); notice("Wrong PIN. Nothing was sent."); }
     }
   }
+  // A phone token (or any limited token) asking for an operator action.
+  if (r.status === 403 && isWrite(init)) notice("This device can't do that. Nothing was sent.");
   return r;
+}
+
+// One short line at the bottom of the screen, for outcomes the caller may not show.
+let noticeTimer = 0;
+export function notice(text) {
+  let el = document.querySelector(".auth-notice");
+  if (!el) {
+    el = document.createElement("div");
+    el.className = "auth-notice";
+    el.setAttribute("role", "alert");
+    document.body.appendChild(el);
+  }
+  el.textContent = text;
+  el.hidden = false;
+  clearTimeout(noticeTimer);
+  noticeTimer = setTimeout(() => { el.hidden = true; }, 6000);
 }
 
 let asking = null;

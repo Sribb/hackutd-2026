@@ -54,3 +54,8 @@ main { max-width: 560px; margin: 0 auto; padding: max(16px, env(safe-area-inset-
 /* Can't reach the backend: never the calm "No alerts" line (audit fix, #104). */
 .ph-down { color: var(--warning, #c9a14a); border: 1px solid currentColor; padding: 12px 14px; margin: 12px 0; font-weight: 600; }
 .ph-down span { font-weight: 400; color: var(--muted); }
+
+/* auth.js notice: wrong PIN, or a device without the right to do that. */
+.auth-notice { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); z-index: 60; max-width: calc(100% - 32px);
+  background: var(--bg, #050505); color: var(--warning, #c9a14a); border: 1px solid currentColor; padding: 10px 14px; font: 13px var(--mono, monospace); }
+.auth-notice[hidden] { display: none; }
