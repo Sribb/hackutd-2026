@@ -140,7 +140,9 @@ def _forecast_consequence(fmap: FieldMap, events: list, horizon_min: float, rest
 
 
 class Detector:
-    def __init__(self, fmap: FieldMap, stale_after_min: float = 5.0) -> None:
+    def __init__(self, fmap: FieldMap, stale_after_min: float = 5.0, declared=()) -> None:
+        """declared: (asset, signal) keys a real connector promises. One that never reports goes
+        SENSOR_STALE after stale_after_min from the first evaluation, so missing data is never silent."""
         self.f = fmap
         self.stale_after = float(stale_after_min)
         self._ids = itertools.count(1)
@@ -154,6 +156,9 @@ class Detector:
         self.flow_changed_t: dict[str, float] = {}   # tank id -> live time that state last changed
         self.pump_cap: dict[str, float] = {}         # pump id -> bbl/hr it can move (shared disposal well)
         self.expected_keys: set[Key] = {(tid, "level_pct") for tid in fmap.tanks}
+        self.declared: set[Key] = set(declared)
+        self.expected_keys |= self.declared
+        self.t0: Optional[float] = None              # live time of the first evaluation
 
     # ---------- queries ----------
     def is_stale(self, asset_id: str, signal: Optional[str] = None) -> bool:
@@ -167,13 +172,20 @@ class Detector:
         """Run every check at live time t. Returns alerts raised or resolved."""
         changed: list[dict] = []
         self.expected_keys |= set(latest)
+        if self.t0 is None:
+            self.t0 = t
 
         def fresh(key: Key) -> bool:
             r = latest.get(key)
             return r is not None and t - r["t"] <= self.stale_after
 
+        def in_grace(key: Key) -> bool:
+            # A declared signal that hasn't reported yet is not stale until stale_after has passed
+            # since the first evaluation (connectors may still be connecting); it is never 'fresh'.
+            return key not in latest and key in self.declared and t - self.t0 <= self.stale_after
+
         # SENSOR_STALE
-        stale_now = {k for k in self.expected_keys if not fresh(k)}
+        stale_now = {k for k in self.expected_keys if not fresh(k) and not in_grace(k)}
         self.stale_keys = stale_now
         for aid in {a for a, _ in self.expected_keys}:
             sigs = sorted(s for a, s in stale_now if a == aid)

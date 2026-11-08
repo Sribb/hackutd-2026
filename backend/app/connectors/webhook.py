@@ -93,6 +93,11 @@ class WebhookConnector(Connector):
                 self.last_error = None
                 return {"ok": True, "detail": f"Delivered to {self.id} (HTTP {r.status_code})."}
             self.last_error = f"HTTP {r.status_code}"
+            if r.status_code == 408 or r.status_code >= 500:
+                # A gateway/proxy error or timeout: the POST was forwarded and the device may have acted.
+                return {"ok": False, "uncertain": True,
+                        "detail": f"{self.id} answered HTTP {r.status_code}: sent, delivery not confirmed. "
+                                  "Check the field before trying again."}
             return {"ok": False, "detail": f"{self.id} answered HTTP {r.status_code}."}
         except NOT_SENT as e:
             # Nothing left: no connection was made (or the request could not be built).

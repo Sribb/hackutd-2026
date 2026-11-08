@@ -107,7 +107,7 @@ class LiveField:
         self.t = 0.0
         self.registry = Registry(specs, self.fmap, lambda: self.t, initial_pct=initial,
                                  faults=faults, sensors=sensors)
-        self.detector = Detector(self.fmap, float(sensors.get("stale_after_min", 5)))
+        self.detector = Detector(self.fmap, float(sensors.get("stale_after_min", 5)), declared=self.registry.owner)
         self.latest: dict[tuple, dict] = {}
         self.history: dict[tuple, object] = defaultdict(new_history)
         self.commanded: dict[str, dict] = {}       # asset id -> {"value", "t"} from confirmed commands
@@ -324,7 +324,7 @@ class LiveField:
         self.fmap = FieldMap.from_scenario(scenario, self.fmap.start_clock)
         self.registry = Registry(specs, self.fmap, lambda: self.t, initial_pct=initial,
                                  faults=faults, sensors=sensors)
-        self.detector = Detector(self.fmap, float(sensors.get("stale_after_min", 5)))
+        self.detector = Detector(self.fmap, float(sensors.get("stale_after_min", 5)), declared=self.registry.owner)
         self.detector._ids, self.detector.alerts = old_det._ids, old_det.alerts
         present = set(self.fmap.all_ids())
 
@@ -461,6 +461,18 @@ class LiveField:
             r = last.get(aid)
             entry["age_min"] = round(self.t - r["t"], 2) if r else None
             entry["last_reading_t"] = r["wall"] if r else None
+        # Missing data never reads as healthy: any asset with a stale or never-reported signal
+        # (including one a real connector declares but hasn't sent) is UNKNOWN unless it's in ALARM.
+        stale_by_asset: dict[str, list[str]] = {}
+        for aid, sig in d.stale_keys:
+            stale_by_asset.setdefault(aid, []).append(sig)
+        for aid, sigs in stale_by_asset.items():
+            entry = assets.get(aid)
+            if entry is None or entry["status"] in ("ALARM", "UNKNOWN"):
+                continue
+            entry["status"], entry["stale"] = "UNKNOWN", True
+            note = f"No current {', '.join(sorted(sigs))} reading. Treat as unknown, not safe."
+            entry["reason"] = f"{entry['reason']} {note}".strip() if entry.get("reason") else note
         return {"clock": f.clock(self.t), "t": round(self.t, 2), "assets": assets,
                 "connectors": self.registry.status(), "speed": self.speed, "paused": self.paused}
 
