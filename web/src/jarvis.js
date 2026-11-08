@@ -10,7 +10,7 @@
 // Nothing reaches equipment without Confirm, and Confirm is a press and hold.
 
 import { BASE } from "./api.js";
-import { holdButton, decode } from "./fx.js";
+import { holdButton, decode, afterHold, isHolding } from "./fx.js";
 import * as shiftlog from "./shiftlog.js";
 import * as liveFeed from "./live.js";
 
@@ -144,6 +144,8 @@ function describe(a) {
 }
 
 function draw() {
+  // Never swap a hold-to-confirm button out from under a finger: redraw when the hold ends.
+  if (isHolding()) { afterHold(draw); return; }
   if (!open) return;
   $("jarvisBtn").classList.remove("ping");
   const sel = hooks.selected();
