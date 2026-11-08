@@ -1,8 +1,8 @@
-// gaia as an agent (#171): the offline walk-through, the step labels and the spoken words.
+// gaia as an agent (#171): the offline walk-through, the step labels, and no spoken replies.
 import assert from "node:assert/strict";
 import { walkthrough, WALK } from "../src/agent/playbook.js";
 import { stepLabel } from "../src/agent/steps.js";
-import { spoken } from "../src/agent/voice.js";
+import { readFileSync, readdirSync, statSync } from "node:fs";
 import { normalize } from "../src/console/intents.js";
 
 const NICE = { PUMP_3: "Pump 3", TANK_3: "Tank 3", TANK_5: "Tank 5" };
@@ -68,8 +68,9 @@ assert.equal(stepLabel({ action: "set_time", args: { clock: "2:47 AM" } }), "jum
 assert.equal(stepLabel({ action: "open_panel", args: { panel: "plans" } }), "opening the plans");
 assert.equal(stepLabel({ action: "trace_pipes", asset_id: "PUMP_3" }, base.nice), "tracing pipes from pump 3");
 
-// Spoken: two sentences, IDs read as names, dollars said.
-assert.equal(spoken("TANK_3 is at 71%. Shutdown at 2:47 AM. Third sentence."), "tank 3 is at 71%. Shutdown at 2:47 AM.");
-assert.equal(spoken("Plan costs $1,200."), "Plan costs 1,200 dollars.");
-assert.equal(spoken(""), "");
+// gaia answers on screen only (Sriyan, board Nov 8): no text-to-speech anywhere in the app.
+const walk = (d) => readdirSync(d).flatMap((f) => (statSync(`${d}/${f}`).isDirectory() ? walk(`${d}/${f}`) : /\.js$/.test(f) ? [`${d}/${f}`] : []));
+const src = new URL("../src", import.meta.url).pathname;
+for (const f of walk(src)) assert.ok(!/speechSynthesis|SpeechSynthesisUtterance/.test(readFileSync(f, "utf8")), `${f} speaks: gaia answers on screen only`);
+
 console.log("agent: all checks pass");
