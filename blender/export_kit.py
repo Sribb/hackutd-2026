@@ -164,7 +164,8 @@ def build_pad(s):
     """field_build.build_pad on an empty pad at the origin, keeping only PAD_KIT and its children."""
     pad = {"frame": lay.Frame(0.0, 0.0), "tank": "TANK_PADKIT", "n": "KIT", "capacity": None}
     supports = fp.Kit(s, "SITE_supports", None)
-    field_build.build_pad(s, supports, pad, [], [], [])
+    # No neighbors at the origin, so the pad's berm has nothing to keep off (#122's blockers).
+    field_build.build_pad(s, supports, pad, [], [], [], [])
     supports.done()
     root = bpy.data.objects["PAD_KIT"]
     keep = {root, *root.children_recursive}

@@ -2,15 +2,15 @@
  "format": 1,
  "blender": "5.2.3 LTS",
  "sources": {
-  "field_parts.py": "7886143b981e8bbc",
-  "detail_equipment.py": "0ed3fc575f571960",
-  "detail_site.py": "ae054f9c344b1d06",
-  "field_build.py": "0abe068a64ae28ee",
+  "field_parts.py": "aaf7b8015dab895d",
+  "detail_equipment.py": "c3a7b4df2a42e272",
+  "detail_site.py": "13477318212574f9",
+  "field_build.py": "3bdb3f855f034073",
   "piping.py": "7df74a39713c9134",
   "layout.py": "6c51e75f31b396d5",
-  "build_field.py": "64ad2a60e2ddb7bd",
+  "build_field.py": "567377ae74df5f49",
   "equipment_parts.py": "d8acc611f9830214",
-  "iot_parts.py": "4e9d0f75651f7cb1"
+  "iot_parts.py": "ea301bb6fe72b033"
  },
  "token": "KIT",
  "axes": "anchors and bounds are in the type's own frame with Blender axes: x east, y north, z up",
@@ -40,12 +40,14 @@
    "lite": [
     "bolts",
     "small labels, tags and signs",
-    "containment and fence posts"
+    "containment and fence posts",
+    "hero trim: pumpjack ladders, wellhead valves and gauges, crank guards, roof walkway rails"
    ],
    "bare": [
     "bolts",
     "small labels, tags and signs",
     "containment and fence posts",
+    "hero trim: pumpjack ladders, wellhead valves and gauges, crank guards, roof walkway rails",
     "wellhead trees, crank guards and well signs"
    ]
   },
@@ -90,13 +92,13 @@
    "name": "{id}",
    "levels": {
     "full": "tank.glb",
-    "lite": "tank.glb",
-    "bare": "tank.glb"
+    "lite": "tank_lite.glb",
+    "bare": "tank_lite.glb"
    },
    "triangles": {
-    "full": 4364,
-    "lite": 4364,
-    "bare": 4364
+    "full": 5384,
+    "lite": 4604,
+    "bare": 4604
    },
    "parts": [
     {
@@ -160,12 +162,6 @@
      "parent": ""
     },
     {
-     "name": "_steel_dark",
-     "role": "static",
-     "type": "mesh",
-     "parent": ""
-    },
-    {
      "name": "_tank",
      "role": "static",
      "type": "mesh",
@@ -173,12 +169,12 @@
     }
    ],
    "bounds": [
-    -3.986,
-    3.65,
+    -4.242,
+    4.066,
     -3.65,
-    3.68,
+    4.203,
     -0.14,
-    6.23
+    6.55
    ],
    "anchors": {
     "outlets": {
@@ -194,8 +190,8 @@
      ]
     },
     "inlet": [
-     -0.6425,
-     3.64379,
+     -2.83436,
+     2.37831,
      4.3
     ],
     "loadout": [
@@ -231,13 +227,19 @@
     "bare": "pump_lite.glb"
    },
    "triangles": {
-    "full": 2172,
-    "lite": 1852,
-    "bare": 1852
+    "full": 2764,
+    "lite": 1768,
+    "bare": 1768
    },
    "parts": [
     {
      "name": "_concrete",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_detail_glass",
      "role": "static",
      "type": "mesh",
      "parent": ""
@@ -257,6 +259,12 @@
     {
      "name": "_light",
      "role": "light",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_motor",
+     "role": "static",
      "type": "mesh",
      "parent": ""
     },
@@ -317,19 +325,13 @@
     "bare": "valve_discharge_lite.glb"
    },
    "triangles": {
-    "full": 852,
-    "lite": 532,
-    "bare": 532
+    "full": 1052,
+    "lite": 580,
+    "bare": 580
    },
    "parts": [
     {
      "name": "_detail_steel",
-     "role": "static",
-     "type": "mesh",
-     "parent": ""
-    },
-    {
-     "name": "_detail_steel_dark",
      "role": "static",
      "type": "mesh",
      "parent": ""
@@ -354,12 +356,12 @@
     }
    ],
    "bounds": [
-    -0.285,
+    -0.28,
     0.3,
-    -0.285,
-    0.285,
-    -0.27,
-    0.91
+    -0.284,
+    0.284,
+    -0.21,
+    1.255
    ],
    "anchors": {
     "north": [
@@ -385,19 +387,13 @@
     "bare": "valve_crossover_lite.glb"
    },
    "triangles": {
-    "full": 852,
-    "lite": 532,
-    "bare": 532
+    "full": 1052,
+    "lite": 580,
+    "bare": 580
    },
    "parts": [
     {
      "name": "_detail_steel",
-     "role": "static",
-     "type": "mesh",
-     "parent": ""
-    },
-    {
-     "name": "_detail_steel_dark",
      "role": "static",
      "type": "mesh",
      "parent": ""
@@ -422,12 +418,12 @@
     }
    ],
    "bounds": [
-    -0.285,
+    -0.28,
     0.3,
-    -0.285,
-    0.285,
-    -0.27,
-    0.91
+    -0.284,
+    0.284,
+    -0.21,
+    1.255
    ],
    "anchors": {
     "north": [
@@ -449,13 +445,13 @@
    "name": "{id}",
    "levels": {
     "full": "well.glb",
-    "lite": "well.glb",
+    "lite": "well_lite.glb",
     "bare": "well_bare.glb"
    },
    "triangles": {
-    "full": 1476,
-    "lite": 1476,
-    "bare": 716
+    "full": 3624,
+    "lite": 1484,
+    "bare": 1132
    },
    "parts": [
     {
@@ -463,6 +459,18 @@
      "role": "moving",
      "type": "mesh",
      "parent": ""
+    },
+    {
+     "name": "_bridle",
+     "role": "static",
+     "type": "mesh",
+     "parent": "_beam"
+    },
+    {
+     "name": "_pitman",
+     "role": "static",
+     "type": "mesh",
+     "parent": "_beam"
     },
     {
      "name": "_concrete",
@@ -473,6 +481,12 @@
     {
      "name": "_crank",
      "role": "moving",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_detail_glass",
+     "role": "static",
      "type": "mesh",
      "parent": ""
     },
@@ -501,7 +515,7 @@
      "parent": ""
     },
     {
-     "name": "_pipe",
+     "name": "_motor",
      "role": "static",
      "type": "mesh",
      "parent": ""
@@ -524,13 +538,13 @@
     2.5,
     -5.05,
     5.45,
-    0.0,
-    4.821
+    -0.02,
+    5.249
    ],
    "anchors": {
     "outlet": [
      0.6,
-     -3.45,
+     -3.5,
      0.85
     ]
    },
@@ -546,13 +560,19 @@
     "bare": "disposal_well_lite.glb"
    },
    "triangles": {
-    "full": 3516,
-    "lite": 2916,
-    "bare": 2916
+    "full": 7322,
+    "lite": 4958,
+    "bare": 4958
    },
    "parts": [
     {
      "name": "_concrete",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_detail_liner",
      "role": "static",
      "type": "mesh",
      "parent": ""
@@ -588,7 +608,19 @@
      "parent": ""
     },
     {
+     "name": "_glass",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
      "name": "_gravel",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_motor",
      "role": "static",
      "type": "mesh",
      "parent": ""
@@ -648,13 +680,19 @@
     "bare": "disposal_well_mirror_lite.glb"
    },
    "triangles": {
-    "full": 3516,
-    "lite": 2916,
-    "bare": 2916
+    "full": 7322,
+    "lite": 4958,
+    "bare": 4958
    },
    "parts": [
     {
      "name": "_concrete",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_detail_liner",
      "role": "static",
      "type": "mesh",
      "parent": ""
@@ -690,7 +728,19 @@
      "parent": ""
     },
     {
+     "name": "_glass",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
      "name": "_gravel",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_motor",
      "role": "static",
      "type": "mesh",
      "parent": ""
@@ -746,13 +796,13 @@
    "name": "{id}",
    "levels": {
     "full": "truck.glb",
-    "lite": "truck.glb",
-    "bare": "truck.glb"
+    "lite": "truck_lite.glb",
+    "bare": "truck_lite.glb"
    },
    "triangles": {
-    "full": 3092,
-    "lite": 3092,
-    "bare": 3092
+    "full": 5240,
+    "lite": 4184,
+    "bare": 4184
    },
    "parts": [
     {
@@ -846,6 +896,12 @@
      "parent": ""
     },
     {
+     "name": "_rubber",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
      "name": "_steel",
      "role": "static",
      "type": "mesh",
@@ -865,8 +921,8 @@
     }
    ],
    "bounds": [
-    -4.95,
-    6.275,
+    -5.0,
+    6.36,
     -1.576,
     1.576,
     0.0,
@@ -1027,13 +1083,19 @@
     "bare": "pad_lite.glb"
    },
    "triangles": {
-    "full": 836,
-    "lite": 404,
-    "bare": 404
+    "full": 1398,
+    "lite": 966,
+    "bare": 966
    },
    "parts": [
     {
-     "name": "_detail_rubber",
+     "name": "_berm",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_detail_liner",
      "role": "static",
      "type": "mesh",
      "parent": ""
@@ -1064,11 +1126,11 @@
     }
    ],
    "bounds": [
-    -12.25,
-    12.0,
+    -15.1,
+    15.1,
     27.45,
-    58.0,
-    0.0,
+    64.1,
+    -0.45,
     2.172
    ],
    "root": ""
@@ -1509,18 +1571,30 @@
    "name": "SENSOR_{id}",
    "levels": {
     "full": "sensor_surface.glb",
-    "lite": "sensor_surface.glb",
-    "bare": "sensor_surface.glb"
+    "lite": "sensor_surface_lite.glb",
+    "bare": "sensor_surface_lite.glb"
    },
    "triangles": {
-    "full": 128,
-    "lite": 128,
-    "bare": 128
+    "full": 388,
+    "lite": 292,
+    "bare": 292
    },
    "parts": [
     {
+     "name": "_glass",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
      "name": "_light",
      "role": "light",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_steel",
+     "role": "static",
      "type": "mesh",
      "parent": ""
     },
@@ -1532,12 +1606,12 @@
     }
    ],
    "bounds": [
-    -0.115,
-    0.1,
-    -0.065,
-    0.065,
+    -0.112,
+    0.135,
+    -0.1,
+    0.09,
     0.0,
-    0.62
+    0.61
    ],
    "mounts": {
     "tank": [
@@ -1591,15 +1665,21 @@
    "name": "SENSOR_{id}",
    "levels": {
     "full": "sensor_bracket.glb",
-    "lite": "sensor_bracket.glb",
-    "bare": "sensor_bracket.glb"
+    "lite": "sensor_bracket_lite.glb",
+    "bare": "sensor_bracket_lite.glb"
    },
    "triangles": {
-    "full": 140,
-    "lite": 140,
-    "bare": 140
+    "full": 400,
+    "lite": 304,
+    "bare": 304
    },
    "parts": [
+    {
+     "name": "_glass",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
     {
      "name": "_light",
      "role": "light",
@@ -1620,12 +1700,12 @@
     }
    ],
    "bounds": [
-    -0.115,
-    0.1,
-    -0.065,
+    -0.112,
+    0.135,
+    -0.1,
     0.18,
     0.0,
-    0.62
+    0.65
    ],
    "mounts": {
     "tank": [
@@ -1679,15 +1759,21 @@
    "name": "SENSOR_{id}",
    "levels": {
     "full": "sensor_post.glb",
-    "lite": "sensor_post.glb",
-    "bare": "sensor_post.glb"
+    "lite": "sensor_post_lite.glb",
+    "bare": "sensor_post_lite.glb"
    },
    "triangles": {
-    "full": 148,
-    "lite": 148,
-    "bare": 148
+    "full": 424,
+    "lite": 328,
+    "bare": 328
    },
    "parts": [
+    {
+     "name": "_glass",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
     {
      "name": "_light",
      "role": "light",
@@ -1708,12 +1794,12 @@
     }
    ],
    "bounds": [
-    -0.115,
-    0.1,
-    -0.065,
-    0.11,
+    -0.112,
+    0.135,
+    -0.1,
+    0.105,
     0.0,
-    1.62
+    1.625
    ],
    "mounts": {
     "tank": [
@@ -1767,13 +1853,13 @@
    "name": "RTU_PAD_{n}",
    "levels": {
     "full": "rtu.glb",
-    "lite": "rtu.glb",
-    "bare": "rtu.glb"
+    "lite": "rtu_lite.glb",
+    "bare": "rtu_lite.glb"
    },
    "triangles": {
-    "full": 352,
-    "lite": 352,
-    "bare": 352
+    "full": 576,
+    "lite": 440,
+    "bare": 440
    },
    "parts": [
     {
@@ -1784,6 +1870,12 @@
     },
     {
      "name": "_concrete",
+     "role": "static",
+     "type": "mesh",
+     "parent": ""
+    },
+    {
+     "name": "_glass",
      "role": "static",
      "type": "mesh",
      "parent": ""
@@ -1811,7 +1903,7 @@
     -0.7,
     1.05,
     -0.9,
-    0.601,
+    0.627,
     0.0,
     7.9
    ],
@@ -1926,6 +2018,14 @@
    "M_LAMP",
    "M_WOOD",
    "M_WIRE",
+   "M_GALV",
+   "M_MOTOR",
+   "M_HDPE",
+   "M_LINER",
+   "M_BUILDING",
+   "M_MESA",
+   "M_SIGN",
+   "M_HAZARD",
    "M_YUCCA",
    "M_CACTUS",
    "M_PLANT_DRY",
@@ -1933,39 +2033,46 @@
   ]
  },
  "files": {
-  "disposal_well.glb": 151580,
-  "disposal_well_lite.glb": 122052,
-  "disposal_well_mirror.glb": 151580,
-  "disposal_well_mirror_lite.glb": 122052,
-  "equipment_compressor.glb": 73628,
-  "equipment_flare.glb": 41308,
-  "equipment_heater_treater.glb": 68244,
-  "equipment_lact.glb": 57520,
-  "equipment_meter_run.glb": 34568,
+  "disposal_well.glb": 273568,
+  "disposal_well_lite.glb": 185716,
+  "disposal_well_mirror.glb": 273568,
+  "disposal_well_mirror_lite.glb": 185716,
+  "equipment_compressor.glb": 62300,
+  "equipment_flare.glb": 34968,
+  "equipment_heater_treater.glb": 55712,
+  "equipment_lact.glb": 47248,
+  "equipment_meter_run.glb": 28616,
   "equipment_placeholder.glb": 4580,
-  "equipment_separator.glb": 44096,
+  "equipment_separator.glb": 35740,
   "glyphs.glb": 152960,
-  "loadout.glb": 25060,
-  "pad.glb": 47748,
-  "pad_lite.glb": 23464,
-  "palette.glb": 25264,
-  "pump.glb": 102820,
-  "pump_lite.glb": 87076,
-  "rtu.glb": 22652,
-  "sensor_bracket.glb": 9984,
-  "sensor_post.glb": 10288,
-  "sensor_surface.glb": 8424,
-  "tank.glb": 164360,
-  "tower.glb": 14048,
-  "truck.glb": 132208,
-  "valve_crossover.glb": 39448,
-  "valve_crossover_lite.glb": 23692,
-  "valve_discharge.glb": 39448,
-  "valve_discharge_lite.glb": 23692,
-  "well.glb": 73188,
-  "well_bare.glb": 40344,
-  "yard.glb": 36580
+  "loadout.glb": 22752,
+  "pad.glb": 62804,
+  "pad_lite.glb": 38520,
+  "palette.glb": 35608,
+  "pump.glb": 110260,
+  "pump_lite.glb": 74036,
+  "rtu.glb": 30544,
+  "rtu_lite.glb": 26272,
+  "sensor_bracket.glb": 16984,
+  "sensor_bracket_lite.glb": 15732,
+  "sensor_post.glb": 18264,
+  "sensor_post_lite.glb": 17012,
+  "sensor_surface.glb": 16332,
+  "sensor_surface_lite.glb": 15080,
+  "tank.glb": 202792,
+  "tank_lite.glb": 167468,
+  "tower.glb": 13660,
+  "truck.glb": 202232,
+  "truck_lite.glb": 169980,
+  "valve_crossover.glb": 46216,
+  "valve_crossover_lite.glb": 24360,
+  "valve_discharge.glb": 46216,
+  "valve_discharge_lite.glb": 24360,
+  "well.glb": 161640,
+  "well_bare.glb": 60028,
+  "well_lite.glb": 74252,
+  "yard.glb": 32548
  },
- "kit_mb": 1.97,
- "seconds": 4.6
+ "kit_mb": 3.07,
+ "seconds": 3.2
 }
