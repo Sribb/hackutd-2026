@@ -377,9 +377,12 @@ function viewAt(t) {
       view[id] = { ...view[id], status: r.status, live: true, stale: r.stale };
       for (const k of ["position", "running"]) if (r[k] !== undefined) view[id][k] = r[k];
       if (r.level_pct != null) view[id].level_pct = r.level_pct;
+      if (r.reason && r.status !== "UNKNOWN") view[id].reason = r.reason;
       if (r.status === "UNKNOWN") {
         const last = r.last_status && r.last_status !== "OK" ? ` Last known: ${r.last_status}${r.level_pct != null ? ` at ${r.level_pct.toFixed(1)}%` : ""}.` : "";
-        view[id].reason = `No reading for ${ago(liveFeed.staleMinutes(id))}${liveFeed.live.lostSince ? " (live feed lost)" : ""}. Not treated as safe.${last}`;
+        // The backend's own reason (#38) says which signal went quiet; keep it unless the feed itself is lost.
+        view[id].reason = r.reason && !liveFeed.live.lostSince ? `${r.reason}${last}`
+          : `No reading for ${ago(liveFeed.staleMinutes(id))}${liveFeed.live.lostSince ? " (live feed lost)" : ""}. Not treated as safe.${last}`;
       }
     }
   }

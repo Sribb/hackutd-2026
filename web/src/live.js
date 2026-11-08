@@ -129,6 +129,8 @@ function markLost(lost) {
 export function staleMinutes(id) {
   const a = live.assets[id];
   if (!a) return null;
+  // #38 sends age_min (live minutes since the newest reading). Prefer it while the feed is up.
+  if (!live.lostSince && typeof a.age_min === "number") return Math.round(a.age_min);
   if (typeof a.stale === "number") return Math.round(a.stale);
   const since = Math.min(a.staleSince || Infinity, live.lostSince || Infinity, a.staleSince || live.lostSince ? Infinity : a.seenAt);
   return Math.max(0, Math.round((Date.now() - since) / 60000));
