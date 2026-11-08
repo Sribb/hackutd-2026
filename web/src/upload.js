@@ -177,6 +177,21 @@ function drawCheck() {
       ${inputs ? `<div class="fills">${inputs}</div>` : `<label class="ok"><input type="checkbox" data-i="${i}" ${f.checked ? "checked" : ""}> I checked this</label>`}
     </li>`;
   }).join("");
+  // "Fill all": a CSV leaves the same number missing on every tank or well. One typed
+  // value fills every empty box asking for that field. A person types it; nothing is guessed.
+  const asking = new Map();
+  res.review.forEach((item, i) => {
+    for (const k of askedFields(item)) {
+      if (k === "manual") continue;
+      if (!asking.has(k)) asking.set(k, []);
+      asking.get(k).push(i);
+    }
+  });
+  const fillAll = [...asking].filter(([, list]) => list.length > 1).map(([k, list]) => {
+    const empty = list.filter((i) => { const f = st.fixes.get(i); return !f || f.values[k] === undefined || f.values[k] === ""; }).length;
+    return `<form class="fill-all" data-k="${k}"><label>${k} <span class="muted">${empty} of ${list.length} empty</span>
+      <input inputmode="decimal" placeholder="value" ${empty ? "" : "disabled"}></label><button ${empty ? "" : "disabled"}>Fill all</button></form>`;
+  }).join("");
   const counts = KINDS.filter(([k]) => res.counts[k]).map(([k, l]) => `${res.counts[k]} ${l.toLowerCase()}${res.counts[k] > 1 ? "s" : ""}`).join(" · ");
   const blocked = res.errors.length > 0;
   $("upload").innerHTML = shell(1, `<section class="up-check">
@@ -192,6 +207,7 @@ function drawCheck() {
           <ul class="up-errors">${res.errors.map((e) => `<li>${esc(typeof e === "string" ? e : `${e.id || ""} ${e.issue || e.message || JSON.stringify(e)}`)}</li>`).join("")}</ul>
           <p class="muted">Fix the file and drop it again.</p>` : ""}
         <div class="kicker">For you to check · ${res.review.length}</div>
+        ${fillAll ? `<div class="fill-alls">${fillAll}</div>` : ""}
         ${res.review.length ? `<ol class="up-review">${review}</ol>` : `<p class="muted">Nothing. Every asset has the numbers the forecast needs.</p>`}
         <div class="up-actions">
           <button id="upAgain">Different file</button>
@@ -209,6 +225,19 @@ function drawCheck() {
       if (el.tagName === "SELECT") f.values[k] = el.value === "" ? "" : el.value === "true";
       else f.values[k] = el.value.trim() === "" || isNaN(Number(el.value)) ? "" : Number(el.value);
       st.fixes.set(i, f);
+      drawCheck();
+    };
+  });
+  $("upload").querySelectorAll("form.fill-all").forEach((form) => {
+    form.onsubmit = (e) => {
+      e.preventDefault();
+      const k = form.dataset.k, v = Number(form.querySelector("input").value);
+      if (form.querySelector("input").value.trim() === "" || isNaN(v)) return;
+      for (const i of asking.get(k)) {
+        const f = st.fixes.get(i) || { checked: false, values: {} };
+        if (f.values[k] === undefined || f.values[k] === "") f.values[k] = v;
+        st.fixes.set(i, f);
+      }
       drawCheck();
     };
   });
