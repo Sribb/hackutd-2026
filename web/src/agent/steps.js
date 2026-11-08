@@ -31,8 +31,11 @@ export function stepLabel(d, nice = (x) => x) {
   }
 }
 
-// makeSteps({ stream, apply(d) -> said, nice, pause }) -> { play(directives) -> Promise<said>, busy() }
-export function makeSteps({ stream, apply, nice, pause = 750 }) {
+// What the view says when a step did nothing: the label then says that, never the claim.
+const NOPE = /^(no pipes|that panel isn't|i don't know|i couldn't|nothing is open)/i;
+
+// makeSteps({ stream, apply(d) -> said, nice, hasId, pause }) -> { play(directives) -> Promise<said>, busy() }
+export function makeSteps({ stream, apply, nice, hasId = null, pause = 750 }) {
   let busy = false;
   let run = 0;
 
@@ -53,13 +56,24 @@ export function makeSteps({ stream, apply, nice, pause = 750 }) {
     for (let i = 0; i < ds.length; i++) {
       if (me !== run) break; // a newer answer took over the screen
       rows[i].dataset.state = "now";
+      const d = ds[i];
+      const span = rows[i].querySelector("span");
+      if (hasId && d.asset_id && d.asset_id !== "ALL" && !hasId(d.asset_id)) {
+        rows[i].dataset.state = "skip";
+        span.textContent = `${stepLabel(d, nice)}: not on this screen`;
+        await new Promise((res) => setTimeout(res, wait / 2));
+        continue;
+      }
       let said = "";
       try {
-        const r = apply(ds[i]);
+        const r = apply(d);
         said = (r && typeof r.then === "function" ? await Promise.race([r.catch(() => ""), new Promise((res) => setTimeout(() => res(""), 2500))]) : r) || "";
       } catch (e) { console.warn("gaia step", e); rows[i].dataset.state = "skip"; }
       if (typeof said !== "string") said = "";
-      if (said && !first) first = said;
+      let m;
+      if (NOPE.test(said)) { rows[i].dataset.state = "skip"; span.textContent = said.split(/\.\s/)[0].replace(/\.\s*$/, "").toLowerCase().slice(0, 80); }
+      else if ((m = /^(\d+) pipes? touch/i.exec(said))) span.textContent += ` · ${m[1]} pipe${m[1] === "1" ? "" : "s"}`;
+      if (said && !first && !NOPE.test(said)) first = said;
       await new Promise((res) => setTimeout(res, wait));
       if (rows[i].dataset.state === "now") rows[i].dataset.state = "done";
     }

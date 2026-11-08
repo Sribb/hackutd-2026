@@ -15,12 +15,13 @@ const ABOUT = /\b(this|it|its|it's|that|this one|that one)\b/;
 const ASKS = /\b(wrong|status|how'?s|how is|doing|explain|tell me|about|happening|going on|okay)\b/;
 
 // H: { side, stream, apply(d), nice, hasId, selected, brief, alerts, unknown, tankOf,
-//      say(text, extra), ask(text), closePanels(), chart(text) -> Promise, BASE, getJson(path) }
+//      say(text, extra), ask(text), closePanels(), chart(text) -> Promise, BASE, getJson(path),
+//      now() -> minutes, clock(min) -> the console's clock words, dataset() -> bool }
 export function mountAgent(H) {
   // A "chart" step is a chart card (#159, drawn from the data, no AI); the rest are directives.
   const chartText = (d) => d.text || (d.asset_id ? `plot ${String(H.nice(d.asset_id)).toLowerCase()} ${/^(PUMP|WELL|SWD)_/.test(d.asset_id) ? "flow" : "level"}` : "");
   const apply = (d) => (d.action === "chart" ? (H.chart && chartText(d) ? H.chart(chartText(d)) : "") : H.apply(d));
-  const steps = makeSteps({ stream: H.stream, apply, nice: H.nice });
+  const steps = makeSteps({ stream: H.stream, apply, nice: H.nice, hasId: H.hasId });
   const voice = mountVoice({
     dock: H.side.el.querySelector(".cs-dock"), input: H.side.input, mic: H.side.mic,
     send: (text) => H.ask(text),
@@ -39,7 +40,8 @@ export function mountAgent(H) {
   function before(text) {
     const t = normalize(text).trim();
     if (WALK.test(t) && !llm) {
-      const w = walkthrough({ brief: H.brief, alerts: H.alerts, unknown: H.unknown, nice: H.nice, hasId: H.hasId, tankOf: H.tankOf, selected: H.selected });
+      const w = walkthrough({ brief: H.brief, alerts: H.alerts, unknown: H.unknown, nice: H.nice, hasId: H.hasId, tankOf: H.tankOf, selected: H.selected,
+        now: H.now, clock: H.clock, dataset: H.dataset });
       H.stream.showTyping("J");
       setTimeout(async () => {
         H.stream.hideTyping("J");

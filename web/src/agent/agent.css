@@ -11,7 +11,8 @@
 .ag-steps li[data-state="done"] { opacity: .9; color: var(--g-ink-2); }
 .ag-steps li[data-state="done"] i { border-color: var(--g-green); background: var(--g-green); }
 .ag-steps li[data-state="done"] i::after { content: "" !important; position: absolute; left: 3.5px; top: 1px; width: 3px; height: 6px; border: solid var(--g-bg); border-width: 0 1.5px 1.5px 0; transform: rotate(45deg); }
-.ag-steps li[data-state="skip"] { text-decoration: line-through; }
+.ag-steps li[data-state="skip"] { opacity: .75; color: var(--g-mute); }
+.ag-steps li[data-state="skip"] i { border-style: dashed; }
 @keyframes ag-spin { to { transform: rotate(360deg); } }
 
 /* The listening orb, in the dock above the composer. */
