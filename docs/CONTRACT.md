@@ -33,7 +33,7 @@ The web console finds objects by name, so names matter more than anything else h
 5. **Scale:** 1 Blender unit is 1 meter. Apply transforms before exporting, except where an origin has to stay put for rule 4.
 6. **Color:** Model everything in neutral gray and steel. The web console adds status color. Don't paint status into the model.
 7. **Materials:** Use Principled BSDF, because other node setups may not export correctly. Keep textures at 2K or below.
-8. **Budget:** Aim for under 300,000 triangles and under 30 MB so it runs smoothly on a laptop at the expo.
+8. **Budget:** For a field of up to 12 tanks: under 300,000 triangles, under 30 MB, and under 1,600 draw calls, so it runs smoothly on a laptop at the expo. Draw calls cost the most: in the console each one costs about 12 µs of frame time, and every 100,000 triangles cost about 0.7 ms (measured in Chrome on an M5, #97). The build reports `draw_calls`, and `build_field.py` and `blender/test_generator.py` hold the numbers.
 
 **Exporting:** File, Export, glTF 2.0. Use the glTF Binary (`.glb`) format, keep the default +Y Up, and turn Apply Modifiers on. Leave Draco compression off at first.
 
@@ -54,18 +54,20 @@ A generator builds the field from a blueprint, so anyone can rebuild it, and a c
 - With `--blueprint` and no `--out`, it writes to `blender/out/<blueprint name>/`, which git ignores.
 - It writes `field.glb`, `field.blend`, and `build_report.json`. A blueprint with errors exits with code 1 and writes only the report, never a glb. A crash or a failed self-check exits with code 2.
 - `--detail full|lite|bare` forces a detail level. `--render-dir DIR` saves Workbench check renders. `--no-scenery` builds the plain field, with no `SCENERY` layer and flat ground and road colors.
+- `--compress` (#97, off by default) writes Draco meshes and WebP textures: the default field goes from 16.3 MB to 4.7 MB with the same frame time, but the export takes much longer (2.6 s to 15.8 s at load average 20, mostly WebP encoding), so API builds leave it off. The console can only open such a file with a Draco decoder. To turn it on for the console, copy `web/node_modules/three/examples/jsm/libs/draco/gltf/` (`draco_decoder.wasm`, `draco_wasm_wrapper.js`, `draco_decoder.js`) to `web/public/draco/`, and give every `GLTFLoader` in `web/src/main.js` the decoder: `import { DRACOLoader } from "three/addons/loaders/DRACOLoader.js";` then `const loader = new GLTFLoader().setDRACOLoader(new DRACOLoader().setDecoderPath("/draco/"));`. WebP needs nothing: GLTFLoader reads `EXT_texture_webp` itself.
 - `python3 blender/test_generator.py` builds the samples in `blender/samples/` and checks every glb. `blender/preview/index.html` opens any `field.glb` in a browser; how to serve it is at the top of the file.
 
 Change the model in the scripts, not by hand in the `.blend`, or the next rebuild will overwrite your edits:
 - `blender/blueprint.py` reads and checks the blueprint.
 - `blender/layout.py` decides where every asset goes.
-- `blender/field_build.py` and `blender/piping.py` build the field and its pipes.
-- `blender/field_parts.py` builds each core asset.
+- `blender/field_build.py` and `blender/piping.py` build the field and its pipes. The civil works are a caliche lease road with a crown, two lanes of darker wheel tracks and sloped shoulders, driveways with their own tracks, caliche pads with soft edges and a low berm along their sides and back, and black HDPE flowlines on timber sleepers (#98).
+- `blender/field_parts.py` builds each core asset; `blender/well_parts.py` (pumpjack and wellhead), `blender/truck_parts.py` (vacuum truck) and `blender/swd_parts.py` (disposal facility with its H-pumps) hold the bigger ones. At `--detail full` they build the hero detail; `lite` costs about what full did before #100.
 - `blender/detail_equipment.py` adds gauges, sensors, panels, wellhead trees, labels, and load-outs.
-- `blender/detail_site.py` adds power, light towers, containment, disposal well and yard equipment, and truck detail.
+- `blender/detail_site.py` adds power, light towers, corrugated steel containment walls with a black liner, disposal well equipment (a skim tank in lined containment and a truck offload header), yard equipment, and truck detail.
 - `blender/siting.py` finds free spots for anything added after the core layout, and `blender/equipment_parts.py` builds the blueprint's `equipment`.
-- `blender/scenery_parts.py` generates the scenery the CC0 kit lacks: barbed wire fence, yucca, prickly pear, and a cattle guard. `blender/parts_preview.py` builds every generated model in a row to look at.
-- `blender/scenery.py` dresses the built field as desert with the kit in `blender/assets/` and those parts, and `siting.plan_scenery()` decides where each piece goes.
+- `blender/scenery_parts.py` generates the scenery the CC0 kit lacks: barbed wire fence, yucca, prickly pear, a cattle guard, the lease sign, H2S warning plates, and pipeline markers. `blender/parts_preview.py` builds every generated model in a row to look at.
+- `blender/terrain.py` plans the land around the lease: the terrain out to the horizon, its color, and the mesas on it (#98). Plain Python, so the tests check it without Blender.
+- `blender/scenery.py` dresses the built field as desert with the kit in `blender/assets/` and those parts, and `siting.plan_scenery()` and `siting.plan_outside()` decide where each piece goes. `blender/beyond.py` builds what stands past the lease on the terrain: the road and power line out, other operators' pads, and the mesas.
 - `blender/names.py` lists the names every build must contain. Each build checks itself against it before it exports.
 
 ### The blueprint
@@ -114,15 +116,28 @@ Positions are plan meters. The lease road runs along x on y = 0, and y points no
   "layout": { "rows": 1, "road_m": 450.0, "crossovers": { "VALVE_XO_34": "straight" } },
   "detail": { "level": "full", "dropped": [] },
   "iot": { "sensors": 12, "rtus": 6 },
-  "scenery": { "on": true, "textures": ["ground_dry_soil", "dirt_road_tracks"], "fence_m": 1216.0, "cattle_guards": 2,
-               "items": { "boulder": 6, "branch": 6, "creosote": 2, "grass": 110, "lease_sign": 1, "mesquite": 1,
-                          "prickly_pear": 28, "rock": 15, "yucca": 65 },
-               "dropped": [], "triangles": 114650, "field_triangles": 148435, "images_mb": 9.43 },
-  "triangles": 263085, "glb_mb": 19.0, "nodes": 1013, "seconds": 7.8
+  "scenery": { "on": true, "textures": ["ground_dry_soil", "ground_caliche"], "fence_m": 1216.0, "cattle_guards": 2,
+               "terrain_m": 5400.0, "mesas": 24, "other_leases": 10, "power_spans": 18, "brush_past_fence": 50,
+               "items": { "boulder": 4, "branch": 4, "creosote": 1, "grass": 102, "lease_sign": 1,
+                          "prickly_pear": 23, "rock": 11, "yucca": 65 },
+               "dropped": [], "triangles": 103782, "field_triangles": 154587, "images_mb": 4.36 },
+  "triangles": 258369, "glb_mb": 16.33, "nodes": 864, "draw_calls": 750, "compressed": false,
+  "optimize": { "merged": 39, "meshes_before": 750, "meshes_after": 318, "unshared": 0, "no_shadow": 32, "purged": 520,
+                "instanced": { "SCENERY_dry_grass_2_instances": 102, "SCENERY_rock_1_instances": 6, "...": 5 },
+                "instances": 121, "glb_meshes": 318, "instanced_nodes": 7 },
+  "budget": { "triangles": 300000, "mb": 30.0, "draw_calls": 1600 },
+  "timing": { "plan": 0.0, "field": 3.42, "scenery": 2.61, "checks": 0.0, "look": 0.51, "optimize": 1.77, "export": 2.58, "blend": 0.11, "report": 0.03 },
+  "seconds": 11.04, "cpu_seconds": 15.35
 }
 ```
 
-`counts` comes from the blueprint and `kinds` from the built scene. `scenery` says what the desert layer added: its triangles on top of `field_triangles`, the MB of its textures, and anything it `dropped` to stay in the budget. With `--no-scenery` it is `{"on": false}`. `placed` lists which assets had positions in the blueprint and which were placed automatically. When `ok` is false, `errors` says what to fix.
+(That build ran with a load average of about 10 on the Mac, with other agents' jobs running.)
+
+`blender/optimize.py` runs right before export. It joins an asset's `<ID>_detail_steel`, `_detail_steel_dark`, `_detail_concrete`, `_detail_gravel` and `_detail_rubber` Kit meshes into their `<ID>_steel`-style sibling, which `web/src/parts.js` already names the same ("pumpjack frame"), so every console label stays and each asset draws one mesh fewer per material. Pipe and tank parts, contract names, and anything with custom properties (like a `userData.part` split for explode) never join. It then points identical meshes at one copy (24 pumpjacks store each part once), turns repeated scenery kit models into GPU-instanced nodes, drops unused data, and marks small scenery `cast_shadow: false` in extras. Every other node keeps its own node, name, parent and transform. `triangles` counts every instance.
+
+**Shadows:** the console casts a shadow from every mesh, which draws it a second time. Grass, rocks, boulders, branches, yucca, prickly pear, the fence, cattle guards and road stubs carry `userData.cast_shadow === false`; only the mesquite, creosote and lease sign keep theirs. Honoring it took the default field's frame from about 13.4 ms to 12.7 ms (#97). In `indexModel()`, after `o.castShadow = o.receiveShadow = true;`, add: `for (let n = o; n; n = n.parent) if (n.userData && n.userData.cast_shadow !== undefined) { o.castShadow = n.userData.cast_shadow !== false; break; }`. `draw_calls` is one per primitive of each mesh node, which is what three.js draws without shadows (shadows draw each mesh again). `timing` gives the wall seconds of each step, and `seconds` the whole build.
+
+`counts` comes from the blueprint and `kinds` from the built scene. `scenery` says what the desert layer added: its triangles on top of `field_triangles`, how far the terrain runs past the lease (`terrain_m`), the mesas and other operators' pads it built, the MB of its textures, and anything it `dropped` to stay in the budget. With `--no-scenery` it is `{"on": false}`. `placed` lists which assets had positions in the blueprint and which were placed automatically. When `ok` is false, `errors` says what to fix.
 
 **Names in this section:** `<tank>`, `<pump>`, `<valve>`, `<well>`, `<swd>`, `<truck>`, and `<yard>` are blueprint IDs, and `n` is a tank ID without its `TANK_` prefix, so `TANK_3` gives `PAD_3`. For today's field they are the same names as before.
 
@@ -136,9 +151,11 @@ Positions are plan meters. The lease road runs along x on y = 0, and y points no
 |---|---|---|
 | `<tank>_LEVEL` | Brine level inside the cutaway tank | `scale.y` from 0 (empty) to 1 (full). The file ships at 0.55 for preview. |
 | `<pump>_rotor` | Motor fan, so you can see the pump running | Spin `rotation.x` while running, stop when failed |
-| `<valve>_wheel` | Handwheel on every valve | Turn `rotation.y` while the valve opens or closes |
+| `<valve>_wheel` | Handwheel on every valve: the big wheel of a manual gate valve, or the override wheel under a remote valve's actuator. Its pivot is the same either way. Each valve's `userData.actuation` is `manual` or `remote`, from the blueprint's `manual` / `remote` | Turn `rotation.y` while the valve opens or closes |
 | `<well>_beam` | Pumpjack walking beam | Rock `rotation.x` by about ±0.25 rad while the well produces |
 | `<well>_crank` | Pumpjack crank and counterweights | Spin `rotation.x` while the well produces, stop when shut in |
+| `<well>_pitman` | Both pitman arms, a child of `<well>_beam` with its pivot on the equalizer | Optional. As shipped it rocks with the beam. To keep its foot on the wrist pins, each frame set `rotation.x = atan2(dy, -dz) - beam.rotation.x`, where `(dy, dz)` runs from the equalizer to the wrist pin in the well's frame, in Blender axes (y along the beam toward the motor, z up; three.js local `-z` and `y`). The equalizer is the point `(y 3.55, z -0.24)` in the beam's frame, so in the well's frame it is that point turned by the beam's angle plus `(y 0, z 4.1)`; the pin is `(y 2.7 + 0.85 cos c, z 1.6 + 0.85 sin c)`, with `c` the crank's `rotation.x` |
+| `<well>_bridle` | Wireline bridle, carrier bar and polished rod, a child of `<well>_beam` with its pivot where the line leaves the horse head | Optional. As shipped it rocks with the beam. Set `rotation.x = -beam.rotation.x` each frame to keep it plumb over the wellhead, as a real bridle hangs |
 | `<tank>_gauge` | Float marker on the outside level board | `position.y = 0.3 + 4.3 × level` (0 to 1), in the tank's local space |
 | `<truck>_axle_1` to `_3` | Wheel pairs | Spin `rotation.z` while the truck drives |
 | `<swd>_gate` | Swinging gate in the fence | `rotation.y` 0 is closed, 1.31 rad is open. It ships open. |
@@ -153,7 +170,7 @@ Assets on the south side of the road are turned 180 degrees about Y. Their parts
 
 **Sensors:** `<tank>_lt` (radar level) and `<tank>_lshh` (high-level switch) are separate meshes, so the console can highlight the sensor behind an alarm. Clicking them selects the tank.
 
-**IoT sensor nodes (#46):** `SENSOR_<asset>` is a wireless sensor node (an enclosure, a stub antenna, and the `SENSOR_<asset>_light` LED) mounted on an asset and parented to it, so clicking it selects that asset. The assets named in the blueprint's `connectors[].signals` get one each, and with no connectors every tank and pump does. Its `userData` has `kind` `sensor`, `for_asset` (the asset ID), `signals`, and `connectors`, the last two as comma-separated text like `"running,flow_bbl_hr"` and `"CONN_SIM"` (empty with no connectors). Today's field has `SENSOR_TANK_1` to `SENSOR_TANK_6` and `SENSOR_PUMP_1` to `SENSOR_PUMP_6`.
+**IoT sensor nodes (#46):** `SENSOR_<asset>` is a field instrument with a wireless adapter and the `SENSOR_<asset>_light` LED, mounted on an asset and parented to it, so clicking it selects that asset. Its `userData.device` says which instrument it is (#100): `radar_level` on a tank roof, `pressure` (a transmitter on a manifold) on pumps, wellheads, disposal wells and equipment, `position` on a valve, `telematics` on a truck, `gateway` on the yard. The assets named in the blueprint's `connectors[].signals` get one each, and with no connectors every tank and pump does. Its `userData` has `kind` `sensor`, `for_asset` (the asset ID), `signals`, and `connectors`, the last two as comma-separated text like `"running,flow_bbl_hr"` and `"CONN_SIM"` (empty with no connectors). Today's field has `SENSOR_TANK_1` to `SENSOR_TANK_6` and `SENSOR_PUMP_1` to `SENSOR_PUMP_6`.
 
 **RTUs (#46):** `RTU_PAD_n` is the remote terminal unit on each tank pad: a cabinet on a stand with a solar panel and battery box, the `RTU_PAD_n_light` status light, and `RTU_PAD_n_antenna`, the radio mast with an omni whip and a Yagi toward the road. It is parented to `PAD_n`, and its `userData` has `kind` `rtu` and `pad`. It is not a clickable asset. Today's field has `RTU_PAD_1` to `RTU_PAD_6`.
 
@@ -176,14 +193,15 @@ Assets on the south side of the road are turned 180 degrees about Y. Their parts
 - A route is the start stop, its junction, along the road, the target's junction, then the target stop.
 
 **Other names:** None of these are clickable assets:
-- `PAD_n` holds each tank pad's gravel, steel containment, liner, step-over, sign, light tower, and `RTU_PAD_n`.
+- `PAD_n` holds each tank pad's caliche (`PAD_n_gravel`) and berm (`PAD_n_berm`), steel containment, liner, step-over, sign, light tower, and `RTU_PAD_n`.
 - `LOADOUT_n` is the truck hookup stand.
 - `SITE_*` is the ground, roads, pipe supports, and the power line.
 - `CAM_OVERVIEW` is a camera framing the whole field.
 - Names ending in `_label`, `_sign`, or `_tag` are painted numbers and signs.
-- `SCENERY` is the desert layer (#88): one root Empty with `userData.kind` `scenery`, and every node under it is named `SCENERY_*`. It holds the barbed wire fence along the lease edge (`SCENERY_fence_*`), the cattle guards and road stubs where the lease road leaves (`SCENERY_cattle_guard_*`, `SCENERY_road_*`), a lease sign, and a seeded scatter of plants and rocks: one node per kit model copy, like `SCENERY_grass_12`, `SCENERY_rock_3`, and `SCENERY_mesquite_1`, and one merged mesh per material for the generated plants (`SCENERY_yucca_*`, `SCENERY_prickly_pear_*`). Nothing under it has an asset ID, so it is never clickable. Hide the whole layer with `scene.getObjectByName("SCENERY").visible = false`. It stays off pads, roads, pipe runs, and truck routes, and it is the same on every build of the same blueprint. The ground (`M_GROUND`) and the road (`M_ROAD`) also get the kit's dry soil and dirt road textures; those are not under `SCENERY`.
+- `SCENERY` is the desert layer (#88, #98): one root Empty with `userData.kind` `scenery`, and every node under it is named `SCENERY_*`. Everything past the lease ground (`SITE_ground`) is under it, so hiding it leaves the plain lease. It holds `SCENERY_terrain`, the ground from the lease's edge out about 5.4 km to the horizon, sharing its edge with `SITE_ground` so there is no seam; `SCENERY_mesas`, a ring of caprock mesas 3 to 5 km out; `SCENERY_road`, the lease road running out of the lease both ways; `SCENERY_power_*`, the lease's power line continued 1.6 km west on wood poles; `SCENERY_neighbors_*`, other operators' caliche pads with far pumpjacks, small tanks and spur roads, 300 m to 2.4 km past the lease's ends; the barbed wire fence along the lease edge (`SCENERY_fence_*`) and the cattle guards where the road leaves (`SCENERY_cattle_guard_*`); `SCENERY_signs_*`, an RRC style lease sign at the west entrance (a made-up operator and lease number), a generic H2S warning on each pad's sign post, and yellow pipeline markers where the trunk runs under a driveway; and a seeded scatter of plants and rocks, thickest along the fence and thinning out in a 45 m band past it: kit models placed more than once are GPU-instanced (`EXT_mesh_gpu_instancing`, #97), one node per model like `SCENERY_dry_grass_2_instances` and `SCENERY_rock_1_instances`, which three.js loads as one `InstancedMesh` and one draw call for every copy; a model placed once stays a plain node, like `SCENERY_mesquite_1`; and one merged mesh per material for the generated plants (`SCENERY_yucca_*`, `SCENERY_prickly_pear_*`). Nothing under it has an asset ID, so it is never clickable. Hide the whole layer with `scene.getObjectByName("SCENERY").visible = false`. It stays off pads, roads, pipe runs, and truck routes, and it is the same on every build of the same blueprint.
+- Surfaces outside `SCENERY` that the scenery pass dresses: the ground (`M_GROUND`) gets the kit's dry soil with its broad patches filtered out, and the road (`M_ROAD`), pads and yard (`M_GRAVEL`), and berms (`M_BERM`) get the kit's caliche. Each multiplies a vertex color layer (`COLOR_0` in the glb) into its texture: patches and caliche dust on the ground, wheel tracks and shoulders on the road. Well flowlines (`PIPE_<well>_<tank>`) are `M_HDPE`, the containment liner is `M_LINER`, signs are `M_SIGN` and `M_HAZARD`, and the mesas are `M_MESA` (vertex colors only).
 
-**Size:** Today's field is about 263,000 triangles and 19 MB with its scenery, or 148,000 triangles and 6.2 MB with `--no-scenery`. The 12-tank sample is about 288,000 triangles and 17 MB. All are inside the 300,000 triangle and 30 MB budget. Scenery only uses what the field leaves: it fills up to 95% of the triangle budget, drops the fence when it can't fit, and builds only the textures when nothing is left. The generator estimates the size before it builds. If a field has more than 12 tanks, or full detail would pass the budget, it drops small detail: bolts, small labels, tags, signs, and containment and fence posts, then wellhead trim if that is still too much. `detail` in the report says what was dropped. Asset nodes, tank numbers (`<tank>_label`), lights, sensors, moving parts, pipes, and waypoints are never dropped.
+**Size:** Today's field is about 258,000 triangles, 16.3 MB and 750 draw calls with its scenery, or 155,000 triangles with `--no-scenery`. The 12-tank sample is about 299,000 triangles, 13.6 MB and 1,411 draw calls: its field alone is 298,000 triangles, so its scenery is only the coarse terrain. All are inside the 300,000 triangle, 30 MB and 1,500 draw call budget. Scenery only uses what the field leaves: it fills up to 95% of the triangle budget. The terrain always comes, coarser when little is left; then, while they fit, the mesas, the road out of the lease, the signs, the power line out, other operators' pads, and the brush past the fence; the fence and the plants get the rest, and the fence is dropped when it can't fit. The generator estimates the size before it builds. If a field has more than 12 tanks, or full detail would pass the budget, it drops small detail: bolts, small labels, tags, signs, and containment and fence posts, then wellhead trim if that is still too much. `detail` in the report says what was dropped. Asset nodes, tank numbers (`<tank>_label`), lights, sensors, moving parts, pipes, and waypoints are never dropped.
 
 **Scale and axes:** Today's field runs 450 m along X, and the report gives `layout.road_m` for any field. In three.js, Y is up and the lease road runs along X near Z = 0, with the first row of tank pads toward negative Z and a second row, if any, toward positive Z.
 
@@ -197,6 +215,7 @@ The backend sends the status. The web console picks the color.
 | `WARNING` | Needs attention soon | Amber |
 | `ALARM` | Failed or at risk now | Red |
 | `OFFLINE` | Stopped or shut in | Dark |
+| `UNKNOWN` | No fresh reading (live layer only). Never treat as safe | Hatched or gray with a "?" |
 
 ## API
 
@@ -364,6 +383,231 @@ Turns a plan into the steps the 3D scene walks through.
   "radio_script": "Field, this is control. Pump 3 is down..."
 }
 ```
+
+## Live layer (#38)
+
+Additive. The endpoints above don't change. The live layer reads signals from **connectors** (the blueprint's optional `connectors` list, see [BLUEPRINT.md](BLUEPRINT.md); with none, the simulator drives every asset), flags problems from the readings, and lets Jarvis and the console **propose** commands that do nothing until a person confirms them.
+
+The live clock starts at the blueprint's `clock_start` and runs at `FREEBOARD_SPEED` live minutes per real second (default 0.25). Scripted `faults` fire at their `at_min`.
+
+### `GET /api/live/state`
+
+```json
+{
+  "clock": "01:52",
+  "t": 8.0,
+  "assets": {
+    "TANK_3": { "status": "ALARM", "level_pct": 72.6, "stale": false, "age_min": 0, "last_reading_t": "2026-11-07T07:12:03+00:00", "reason": null, "observed_bbl_hr": 182.0, "expected_bbl_hr": -40.0 },
+    "TANK_5": { "status": "UNKNOWN", "level_pct": 60.1, "stale": true, "age_min": 6.5, "last_reading_t": "2026-11-07T07:11:01+00:00", "reason": "No level_pct reading from Tank 5 for 7 min. Treat it as unknown, not safe." },
+    "PUMP_3": { "status": "ALARM", "running": false, "flow_bbl_hr": 0, "stale": false, "age_min": 0, "last_reading_t": "...", "reason": "Pump 3 tripped: it reports stopped. Tank 3 is no longer being emptied." },
+    "VALVE_XO_34": { "status": "OK", "position": "CLOSED", "stale": false, "age_min": 0, "last_reading_t": "..." },
+    "WELL_9": { "status": "OK", "flow_bbl_hr": 50, "stale": false, "age_min": 0, "last_reading_t": "..." },
+    "TRUCK_1": { "status": "OK", "phase": "EN_ROUTE", "target_id": "TANK_3", "stale": false, "age_min": null, "last_reading_t": null }
+  },
+  "connectors": [
+    { "id": "CONN_SIM", "kind": "sim", "status": "connected", "detail": "simulating 47 assets" },
+    { "id": "CONN_SCADA", "kind": "mqtt", "status": "unavailable", "detail": "paho-mqtt is not installed (pip install paho-mqtt)" }
+  ],
+  "speed": 0.25,
+  "paused": false
+}
+```
+
+- `status` is `OK`, `WARNING`, `ALARM`, `OFFLINE`, or `UNKNOWN`. A tank with no fresh level reading is `UNKNOWN`, never `OK`.
+- `stale` is true when the asset's readings are older than `sensors.stale_after_min` (default 5). `age_min` is live minutes since its newest reading (null if never). `last_reading_t` is that reading's ISO time (null if never). Trucks have no sensors, so their age is null.
+- Readings per kind: tanks `level_pct`; pumps `running`, `flow_bbl_hr`; valves `position`; wells and disposal wells `flow_bbl_hr`; trucks `phase` (`IDLE`, `QUEUED`, `EN_ROUTE`, `LOADING`, `TO_DISPOSAL`) and `target_id`. A value is null when nothing has been read.
+- Tanks also carry `observed_bbl_hr` (the fitted fill rate, positive while filling) and `expected_bbl_hr` (wells in minus the running pumps, sharing their disposal well's `max_bbl_hr`). `observed_bbl_hr` uses only readings since the tank's pumps or valves last changed state (at most the last 10 minutes), so it is null for about 2 live minutes after a trip instead of still showing the draining. `expected_bbl_hr` is null when it can't be explained that simply (a crossover on the tank not known to be closed, a pump with no fresh reading).
+- `connectors` always starts with the simulator, `CONN_SIM`. Connector `kind` is `sim`, `webhook`, `mqtt`, `modbus`, or `opcua`; `status` is `connected` or `unavailable`.
+
+### Alerts
+
+`GET /api/alerts` → `{"alerts": [alert]}`, oldest first. `POST /api/alerts/{id}/ack` (optional body `{"by": "name"}`, phone or operator token, see [Control tokens](#control-tokens-103-cf-15)) marks one acknowledged and adds `acked_t` and `acked_by` (from the token's role when tokens are on). A second ack changes nothing. The phone notification's Acknowledge button calls it, but only while no token is set: a token never goes into a notification.
+
+```json
+{ "id": "alert_1", "asset_id": "PUMP_3", "kind": "PUMP_TRIP", "severity": "ALARM",
+  "message": "Pump 3 tripped: flow reads 0 bbl/hr, it should be moving 150. Tank 3 is filling.",
+  "t": "2026-11-07T07:12:03+00:00", "clock": "01:48", "active": true,
+  "root_id": null, "priority": "P1",
+  "minutes_to_consequence": 61, "minutes_to_consequence_low": 53,
+  "consequence": "Tank 3 reaches shutdown at 2:51 AM. 4 wells go down with it.",
+  "consequence_asset_id": "TANK_3", "consequence_clock": "2:51 AM", "consequence_t": 63.5,
+  "usd_at_risk": 7241,
+  "shelved_until": null, "shelved_until_t": null, "shelve_reason": null, "shelved_by": null, "shelved_t": null }
+```
+
+| `kind` | `severity` | Raised when |
+|---|---|---|
+| `PUMP_TRIP` | `ALARM` | The pump reports `running` false, or its flow is under 10% of its rate while it should run, or its tank rises faster than its wells explain. Confirmed over 2 readings, so it alerts within 3. |
+| `SENSOR_STALE` | `WARNING` | No reading of a signal for `stale_after_min`. |
+| `VALVE_MISMATCH` | `WARNING` | A valve's reported position differs from the position a person confirmed, for 2 readings after a 1 minute grace. |
+| `TANK_HIGH` | `WARNING` | A fresh tank level at or over `warning_pct` (default `shutdown_pct - 10`) for 2 readings. Clears 1 point below it. |
+| `TANK_HIGH_HIGH` | `ALARM` | A fresh tank level at or over `high_high_pct` (default `shutdown_pct - 5`) for 2 readings. Clears 1 point below it. A stale tank raises neither: it is `SENSOR_STALE`. |
+
+`t` is when it was raised (ISO). When the condition clears, the same alert is sent again with `"active": false` and `resolved_t`. An alert closed because the field was reloaded (see below) also has `resolved_reason`.
+
+#### Priority, consequence, and root cause (CF-7)
+
+- `priority` is `P1`, `P2`, or `P3`, from the **baseline forecast** (`POST /api/forecast` with no actions, run on the live readings, with every active `PUMP_TRIP` as a failure). `P1` if the alarm leads to a tank shutdown within 60 minutes, `P2` within 180, `P3` otherwise. It is ranked on the early end of the forecast's give-or-take (`minutes_to_consequence_low`, inflow 15% high), so a shutdown forecast at 61 minutes, give or take 9, is `P1`.
+- Which shutdown an alarm leads to: `PUMP_TRIP` its tank; `TANK_HIGH` and `TANK_HIGH_HIGH` that tank; `VALVE_MISMATCH` its pump's tank (a discharge valve) or the earlier of its two tanks (a crossover). `SENSOR_STALE` on a tank level is `P2` with `minutes_to_consequence` null and a `consequence` saying it is unknown (never safe); any other stale signal is `P3`.
+- `minutes_to_consequence` is whole minutes to that shutdown in the baseline forecast (null when there is none in the 6 hour horizon), `minutes_to_consequence_low` the early end. `consequence` is the forecast event's text, `consequence_asset_id` the tank, `consequence_clock` its time ("2:51 AM"), `consequence_t` its live minute (compare with `state.t`). `usd_at_risk` is what the forecast charges for that shutdown: the shut-in wells' lost production to the end of the horizon plus a restart for each (0 when there is no consequence).
+- **Recomputed as the forecast changes:** whenever an alert is raised or resolved, and at least every live minute while any alert is active. When an alert's `priority` or consequence changes, or its consequence time moves 2 minutes or more, it is sent again over `/ws` with `"event": "updated"`. A plain countdown is not re-sent; `GET /api/alerts` always has the current numbers.
+- `root_id` points a consequential alarm at the alarm that caused it, or is null for a root. A tank's `TANK_HIGH` or `TANK_HIGH_HIGH` points at an active `PUMP_TRIP` on one of the tank's pumps, else a `VALVE_MISMATCH` on one of their discharge valves; a `TANK_HIGH_HIGH` with neither points at the same tank's `TANK_HIGH`. A root that appears after its consequence (the trip confirmed after the tank already read high) is linked then, with `"event": "updated"`. Once set, `root_id` stays, even after the root resolves. Group the list by it: after a Pump 3 trip there is one `P1` root and the Tank 3 high and high-high alarms fold under it.
+
+#### Shelving (CF-7)
+
+`POST /api/alerts/{id}/shelve` with `{"minutes": 30, "reason": "Crew is on the way to Pump 3", "by": "optional name"}` (phone or operator token) → the alert, with:
+
+- `shelved_until` its end on the clock ("3:05 AM"), `shelved_until_t` the live minute (time left is `shelved_until_t - state.t`), `shelve_reason`, `shelved_by` (from the token's role when tokens are on, as `decided_by` is), `shelved_t` (ISO).
+- **422** when `reason` is missing or blank, or `minutes` is missing or outside 15 to 240 (live minutes). **404** for an unknown id, **409** for an alert that has already cleared. Shelving a shelved alert replaces its timer.
+- A shelved alert stays `active` and keeps its priority current. It comes back by itself when `state.t` reaches `shelved_until_t`: the shelve fields go back to null, it is sent over `/ws` with `"event": "unshelved"`, and pushed to the phone again. An alert that clears while shelved ends its shelf too.
+- `POST /api/alerts/{id}/unshelve` (optional body `{"by": "name"}`, phone or operator token) brings it back early. 409 if it isn't shelved.
+- Every shelve and unshelve is in the audit log (`shelved`, `unshelved`, see below).
+
+### Actions (human-confirmed)
+
+A proposal changes nothing. Only confirm sends it, through the connector that owns the asset (the simulator when none does).
+
+```json
+{ "id": "act_1",
+  "action": { "type": "SET_VALVE", "asset_id": "VALVE_XO_34", "value": "OPEN" },
+  "reason": "Tank 3 reaches shutdown at 2:47 AM; the crossover moves water to Tank 4.",
+  "status": "PENDING", "created_t": "2026-11-07T07:12:10+00:00",
+  "text": "Open the Tank 3 to 4 crossover.", "source": "jarvis", "connector_id": "CONN_SIM" }
+```
+
+- `action.type`: `SET_VALVE` (value `OPEN`/`CLOSED`), `SET_PUMP` (`ON`/`OFF`), `CHOKE_WELL` (0 shut in to 1 untouched), `SEND_TRUCK` (value null, plus `target_id`, a tank).
+- `status`: `PENDING`, then `REJECTED`, or `SENDING` (a person confirmed it and the command is on its way to the connector), then `CONFIRMED`, `FAILED` (the connector refused, was unreachable, or nothing was sent), or `UNCERTAIN` (the command left for the device but no answer came back: a webhook read timeout or a reset after the POST went out, or a real connector that raised; the device may have moved, so check the field before proposing it again; nothing ever re-sends it). A proposal is sent at most once: the first confirm claims it as `SENDING`, so a second confirm (another screen) or a late reject gets 409. A confirm whose command path (connector, its config such as `url`, and the command's `address`) is no longer the one it was proposed on gets 409 `"Proposal act_1: the command path changed; propose again."` and sends nothing. If the field reloads between the claim and the send, it ends `FAILED` with `"The field was reloaded before it was sent; nothing moved. Propose it again."`; a send already under way keeps its result. After a decision the proposal also has `decided_t` and `decided_by`, and once sent, `result` (what the connector said).
+- `decided_by`: with control tokens on, the server sets it from the token's role, `"console"` (operator token or PIN) or `"phone"`, and **never** from the body's `by`. Automatic paths set `"jarvis"` (`JARVIS_CONFIRM=0`, simulator only) and `"blueprint"` (closed by a reload). With no token configured it is the body's `by` (or null), as before.
+- `GET /api/actions` → `{"proposals": [proposal]}`.
+- `POST /api/actions` with `{type, asset_id, value, target_id?, reason?}` → a PENDING proposal (422 if the action is invalid). Operator token.
+- `POST /api/actions/{id}/confirm` and `POST /api/actions/{id}/reject` (optional body `{"by": "name"}`) → the updated proposal. 404 for an unknown id, 409 if it isn't PENDING (including while it is SENDING). Phone or operator token.
+
+### `POST /api/jarvis`
+
+Request: `{"message": "What am I looking at?", "selected_asset_ids": ["PUMP_3"], "image_png_base64": "<optional screenshot of the 3D view>"}`
+
+Response 200:
+
+```json
+{ "reply": "Pump 3 is stopped, moving 0 barrels an hour (reading 20 s old). Pump 3 tripped: it reports stopped.",
+  "source": "rules",
+  "ui": [{ "type": "ui", "action": "focus", "asset_id": "PUMP_3" }],
+  "proposals": [] }
+```
+
+- `source` is `rules` (instant answers that need no API key: what's failing, how long until shutdown, show or explain an asset, what am I looking at with a selection, the cheapest plan, and fixes like "open the crossover", "send truck 1 to tank 3", "shut in well 9", "turn off pump 2") or `claude`.
+- Jarvis's fixes are proposals (PENDING) in `proposals`. It never changes equipment itself. With control tokens on, asking Jarvis needs the operator token.
+- **Every number names its source and age (CF-11).** A live reading carries its age in live time, "Tank 3 is at 71% (reading 20 s old)", and the connector when it isn't the simulator, "(reading from CONN_HOOK, 2 min old)". A forecast or plan carries the time it ran: "The forecast at 1:52 AM says Tank 3 reaches shutdown at 2:47 AM, give or take 9 minutes. 4 wells go down with it. That's 55 min from now." and "The planner ran at 1:52 AM on the live readings. Cheapest plan, $X: ...".
+- Jarvis never vouches for an asset with no current reading. An UNKNOWN tank gets exactly "I have no current reading for Tank 5, so I can't say it's safe." plus "Its last reading is 8 min old." (or "It has sent no reading since startup."), and never a level; any other UNKNOWN asset gets "... so I can't say what it's doing.". The sentence comes first in "How long until shutdown?" (then "Treat it as at risk and check in person.", then the earliest shutdown, or "The forecast at 1:52 AM says no tank with a fresh reading reaches shutdown in the next 6 hours if nothing changes."), first in the cheapest-fix answer, and in "What's failing?".
+- "What's failing?" uses CF-7's `priority` and `root_id`: it leads with each P1 root cause (or the most urgent root when there is no P1), "P1 since 1:50 AM: Pump 3 tripped: it reports stopped. Tank 3 is no longer being emptied (reading 0 s old).", then the forecast consequence and its clock, then "2 related alarms." for the alarms folded under it, instead of one line per alarm. Then the tanks with no reading, "N other alerts open; the next is P2 on Tank 5.", and "N shelved alerts not shown.". With nothing open: "All quiet at 1:52 AM. No active alerts.", but never while a tank is UNKNOWN.
+- Claude's tools carry the same facts: `explain_asset` returns `as_of` and `reading` (`{signal, age_min, age_s, age, connector_id, current, wall_t}`) and, for an UNKNOWN asset, `say` (the sentence above); `get_forecast` and `get_plans` return `as_of`, `source`, and `unknown_tanks`; `list_alerts` (named as in [JARVIS_CONSOLE.md](JARVIS_CONSOLE.md), no args yet) returns `{as_of, open, groups: [{root, related, related_count, related_ids}], unknown_tanks}`, most urgent group first, with each root's `priority`, `root_id`, `raised_at`, `consequence`, `consequence_clock`, `minutes_to_consequence`, `minutes_from_now`, `usd_at_risk`, `forecast_at`, `reading`, `acked`, `shelved`, and `shelved_until`. The system prompt tells Claude to cite the age and run time with every number.
+- "Open the crossover" picks: the crossover joining the tanks the text names ("the Tank 3 to 4 crossover", "3 and 4", "between 5 and 6"); else the one on the tank in trouble (an active `PUMP_TRIP`'s tank, then the tank with the earliest forecast shutdown), toward the neighbor with the most room before shutdown; only then the first crossover. Named tanks with no crossover between them get a reply saying so and no proposal. "Close the crossover" prefers one that is open.
+- A question about an asset that also asks for a fix ("Why is Tank 3 rising, and what's my cheapest fix?") answers the question, then adds "The planner ran at 1:52 AM on the live readings. Cheapest plan, $X: ..." and, when it is a different plan, "Cheapest robust plan, $Y: ...". The last `ui` focus is the cheapest plan's first step.
+- With no `ANTHROPIC_API_KEY` and no rules match: **503** `{"detail": "Jarvis needs ANTHROPIC_API_KEY on the server."}`. Other Claude failures are also 503 with a `detail` saying why.
+
+### Control tokens (#103, CF-15)
+
+One mechanism for the console link, the phone QR, and the typed PIN. Code: `backend/app/auth.py`.
+
+| Variable | Role |
+|---|---|
+| `FREEBOARD_TOKEN` | operator: everything |
+| `OPERATOR_PIN` | operator too: a short PIN a person can type (CF-5's prompt fills the same header) |
+| `FREEBOARD_PHONE_TOKEN` | phone: confirm, reject, ack, shelve, and unshelve only |
+
+- **None set:** every route behaves exactly as before.
+- **Use a PIN of 6 or more digits.** The server logs a warning at startup for a shorter `OPERATOR_PIN`.
+- **Wrong tokens are throttled** (HTTP and `/ws` alike). 5 wrong tokens in 60 s from one client IP lock that IP for 60 s, then 120 s, 240 s, and so on up to 15 min: **429** `{"detail": "Too many wrong PINs. Wait 60 s."}` with a `Retry-After` header (on `/ws`, close 1008 with that reason). While locked, even the right token is refused unchecked. A correct token from another IP keeps working. 30 wrong tokens in 60 s from all IPs together lock, the same way, every IP that hasn't used a correct token in the last day. A missing token is not counted (it is the PIN prompt). Behind a proxy every client shares the proxy's IP. Each counted failure is an `auth_failed` audit entry (`source` the client IP, `path`, `locked_s` when it started a lock), never the value tried.
+- **Any set:** every `POST` in the live layer needs the header `X-Freeboard-Token`: `/api/actions` (create), `/api/actions/{id}/confirm` and `/reject`, `/api/alerts/{id}/ack`, `/shelve`, and `/unshelve`, `/api/live/faults`, `/api/live/sim`, `/api/jarvis`. Missing or wrong → **401** `{"detail": "Enter the operator PIN to send commands."}`. The phone token on an operator-only route → **403**. `POST /api/live/readings/{connector_id}` keeps its own connector token (`token_env`). Reads (`GET`) stay open. Tokens are compared with `hmac.compare_digest` and never logged.
+- `WS /ws`: send the token, best first, as the subprotocol `freeboard.<token>` (`new WebSocket(url, ["freeboard", "freeboard." + token])`; the server picks `freeboard`), or as the first message `{"type": "auth", "token": "<token>"}` within 5 s of connecting (answered `{"type": "auth", "ok": true, "role": "phone"}`; a late or second `auth` gets `"ok": false` and changes nothing), or, as a fallback, `?token=<token>`. The server redacts `token=` and `X-Freeboard-Token` values from uvicorn's access and error logs. A wrong token is closed with code **1008**. No token connects read-only: it gets every message, but its `ui` messages are ignored. Operator and phone tokens may send `ui`.
+- The `require_role` dependency also sets `request.state.role`.
+- **Other lanes** put the same check on their routes (`/api/blueprints/*`, approve, spacetime sync #105; `/api/ingest` #106):
+
+```python
+from fastapi import Depends
+from backend.app.auth import Caller, require_role
+
+@app.post("/api/plans/{plan_id}/approve")
+def post_approve(plan_id: str, caller: Caller = Depends(require_role("operator"))) -> dict:
+    ...  # caller.role: "operator" | "phone" | None (no token configured); caller.device: "console" | "phone" | None
+```
+
+`require_role("operator")` is operator only; `require_role("phone")` is phone or operator. `caller.decided_by(body_by)` gives the value to store as `decided_by`.
+
+### Audit log (CF-10)
+
+`GET /api/audit` (optional `?since=<seq>`) → `{"entries": [entry]}`, oldest first. Append-only, kept in memory for the server's life. Set `FREEBOARD_AUDIT_FILE` to also append each entry as a JSON line (a relative path is under `backend/data/`, where `*.jsonl` is gitignored).
+
+```json
+{ "seq": 2, "t": "2026-11-07T07:12:10+00:00", "clock": "01:52", "live_t": 8.0,
+  "event": "confirmed", "source": "phone", "role": "phone", "by": "phone",
+  "asset_id": "VALVE_XO_34", "proposal_id": "act_1", "status": "SENDING",
+  "text": "Open the Tank 3 to 4 crossover.", "connector_id": "CONN_SIM" }
+```
+
+| `event` | When | Extra fields |
+|---|---|---|
+| `proposed` | A proposal is created (console or Jarvis) | `proposal_id`, `status` `PENDING`, `text`, `reason`, `connector_id`, `target_id?` |
+| `confirmed` | A person (or `JARVIS_CONFIRM=0`) confirmed it; it is now `SENDING` | same, plus `auto` `"JARVIS_CONFIRM=0"` on the automatic path |
+| `result` | The connector answered, or nothing was sent | `status` `CONFIRMED`, `FAILED`, or `UNCERTAIN`, `result`, `reloaded` `true` when the field reloaded between the claim and the answer |
+| `rejected` | A person rejected it, or a reload closed it (`source` `blueprint`) | `result?` |
+| `acked` | An alert was acknowledged (the first time only) | `alert_id`, `kind`, `severity`, `message`, `priority` |
+| `shelved` | A person shelved an alert (CF-7) | `alert_id`, `kind`, `priority`, `minutes`, `reason`, `shelved_until`, `shelved_until_t` |
+| `fault` | `POST /api/live/faults` (also when it is refused) | `asset_id`, `fault` (the type), `ok`, `reason?`, `rate_bbl_hr?`, `result` (why it was refused) |
+| `sim` | `POST /api/live/sim` | whichever of `speed`, `paused`, `advance_min` were sent |
+| `auth_failed` | A wrong control token (see [Control tokens](#control-tokens-103-cf-15)) | `source` the client IP, `role` null, `path`, `locked_s?`. Never the value tried. |
+| `unshelved` | A shelf ended | `alert_id`, `kind`, `priority`, `why` (`expired` with `source` `timer`, `by hand`, `resolved` with `source` `detector`, or `reloaded` with `source` `blueprint`), `shelve_reason`, `shelved_until` |
+
+- `t` is the wall time (ISO), `clock` and `live_t` the live clock. `role` is the token role (`operator`, `phone`, or null when no token is configured or nobody asked). `source` is `console`, `phone`, `jarvis`, `blueprint`, `timer` (a shelf ran out), or `detector` (an alert cleared while shelved); for a Jarvis proposal, `role` is the operator who asked. `by` is the stored `decided_by`.
+- **Other lanes** log their own steps (approve, activate, shelve) with `app.state.audit.append("approved", source=caller.device, role=caller.role, plan_id=...)`. Any extra keyword is kept on the entry. It is safe to call from a sync endpoint's worker thread.
+
+### Following the active blueprint
+
+The live layer follows `POST /api/blueprints/{id}/activate` once #64's `_use_scenario` calls `app.state.live_reload(scenario)` (installed by `backend/app/live_api.py`; until then the live layer stays on the startup scenario). The hook is a plain function and is safe to call from a sync endpoint's worker thread: it runs the reload on the live loop and waits up to 30 s for the loop to start it. If the loop hasn't started it by then, the reload is called off (it never applies later) and the hook raises `live_api.ReloadTimeout` (a `TimeoutError`); activate again. A reload:
+
+- stops the old connectors and builds the new field, connectors, and detector, keeping the live clock (`t` and the clock shown), speed, and pause. Readings start over from the new connectors, and the new blueprint's `faults` fire at their `at_min` after the reload;
+- resolves every active alert with a `resolved_reason` (`"Pump 6 is not in the activated blueprint."`, or that the field reloaded and is checked again; the new detector raises it again if it still holds). Alert ids keep counting;
+- closes a PENDING proposal as `REJECTED` with `decided_by` `"blueprint"` and a `result` saying why, when its asset or target is gone, it is no longer valid, or it would now go to a different connector or to the same connector set up differently (its `url` or other config, or the command's `address`, changed). A person never confirms a command routed somewhere other than where it was proposed. A proposal already `SENDING` that hasn't started its send ends `FAILED` with nothing sent; one whose send is under way keeps its result, but its position is not recorded as commanded in the new field;
+- broadcasts each closed proposal, each resolved alert, and a fresh `state`.
+
+### Connectors and demo controls
+
+- `GET /api/live/connectors` → `{"connectors": [...], "jarvis": {"mode", "model", "llm_available"}, "push": {"enabled", "last_error"}}`.
+- `POST /api/live/readings/{connector_id}` (webhook connectors only) with `{"readings": [{"asset_id", "signal", "value"} | {"address", "value"}]}` → `{"accepted": [...], "rejected": [...]}`. Only signals the blueprint declares for that connector are accepted. If the connector has `token_env`, send the token in `X-Freeboard-Token`.
+- `POST /api/live/sim` with `{speed?, paused?, advance_min?}` → the live clock.
+- `POST /api/live/faults` with `{asset_id, type: TRIP | STUCK_VALVE | SENSOR_STALE | LEAK | REPAIR, reason?, rate_bbl_hr?}` injects a fault into the simulator.
+
+### `WS /ws`
+
+Connect to `ws://127.0.0.1:8000/ws?role=web` (`role` is `web`, `phone`, `device`, or `other`; with control tokens on, send the token as the `freeboard.<token>` subprotocol or a first `auth` message, see above). Every message is one JSON object with a `type` and a `seq` counter:
+
+| `type` | Payload | When |
+|---|---|---|
+| `state` | `{"type": "state", "seq": 1, "state": <GET /api/live/state body>}` | On connect, every tick, and after each confirm |
+| `alert` | `{"type": "alert", "seq": 2, "event": "raised", "alert": <alert>}` | `event` is `raised`, `resolved`, `updated` (priority, consequence, or root changed), `shelved`, or `unshelved`. Replace the row with the same `alert.id`. |
+| `proposal` | `{"type": "proposal", "seq": 3, "proposal": <proposal>}` | Created, sending, confirmed, rejected, failed, or uncertain |
+| `ui` | `{"type": "ui", "seq": 4, "action": "focus", "asset_id": "PUMP_3", "reason": "...", "source": "jarvis"}` | Jarvis, a new ALARM, a proposal, or a phone wants every screen on an asset |
+
+Clients may send `{"type": "ping"}` (answered with `pong`) and `{"type": "ui", "action": "focus", "asset_id": "TANK_3"}` to point every console at an asset (with control tokens on, only a client that connected with a valid token).
+
+### Environment
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `ANTHROPIC_API_KEY` | unset | Enables Claude in Jarvis. Without it, only the rules answer. |
+| `JARVIS_MODEL` | `claude-sonnet-5-5` | Claude model for Jarvis. |
+| `JARVIS_MODE` | `auto` | `auto` (rules first, Claude for the rest), `rules`, or `llm`. |
+| `JARVIS_CONFIRM` | `1` | `0` lets Jarvis's proposals run without a person, **only** for the simulator. Real equipment always waits for confirm. |
+| `FREEBOARD_SPEED` | `0.25` | Live minutes per real second. |
+| `NTFY_TOPIC` | unset | Phone push of ALARM and WARNING alerts through ntfy. Off when unset. |
+| `NTFY_SERVER` | `https://ntfy.sh` | ntfy server. |
+| `PUBLIC_URL` | unset | Where a phone can reach this server, for the notification's buttons. |
+| `CORS_ORIGINS` | unset | Extra allowed origins, comma separated. Localhost is always allowed. |
+| `FREEBOARD_TOKEN` | unset | Operator control token (#103). Any of these three turns the write lock on. |
+| `OPERATOR_PIN` | unset | Operator PIN, same role as `FREEBOARD_TOKEN` (CF-15). Use 6 or more digits (wrong ones are throttled). Never commit it. |
+| `FREEBOARD_PHONE_TOKEN` | unset | Phone control token: confirm, reject, ack, shelve, and unshelve only. |
+| `FREEBOARD_AUDIT_FILE` | unset | Also append the audit log here as JSON lines (relative = under `backend/data/`). |
+| `*_env` in connector config | | Names the variable holding a connector secret, e.g. `"token_env": "HOOK_TOKEN"`. |
 
 ### `POST /api/ingest`
 

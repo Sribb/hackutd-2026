@@ -1,0 +1,291 @@
+<!doctype html>
+<!--
+  3D quality lab (docs/3D_QUALITY.md). Loads a field.glb with the console's night look, then turns on
+  one upgrade at a time and measures the frame time, so every claim in the doc has a number behind it.
+  Serve the repo root:  python3 -m http.server 8765   then open
+    http://127.0.0.1:8765/blender/lab/?look=console                       (what web/ shows today)
+    http://127.0.0.1:8765/blender/lab/?look=ibl&tone=neutral&post=three   (IBL + GTAO + bloom + SMAA)
+  Params: glb=<path> look=console|ibl tone=none|agx|neutral|aces post=none|three|pp ao=0|1 bloom=0|1
+          smaa=0|1 view=overview|pad|well lamps=0|1 flow=0|1 frames=N dpr=N
+  Core three.js 0.170.0 is the vendored copy in ../preview/vendor. Post-processing addons come from the
+  same 0.170.0 release on jsDelivr, and post=pp loads pmndrs postprocessing 6.39.5. Lab only: nothing in
+  the production build reads this page.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>3D Quality Lab</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #050505; color: #ccd; font: 12px ui-monospace, monospace; overflow: hidden; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+  #hud { position: absolute; left: 10px; bottom: 8px; white-space: pre; opacity: .8; pointer-events: none; }
+</style>
+<script type="importmap">
+  { "imports": {
+      "three": "../preview/vendor/three.module.min.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/",
+      "postprocessing": "https://cdn.jsdelivr.net/npm/postprocessing@6.39.5/build/index.js"
+  } }
+</script>
+</head>
+<body>
+<canvas id="c"></canvas><div id="hud"></div>
+<script type="module">
+import * as THREE from "three";
+import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+import { DRACOLoader } from "three/addons/loaders/DRACOLoader.js";
+import { RGBELoader } from "three/addons/loaders/RGBELoader.js";
+
+const q = new URLSearchParams(location.search);
+const P = {
+  glb: q.get("glb") || "../field.glb",
+  look: q.get("look") || "console",
+  tone: q.get("tone") || (q.get("look") === "ibl" ? "neutral" : "none"),
+  post: q.get("post") || "none",
+  ao: q.get("ao") !== "0", bloom: q.get("bloom") !== "0", smaa: q.get("smaa") !== "0",
+  view: q.get("view") || "overview",
+  lamps: q.get("lamps") !== "0",
+  flow: q.get("flow") === "1",
+  frames: +(q.get("frames") || 120),
+  dpr: +(q.get("dpr") || 1),
+  exposure: +(q.get("exposure") || 1),
+  envi: +(q.get("envi") || 0.5),
+  shadowfix: q.get("shadowfix") === "1",   // shadow bias + normalBias: removes the acne rings
+  lampx: +(q.get("lampx") || 1),           // scale on lamp emissive, so lamps go HDR and only they bloom
+  thr: +(q.get("thr") || 0.9),             // bloom luminance threshold
+  aoi: +(q.get("aoi") || 1),               // baked aoMap intensity
+  hide: q.get("hide") || "",
+};
+const hud = document.getElementById("hud");
+const log = (s) => { hud.textContent += s + "\n"; };
+
+// ------------------------------------------------ renderer: same as web/src/main.js today ----
+const canvas = document.getElementById("c");
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: P.post === "none", powerPreference: "high-performance" });
+renderer.setPixelRatio(P.dpr);
+renderer.setSize(innerWidth, innerHeight, false);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+const TONES = { none: THREE.NoToneMapping, agx: THREE.AgXToneMapping, neutral: THREE.NeutralToneMapping, aces: THREE.ACESFilmicToneMapping };
+// With an EffectComposer, OutputPass applies the renderer's tone mapping once at the end.
+renderer.toneMapping = TONES[P.tone] ?? THREE.NoToneMapping;
+renderer.toneMappingExposure = P.exposure;
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x050505);
+scene.fog = new THREE.Fog(0x050505, 90, 180);
+const camera = new THREE.PerspectiveCamera(40, innerWidth / innerHeight, 0.5, 500);
+const hemi = new THREE.HemisphereLight(0x8a96a8, 0x0b0b0a, 0.7);
+scene.add(hemi);
+const moon = new THREE.DirectionalLight(0xc8d4e6, 1.25);
+moon.castShadow = true;
+moon.shadow.mapSize.set(2048, 2048);
+if (P.shadowfix) { moon.shadow.bias = -0.0005; moon.shadow.normalBias = 0.04; }
+scene.add(moon, moon.target);
+
+// ------------------------------------------------ image-based light from the CC0 moonlit HDRI ----
+async function addIBL() {
+  const t0 = performance.now();
+  const hdr = await new RGBELoader().loadAsync("../assets/hdri/rogland_moonlit_night_2k.hdr");
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  const env = pmrem.fromEquirectangular(hdr).texture;
+  hdr.dispose(); pmrem.dispose();
+  scene.environment = env;
+  scene.environmentIntensity = P.envi;
+  hemi.intensity = 0.15;          // IBL replaces most of the flat hemisphere fill
+  moon.intensity = 1.25;
+  return performance.now() - t0;
+}
+
+// ------------------------------------------------ load the glb and give it the console's night look ----
+const assets = new Map(), lamps = [], pipes = [];
+function idFor(o) { for (let n = o; n; n = n.parent) if (n.userData && n.userData.asset_id) return n.userData.asset_id; return null; }
+function indexModel(root) {
+  root.traverse((o) => {
+    if (!o.isMesh) return;
+    o.castShadow = o.receiveShadow = true;
+    for (let n = o; n; n = n.parent) {
+      if (/^(SITE|PAD|SCENERY)_/.test(n.name)) { o.material = o.material.clone(); o.material.color.multiplyScalar(0.28); break; }
+    }
+    if (/^PIPE_/.test(o.name)) pipes.push(o);
+    const id = idFor(o);
+    if (!id) return;
+    const a = assets.get(id) || { id, meshes: [], lights: [], root: null };
+    if (/_(light|beacon|headlights)$/.test(o.name)) { o.material = o.material.clone(); a.lights.push(o); lamps.push(o); }
+    else if (!/_LEVEL$/.test(o.name)) { o.material = o.material.clone(); a.meshes.push(o); }
+    assets.set(id, a);
+  });
+  root.updateMatrixWorld(true);
+  root.traverse((o) => { if (assets.has(o.name)) assets.get(o.name).root = o; });
+}
+
+// Demo statuses, painted the way web/src/main.js paint() does (ALARM lamps x3, others x1.4).
+const LAMP = { OK: new THREE.Color(0x8fa36b), WARNING: new THREE.Color(0xc9a14a), ALARM: new THREE.Color(0xff4b1f) };
+const COLORS = { WARNING: new THREE.Color(0xc9a14a), ALARM: new THREE.Color(0xff4b1f) };
+const DEMO = { PUMP_3: "ALARM", TANK_4: "WARNING", WELL_9: "ALARM", WELL_14: "WARNING" };
+function paintDemo() {
+  for (const a of assets.values()) {
+    const s = DEMO[a.id] || "OK";
+    for (const m of a.meshes) if (COLORS[s] && m.material.emissive) {
+      m.material.color.lerp(COLORS[s], s === "ALARM" ? 0.85 : 0.6);
+      m.material.emissive.copy(COLORS[s]).multiplyScalar(s === "ALARM" ? 0.5 : 0.25);
+    }
+    for (const l of a.lights) if (l.material.emissive && P.lamps) l.material.emissive.copy(LAMP[s]).multiplyScalar((s === "ALARM" ? 3 : 1.4) * (s === "OK" ? 1 : P.lampx));
+  }
+}
+
+// Flow along pipes with no UVs: a world-space stripe scrolls along each pipe's long axis.
+const flowUniforms = { uTime: { value: 0 } };
+function addFlow() {
+  for (const p of pipes) {
+    const box = new THREE.Box3().setFromObject(p), s = box.getSize(new THREE.Vector3());
+    const axis = s.x >= s.z ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 0, 1);
+    const m = p.material = p.material.clone();
+    m.onBeforeCompile = (sh) => {
+      sh.uniforms.uTime = flowUniforms.uTime;
+      sh.uniforms.uAxis = { value: axis };
+      sh.vertexShader = sh.vertexShader.replace("#include <common>", "#include <common>\nvarying vec3 vFlowW;")
+        .replace("#include <worldpos_vertex>", "#include <worldpos_vertex>\nvFlowW = (modelMatrix * vec4(transformed, 1.0)).xyz;");
+      sh.fragmentShader = sh.fragmentShader.replace("#include <common>", "#include <common>\nuniform float uTime; uniform vec3 uAxis; varying vec3 vFlowW;")
+        .replace("#include <emissivemap_fragment>", "#include <emissivemap_fragment>\nfloat fl = smoothstep(0.80, 1.0, fract(dot(vFlowW, uAxis) * 0.25 - uTime * 0.6));\ntotalEmissiveRadiance += vec3(0.10, 0.55, 0.75) * fl * 0.8;");
+    };
+  }
+}
+
+// ------------------------------------------------ camera framing, like main.js frame() ----
+function frameField(root) {
+  const box = new THREE.Box3();
+  for (const a of assets.values()) if (a.root) box.expandByObject(a.root);
+  if (box.isEmpty()) box.setFromObject(root);
+  const size = box.getSize(new THREE.Vector3()), center = box.getCenter(new THREE.Vector3());
+  const radius = Math.max(size.x, size.z) / 2, fov = THREE.MathUtils.degToRad(camera.fov);
+  const fitH = radius / Math.tan(fov / 2), dist = Math.max(fitH, fitH / Math.min(1, camera.aspect)) * 1.12;
+  const target = new THREE.Vector3(center.x, 0, center.z + size.z * 0.12);
+  camera.position.set(center.x, dist * 0.68, center.z + dist * 0.74);
+  camera.near = Math.max(0.1, dist / 2000); camera.far = dist * 6;
+  scene.fog.near = dist * 1.4; scene.fog.far = dist * 3;
+  const half = Math.max(size.x, size.z) * 0.6;
+  Object.assign(moon.shadow.camera, { left: -half, right: half, top: half, bottom: -half, near: 1, far: dist * 4 });
+  moon.position.set(center.x - half * 0.5, half, center.z + half * 0.4);
+  moon.target.position.copy(center);
+  moon.shadow.camera.updateProjectionMatrix();
+  const close = { pad: ["TANK_1", new THREE.Vector3(-16, 11, 22)], well: ["WELL_1", new THREE.Vector3(-9, 5, 11)],
+    pump: ["PUMP_1", new THREE.Vector3(-4.5, 3.2, 5.5)], tank: ["TANK_1", new THREE.Vector3(-9, 3.5, 11)] }[P.view];
+  const node = close && (root.getObjectByName(close[0]));
+  if (node) {
+    const c = new THREE.Box3().setFromObject(node).getCenter(new THREE.Vector3());
+    target.copy(c); camera.position.copy(c).add(close[1]);
+    scene.fog.near = 200; scene.fog.far = 600;
+    // A tighter shadow box around the close-up, as a real camera-follow shadow would use.
+    Object.assign(moon.shadow.camera, { left: -40, right: 40, top: 40, bottom: -40, near: 1, far: 400 });
+    moon.position.copy(c).add(new THREE.Vector3(-60, 120, 50)); moon.target.position.copy(c);
+    moon.shadow.camera.updateProjectionMatrix();
+  }
+  camera.lookAt(target);
+  camera.updateProjectionMatrix();
+}
+
+// ------------------------------------------------ post-processing chains ----
+async function buildPost() {
+  const w = innerWidth * P.dpr, h = innerHeight * P.dpr;
+  if (P.post === "three") {
+    const { EffectComposer } = await import("three/addons/postprocessing/EffectComposer.js");
+    const { RenderPass } = await import("three/addons/postprocessing/RenderPass.js");
+    const { GTAOPass } = await import("three/addons/postprocessing/GTAOPass.js");
+    const { UnrealBloomPass } = await import("three/addons/postprocessing/UnrealBloomPass.js");
+    const { SMAAPass } = await import("three/addons/postprocessing/SMAAPass.js");
+    const { OutputPass } = await import("three/addons/postprocessing/OutputPass.js");
+    const composer = new EffectComposer(renderer);   // HalfFloat targets: emissive lamps stay above 1.0
+    composer.setPixelRatio(P.dpr); composer.setSize(innerWidth, innerHeight);
+    composer.addPass(new RenderPass(scene, camera));
+    if (P.ao) {
+      const gtao = new GTAOPass(scene, camera, w, h);
+      gtao.output = GTAOPass.OUTPUT.Default;
+      gtao.blendIntensity = 1.0;
+      gtao.updateGtaoMaterial({ radius: P.view === "overview" ? 3.0 : 0.8, distanceExponent: 1, thickness: 1, scale: 1, samples: 16 });
+      gtao.updatePdMaterial({ lumaPhi: 10, depthPhi: 2, normalPhi: 3, radius: 6, rings: 2, samples: 16 });
+      composer.addPass(gtao);
+    }
+    if (P.bloom) composer.addPass(new UnrealBloomPass(new THREE.Vector2(w, h), 0.9, 0.35, P.thr));
+    composer.addPass(new OutputPass());              // tone mapping + sRGB happen here, once
+    if (P.smaa) composer.addPass(new SMAAPass(w, h));
+    return () => composer.render();
+  }
+  if (P.post === "pp") {
+    const PP = await import("postprocessing");
+    renderer.toneMapping = THREE.NoToneMapping;       // the library tone maps in its own effect
+    const composer = new PP.EffectComposer(renderer, { frameBufferType: THREE.HalfFloatType });
+    composer.addPass(new PP.RenderPass(scene, camera));
+    const fx = [];
+    if (P.ao) {
+      const normalPass = new PP.NormalPass(scene, camera);
+      composer.addPass(normalPass);
+      fx.push(new PP.SSAOEffect(camera, normalPass.texture, { worldDistanceThreshold: 60, worldDistanceFalloff: 10,
+        worldProximityThreshold: 1.5, worldProximityFalloff: 0.6, luminanceInfluence: 0.6, samples: 16, radius: 0.08, intensity: 2.5 }));
+    }
+    if (P.bloom) fx.push(new PP.BloomEffect({ luminanceThreshold: P.thr, intensity: 1.2, mipmapBlur: true }));
+    fx.push(new PP.ToneMappingEffect({ mode: { agx: PP.ToneMappingMode.AGX, aces: PP.ToneMappingMode.ACES_FILMIC, neutral: PP.ToneMappingMode.NEUTRAL }[P.tone] ?? PP.ToneMappingMode.NEUTRAL }));
+    if (P.smaa) fx.push(new PP.SMAAEffect());
+    composer.addPass(new PP.EffectPass(camera, ...fx));  // the library merges effects into one shader pass
+    return () => composer.render();
+  }
+  return () => renderer.render(scene, camera);
+}
+
+// ------------------------------------------------ run and measure ----
+const gl = renderer.getContext();
+const px = new Uint8Array(4);
+function sync() { gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px); }   // wait for the GPU to finish
+const dbg = gl.getExtension("WEBGL_debug_renderer_info");
+const gpu = dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER);
+
+async function main() {
+  const res = { params: P, gpu };
+  if (P.look === "ibl") res.ibl_ms = Math.round(await addIBL());
+  const t0 = performance.now();
+  const loader = new GLTFLoader();
+  const draco = new DRACOLoader().setDecoderPath("https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/libs/draco/gltf/");
+  loader.setDRACOLoader(draco);
+  const buf = await (await fetch(P.glb)).arrayBuffer();
+  res.glb_mb = +(buf.byteLength / 1e6).toFixed(2);
+  const t1 = performance.now();
+  const gltf = await loader.parseAsync(buf, P.glb.replace(/[^/]*$/, ""));
+  res.parse_ms = Math.round(performance.now() - t1); res.fetch_ms = Math.round(t1 - t0);
+  const root = gltf.scene;
+  for (const name of P.hide.split(",").filter(Boolean)) { const n = root.getObjectByName(name); if (n) n.visible = false; }
+  scene.add(root);
+  indexModel(root);
+  paintDemo();
+  if (P.flow) addFlow();
+  let ao = 0; root.traverse((o) => { if (o.isMesh && o.material.aoMap) { ao++; o.material.aoMapIntensity = P.aoi; } });
+  res.meshes_with_aoMap = ao;
+  frameField(root);
+  const draw = await buildPost();
+  const tc = performance.now();
+  renderer.compile(scene, camera);
+  draw(); sync();
+  res.first_frame_ms = Math.round(performance.now() - tc);
+  for (let i = 0; i < 20; i++) { flowUniforms.uTime.value = i / 60; draw(); sync(); }
+  renderer.info.autoReset = false;
+  const times = [];
+  for (let i = 0; i < P.frames; i++) {
+    renderer.info.reset();
+    flowUniforms.uTime.value = (20 + i) / 60;
+    const a = performance.now(); draw(); sync(); times.push(performance.now() - a);
+    if (i === 0) res.info = { calls: renderer.info.render.calls, triangles: renderer.info.render.triangles, programs: renderer.info.programs.length, textures: renderer.info.memory.textures, geometries: renderer.info.memory.geometries };
+  }
+  times.sort((x, y) => x - y);
+  res.frame_ms_median = +times[Math.floor(times.length / 2)].toFixed(2);
+  res.frame_ms_p95 = +times[Math.floor(times.length * 0.95)].toFixed(2);
+  res.size = [renderer.domElement.width, renderer.domElement.height];
+  flowUniforms.uTime.value = 0.35; draw(); sync();   // a fixed frame for the screenshot
+  log(`${P.look} tone=${P.tone} post=${P.post} ao=${+P.ao} bloom=${+P.bloom} smaa=${+P.smaa}  ${res.frame_ms_median} ms median  ${res.info.calls} calls`);
+  window.__lab = res;
+  document.title = "done";
+}
+main().catch((e) => { window.__lab = { error: String(e && e.stack || e) }; document.title = "error"; log(String(e)); });
+</script>
+</body>
+</html>

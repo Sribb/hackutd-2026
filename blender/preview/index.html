@@ -4,7 +4,8 @@
   Serve the repo root over HTTP (browsers block modules and fetch on file://):
     python3 -m http.server 8765
   then open http://127.0.0.1:8765/blender/preview/  (add ?glb=../out/large/field.glb for another file,
-  or drop a .glb on the page). three.js 0.170.0 is vendored in ./vendor, so no CDN is needed.
+  or drop a .glb on the page, and ?look=day|dusk|night for the lighting). three.js 0.170.0 is vendored
+  in ./vendor, so no CDN is needed. The sky, HDRI lighting, fog, and toggle come from ./look.js.
   This is a check tool for the generator. The real console lives in web/.
 -->
 <html lang="en">
@@ -12,6 +13,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Field Preview</title>
+<link rel="icon" href="data:,">
 <style>
   :root { --bg: #20252b; --panel: #15191e; --line: #2c333b; --text: #dde3ea; --dim: #8b96a3; --accent: #f2b33d; --bad: #c6403a; }
   * { box-sizing: border-box; }
@@ -73,6 +75,7 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+import { createLook } from "./look.js";
 
 window.previewReady = true;
 const view = document.getElementById("view"), statusEl = document.getElementById("status");
@@ -81,14 +84,12 @@ const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 view.appendChild(renderer.domElement);
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x8c99a6);
-scene.add(new THREE.HemisphereLight(0xdfe8f0, 0x5a5048, 1.6));
-const sun = new THREE.DirectionalLight(0xffffff, 2.2);
-sun.position.set(-120, 200, 160);
-scene.add(sun);
 const camera = new THREE.PerspectiveCamera(45, 1, 0.5, 6000);
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
+controls.maxPolarAngle = Math.PI * 0.495;  // stay above the desert floor
+// Sky, IBL, sun shadows, fog, and the Day / Dusk / Night toggle (?look=day|dusk|night).
+const look = createLook({ renderer, scene, camera, container: view, initial: new URLSearchParams(location.search).get("look") });
 let field = null, assets = [], picked = null, saved = [];
 
 function resize() {
@@ -107,11 +108,13 @@ function assetOf(obj) {
 }
 
 function frame(obj, close) {
-  const box = new THREE.Box3().setFromObject(obj), c = box.getCenter(new THREE.Vector3());
+  // The whole field frames on the lease, not on the terrain out to the horizon (SCENERY, #98).
+  const box = obj === field && look.state.box ? look.state.box.clone() : new THREE.Box3().setFromObject(obj);
+  const c = box.getCenter(new THREE.Vector3());
   const size = Math.max(box.getSize(new THREE.Vector3()).length(), close ? 12 : 50);
   controls.target.copy(c);
   camera.position.copy(c).add(new THREE.Vector3(0.45, 0.55, 0.7).multiplyScalar(size * (close ? 1.1 : 0.75)));
-  camera.far = size * 20;
+  camera.far = Math.max(size * 20, look.state.span * 12);  // close-ups still see the floor out to the fogged horizon
   camera.updateProjectionMatrix();
 }
 
@@ -159,6 +162,7 @@ function show(gltf, label) {
   if (field) scene.remove(field);
   field = gltf.scene;
   scene.add(field);
+  look.attach(field);
   assets = [];
   field.traverse(o => { if (o.userData && o.userData.asset_id) assets.push(o); });
   assets.sort((a, b) => a.userData.asset_id.localeCompare(b.userData.asset_id, undefined, { numeric: true }));
@@ -201,7 +205,17 @@ renderer.domElement.addEventListener("pointerup", e => {
   select(hit || null);
 });
 
-renderer.setAnimationLoop(() => { controls.update(); renderer.render(scene, camera); });
+// Moving parts run the way docs/CONTRACT.md says: pump rotors spin, pumpjacks rock, cranks turn.
+const clock = new THREE.Clock();
+let t = 0;
+renderer.setAnimationLoop(() => {
+  const dt = Math.min(clock.getDelta(), 0.1);
+  t += dt;
+  look.animate(t, dt);
+  controls.update();
+  look.update();
+  renderer.render(scene, camera);
+});
 resize();
 loadUrl(new URLSearchParams(location.search).get("glb") || "../field.glb");
 </script>

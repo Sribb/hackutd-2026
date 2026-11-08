@@ -2,6 +2,10 @@
 
 Moving or lightable parts made here: PAD_n_lamps, SWD_n_lamps, SWD_n_gate, TRUCK_n_beacon,
 TRUCK_n_headlights, and the TRUCK_n_axle_1..3 empties that carry the wheels.
+
+Tank battery containment (#98) is corrugated steel walls with a black liner on the floor, up
+the inside of the walls, and over their top rail. A disposal facility also gets a skim tank
+beside its settling tank, both in lined containment, and a truck offload header by the gate.
 """
 import math
 
@@ -14,6 +18,95 @@ from field_parts import PI, Kit, ball, box, cyl, line, ring, tube
 
 POLE_Y = -6.5
 ARM_Z = 11.4
+WALL = 6.2           # containment walls stand this far from the tank's center
+WALL_H = 0.8
+
+# Surfaces added for the site and the land around it (#98). Added only if the palette lacks
+# them, so lookdev's own values for the shared names (M_HDPE, M_LINER) win.
+for _name, _look in {
+    "M_HDPE": ((0.035, 0.035, 0.038), 0.0, 0.42),     # black polyethylene flowlines
+    "M_LINER": ((0.03, 0.03, 0.033), 0.0, 0.6),       # containment liner
+    "M_MESA": ((1.0, 1.0, 1.0), 0.0, 1.0),            # distant mesas: their vertex colors carry the rock
+    "M_SIGN": ((0.86, 0.86, 0.83), 0.0, 0.5),         # white sign faces
+    "M_HAZARD": ((0.82, 0.62, 0.05), 0.0, 0.55),      # safety yellow: H2S signs, pipeline markers
+}.items():
+    fp.PALETTE.setdefault(_name, _look)
+
+
+def corrugated(bm, p, q, z0, h, pitch=0.65, depth=0.07):
+    """A corrugated steel sheet standing on the plan line p to q, from z0 to z0 + h, with a top rail."""
+    (px, py), (qx, qy) = p, q
+    length = math.hypot(qx - px, qy - py)
+    ux, uy = (qx - px) / length, (qy - py) / length
+    n = max(2, 2 * round(length / pitch))
+    cols = []
+    for i in range(n + 1):
+        t = length * i / n
+        o = depth / 2 * (1 if i % 2 else -1) if 0 < i < n else 0.0
+        x, y = px + ux * t - uy * o, py + uy * t + ux * o
+        cols.append((bm.verts.new((x, y, z0)), bm.verts.new((x, y, z0 + h))))
+    for (a0, a1), (b0, b1) in zip(cols, cols[1:]):
+        bm.faces.new((a0, b0, b1, a1))
+    box(bm, (length + 0.06, 0.09, 0.07), ((px + qx) / 2, (py + qy) / 2, z0 + h),
+        Matrix.Rotation(math.atan2(uy, ux), 4, "Z"))
+
+
+def walls(bm, x0, x1, y0, y1, top):
+    """Corrugated steel walls around a plan rectangle."""
+    c = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+    for i in range(4):
+        corrugated(bm, c[i], c[(i + 1) % 4], top, WALL_H)
+
+
+def containment(bm, tank_y, top):
+    """Four corrugated steel walls around the tank, pad-local."""
+    walls(bm, -WALL, WALL, tank_y - WALL, tank_y + WALL, top)
+
+
+def liner_rect(bm, x0, x1, y0, y1, top, inset=0.05, lip=0.1):
+    """A liner on the floor inside walls around a rectangle, up their inside face, and draped
+    over their top rail."""
+    z0, z1 = top + 0.01, top + WALL_H + 0.06
+    a = [(x0 + inset, y0 + inset), (x1 - inset, y0 + inset), (x1 - inset, y1 - inset), (x0 + inset, y1 - inset)]
+    b = [(x0 - lip, y0 - lip), (x1 + lip, y0 - lip), (x1 + lip, y1 + lip), (x0 - lip, y1 + lip)]
+    floor = [bm.verts.new((x, y, z0)) for x, y in a]
+    up = [bm.verts.new((x, y, z1)) for x, y in a]
+    over = [bm.verts.new((x, y, z1 - 0.12)) for x, y in b]
+    bm.faces.new(floor)
+    for i in range(4):
+        j = (i + 1) % 4
+        bm.faces.new((floor[i], floor[j], up[j], up[i]))
+        bm.faces.new((up[i], up[j], over[j], over[i]))
+
+
+def liner(bm, tank_y, top):
+    """The tank battery's liner, inside containment()."""
+    liner_rect(bm, -WALL, WALL, tank_y - WALL, tank_y + WALL, top)
+
+
+def swd_yard(k, fx):
+    """What makes a disposal facility read as one: a skim tank beside the settling tank, both in
+    lined corrugated containment, and the truck offload header by the gate, piped to the tanks."""
+    tank, st, dk, pp = k["M_TANK"], k["M_STEEL"], k["M_STEEL_DARK"], k["M_PIPE"]
+    sx, sy, gx, gy = -10.6 * fx, 8.4, -8.0 * fx, 5.0
+    cyl(tank, 1.4, 3.8, (sx, sy, 2.05), segs=16)
+    cyl(tank, 1.45, 0.3, (sx, sy, 4.1), segs=16, r2=0.3)
+    d = Vector((sx - gx, sy - gy, 0)).normalized()
+    line(pp, [(gx + d.x * 1.85, gy + d.y * 1.85, 3.6), (sx - d.x * 1.45, sy - d.y * 1.45, 3.6)], 0.07)
+    xa, xb = sorted((-12.2 * fx, -5.6 * fx))
+    walls(st, xa, xb, 2.7, 10.2, 0.15)
+    liner_rect(k["M_LINER"], xa, xb, 2.7, 10.2, 0.15)
+    hx0, hx1, hy = -11.6 * fx, -6.4 * fx, -8.6
+    box(dk, (abs(hx1 - hx0) + 0.6, 1.3, 0.08), ((hx0 + hx1) / 2, hy - 0.2, 0.19))       # drip pan
+    tube(pp, (hx0, hy, 0.75), (hx1, hy, 0.75), 0.1, 8)
+    for x in (hx0, hx1):
+        box(dk, (0.12, 0.4, 0.6), (x, hy, 0.45))
+    for i in range(3):
+        x = hx0 + (hx1 - hx0) * (i + 1) / 4
+        tube(pp, (x, hy, 0.75), (x, hy - 0.6, 0.75), 0.06, 6)
+        box(dk, (0.2, 0.16, 0.2), (x, hy - 0.35, 0.75))
+        cyl(st, 0.09, 0.08, (x, hy - 0.64, 0.75), axis="Y", segs=6)
+    line(pp, [(hx0, hy, 0.75), (-11.9 * fx, hy, 0.75), (-11.9 * fx, 4.6, 0.75), (gx - 1.75 * fx, 4.6, 0.75)], 0.09)
 
 
 def wire(bm, a, b, sag, r=0.015, segs=8):
@@ -70,13 +163,13 @@ def light_tower(site, name, loc, aim_deg):
 
 
 def pad_extras(site, n, pad, tank_y, top):
-    """Steel containment posts, liner, step-over, driveway sign."""
+    """Containment posts and liner, step-over, driveway sign."""
     k = Kit(site, f"PAD_{n}_detail", pad)
     for i in range(9 if fp.LOD["posts"] else 0):
         off = -6.0 + 1.5 * i
         for x, y in ((off, tank_y - 6.55), (off, tank_y + 6.55), (-6.55, tank_y + off), (6.55, tank_y + off)):
             box(k["M_STEEL_DARK"], (0.1, 0.1, 0.95), (x, y, top + 0.47))
-    box(k["M_RUBBER"], (11.8, 11.8, 0.012), (0, tank_y, top + 0.006))
+    liner(k["M_LINER"], tank_y, top)
     for i, z in enumerate((0.25, 0.5, 0.75)):
         for side in (-1, 1):
             box(k["M_STEEL"], (0.9, 0.28, 0.05), (-4.0, tank_y - 6.2 + side * (0.95 - 0.28 * i), top + z))
@@ -117,6 +210,7 @@ def swd_extras(site, sid, root, fx):
     ring(st, 0.16, 0.015, (0.36 * fx, 6, 0.7), axis="X", segs=12, rsegs=4)
     tube(dk, (0, 6.3, 1.6), (0, 6.3, 1.9), 0.012, 4)
     cyl(st, 0.07, 0.03, (0, 6.32, 1.95), axis="Y", segs=10)
+    swd_yard(k, fx)
     k.done()
     gate = bmesh.new()
     for z in (0.2, 1.7):

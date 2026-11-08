@@ -54,11 +54,28 @@ Credit is not required under CC0, but we credit every author anyway.
 | TEX_gravel_pad | `textures/gravel_pad/gravel_pad_color.jpg` | [Poly Haven](https://polyhaven.com/a/gravel_floor) | Jenelle van Heerden, Matterfield | [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/) |
 | TEX_dirt_road_tracks | `textures/dirt_road_tracks/dirt_road_tracks_color.jpg` | [ambientCG](https://ambientcg.com/a/Ground017) | ambientCG (Lennart Demes) | [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/) |
 
+## Material textures (look pass, #99)
+
+Shared detail maps for `blender/look.py`, made by `materials/make_materials.py`. Each color map
+is brightness-normalized with most of its hue removed, so one map serves many materials and
+each material's own color carries the hue. Normal maps are re-encoded unchanged.
+
+| Asset | File | Source | Author | License |
+|---|---|---|---|---|
+| TEX_material_paint_worn | `materials/paint_worn/paint_worn_color.jpg` | [ambientCG](https://ambientcg.com/a/Metal021) | ambientCG (Lennart Demes) | [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/) |
+| TEX_material_paint_light | `materials/paint_light/paint_light_color.jpg` | [ambientCG](https://ambientcg.com/a/Metal016) | ambientCG (Lennart Demes) | [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/) |
+| TEX_material_galvanized | `materials/galvanized/galvanized_color.jpg` | [ambientCG](https://ambientcg.com/a/Metal024) | ambientCG (Lennart Demes) | [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/) |
+| TEX_material_concrete | `materials/concrete/concrete_color.jpg` | [ambientCG](https://ambientcg.com/a/Concrete036) | ambientCG (Lennart Demes) | [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/) |
+| TEX_material_plastic_black | `materials/plastic_black/plastic_black_color.jpg` | [ambientCG](https://ambientcg.com/a/Plastic012B) | ambientCG (Lennart Demes) | [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/) |
+| TEX_material_wood_weathered | `materials/wood_weathered/wood_weathered_color.jpg` | [ambientCG](https://ambientcg.com/a/Wood059) | ambientCG (Lennart Demes) | [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/) |
+| TEX_material_caliche | `materials/caliche/caliche_color.jpg` | [Poly Haven](https://polyhaven.com/a/gravel_floor) (the kit's `gravel_pad`) | Jenelle van Heerden, Matterfield | [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/) |
+
 ## Sky (HDRI)
 
 | Asset | File | Source | Author | License |
 |---|---|---|---|---|
 | HDRI_rogland_moonlit_night | `hdri/rogland_moonlit_night_2k.hdr` | [Poly Haven](https://polyhaven.com/a/rogland_moonlit_night) | Greg Zaal | [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/) |
+| HDRI_goegap_day | `hdri/goegap_1k.hdr` | [Poly Haven](https://polyhaven.com/a/goegap) | Greg Zaal | [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/) |
 
 ## How the licenses were checked
 
