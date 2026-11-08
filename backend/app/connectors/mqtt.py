@@ -132,6 +132,10 @@ class MqttConnector(Connector):
             client.on_connect_fail = self._on_connect_fail
             client.on_pre_connect = self._on_pre_connect
             client.on_message = self._on_message
+            # Unlimited in-flight: _take_back() removes a timed-out command from _out_messages but paho's
+            # _inflight_messages counter would keep its slot, and after 20 timeouts every publish would
+            # sit queued forever while we report 'sent'. With no limit, publish never queues.
+            client.max_inflight_messages_set(0)
             client.connect_async(self.host, self.port, keepalive=int(self.config.get("keepalive_s", 30)))
             client.loop_start()
         except Exception as e:  # noqa: BLE001 - a bad config must not stop the backend
