@@ -96,7 +96,8 @@ export function mountConsole(H) {
     const skyBtn = document.createElement("button");
     skyBtn.type = "button";
     skyBtn.className = "cs-skybtn";
-    skyBtn.textContent = "sky";
+    skyBtn.textContent = "time of day";
+    skyBtn.title = "Lighting: follow the field clock, pick a time, or play a whole day";
     skyBtn.onclick = () => document.body.classList.toggle("cs-sky-open");
     const row = timebar.querySelector(".timebar-row");
     if (row) row.appendChild(skyBtn);

@@ -73,8 +73,8 @@ export function mountTwoNights(h) {
   const btn = document.createElement("button");
   btn.className = "twobtn";
   btn.type = "button";
-  btn.textContent = "Two nights";
-  btn.title = "Replay tonight twice: nobody acts, and the plan. Same pump trip, same water.";
+  btn.textContent = "Play both outcomes";
+  btn.title = "Replay tonight twice, side by side: nobody acts, and the plan. Same pump trip, same water.";
   row.appendChild(btn);
 
   const box = document.createElement("section");
@@ -317,7 +317,7 @@ export function mountTwoNights(h) {
     const plan = pickPlan();
     if (!plan) { btn.title = "No plan to replay yet."; return; }
     btn.disabled = true;
-    btn.textContent = "Two nights…";
+    btn.textContent = "Loading…";
     const saved = { actions: h.getActions(), t: h.getTime() };
     try {
       await h.setActions(plan.actions.map((a) => ({ ...a })), true);
@@ -343,7 +343,7 @@ export function mountTwoNights(h) {
       run = null;
     } finally {
       btn.disabled = false;
-      btn.textContent = "Two nights";
+      btn.textContent = "Play both outcomes";
     }
   }
 

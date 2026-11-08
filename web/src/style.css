@@ -37,6 +37,17 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink); 
            border-radius: 10px; padding: 10px 14px 8px; backdrop-filter: blur(6px); }
 .timebar-row { display: flex; gap: 12px; align-items: baseline; font: 12px var(--mono); }
 .timebar-row b { font-size: 15px; font-variant-numeric: tabular-nums; }
+/* Time bar legend (#143): what the two ticks mean, in words. Click one to jump there. */
+.timebar-row { flex-wrap: wrap; }
+.timebar-key { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 16px; margin-top: 6px; font: 12px var(--mono); color: var(--ink-2); }
+.timebar-key:has(.time-key:empty):has(.time-hint[hidden]) { display: none; }
+.time-hint { margin-left: auto; }
+.time-key { display: flex; flex-wrap: wrap; gap: 4px 14px; align-items: center; }
+.timebar .time-key .key { all: unset; display: inline-flex; align-items: center; gap: 6px; cursor: pointer; color: inherit; font: inherit; white-space: nowrap; }
+.timebar .time-key .key:hover, .timebar .time-key .key:focus-visible { text-decoration: underline; text-underline-offset: 3px; }
+.timebar .time-key .key i { width: 8px; height: 8px; flex: none; border-radius: 50% !important; }
+.timebar .time-key .key.lc i { background: var(--warning); }
+.timebar .time-key .key.sd i { background: var(--alarm); }
 
 /* ---- sky: day and night (#85) ---- */
 .sky-ctl { position: absolute; right: 16px; bottom: 110px; z-index: 2; width: 300px; padding: 8px 10px; font: 11px var(--mono);
@@ -64,6 +75,8 @@ input[type=range] { width: 100%; accent-color: var(--ink-2); height: 26px; margi
 .marks .tick { position: absolute; top: -26px; width: 2px; height: 16px; margin-left: -1px; pointer-events: auto; }
 .marks .tick.lc { background: var(--warning); }
 .marks .tick.sd { background: var(--alarm); }
+.marks .tick { cursor: pointer; }
+.marks .tick::before { content: ""; position: absolute; left: -3px; top: -6px; width: 8px; height: 8px; border-radius: 50%; background: inherit; }
 .marks .range { position: absolute; top: -20px; height: 4px; background: rgba(239,90,80,.35); border-radius: 2px; }
 
 #side { border-left: 1px solid var(--line); background: var(--surface); padding: 16px; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; }
