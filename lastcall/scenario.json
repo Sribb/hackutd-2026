@@ -1,0 +1,71 @@
+{
+  "_note": "Placeholder field for tonight's demo. IDs follow docs/CONTRACT.md. Every number here is a placeholder until the sponsor mentors give real ones. Swap values, keep the shape.",
+  "clock": "01:47",
+  "tanks": [
+    { "id": "TANK_1", "capacity_bbl": 1000, "shutdown_pct": 90, "setpoint_pct": 50, "level_pct": 48.0 },
+    { "id": "TANK_2", "capacity_bbl": 1000, "shutdown_pct": 90, "setpoint_pct": 50, "level_pct": 51.0 },
+    { "id": "TANK_3", "capacity_bbl": 1000, "shutdown_pct": 90, "setpoint_pct": 50, "level_pct": 71.2 },
+    { "id": "TANK_4", "capacity_bbl": 1000, "shutdown_pct": 90, "setpoint_pct": 50, "level_pct": 55.0 },
+    { "id": "TANK_5", "capacity_bbl": 1000, "shutdown_pct": 90, "setpoint_pct": 50, "level_pct": 49.0 },
+    { "id": "TANK_6", "capacity_bbl": 1000, "shutdown_pct": 90, "setpoint_pct": 50, "level_pct": 50.0 }
+  ],
+  "pumps": [
+    { "id": "PUMP_1", "tank_id": "TANK_1", "rate_bbl_hr": 200, "status": "OK" },
+    { "id": "PUMP_2", "tank_id": "TANK_2", "rate_bbl_hr": 200, "status": "OK" },
+    { "id": "PUMP_3", "tank_id": "TANK_3", "rate_bbl_hr": 200, "status": "ALARM", "reason": "Pump tripped. No flow since 1:47 AM." },
+    { "id": "PUMP_4", "tank_id": "TANK_4", "rate_bbl_hr": 200, "status": "OK" },
+    { "id": "PUMP_5", "tank_id": "TANK_5", "rate_bbl_hr": 200, "status": "OK" },
+    { "id": "PUMP_6", "tank_id": "TANK_6", "rate_bbl_hr": 200, "status": "OK" }
+  ],
+  "valves": [
+    { "id": "VALVE_XO_34", "connects": ["TANK_3", "TANK_4"], "max_bbl_hr": 90, "position": "CLOSED", "manual": true }
+  ],
+  "wells": [
+    { "id": "WELL_1",  "tank_id": "TANK_1", "water_bbl_hr": 30, "lost_usd_hr": 300 },
+    { "id": "WELL_2",  "tank_id": "TANK_1", "water_bbl_hr": 30, "lost_usd_hr": 300 },
+    { "id": "WELL_3",  "tank_id": "TANK_1", "water_bbl_hr": 30, "lost_usd_hr": 300 },
+    { "id": "WELL_4",  "tank_id": "TANK_1", "water_bbl_hr": 30, "lost_usd_hr": 300 },
+    { "id": "WELL_5",  "tank_id": "TANK_2", "water_bbl_hr": 30, "lost_usd_hr": 300 },
+    { "id": "WELL_6",  "tank_id": "TANK_2", "water_bbl_hr": 30, "lost_usd_hr": 300 },
+    { "id": "WELL_7",  "tank_id": "TANK_2", "water_bbl_hr": 30, "lost_usd_hr": 300 },
+    { "id": "WELL_8",  "tank_id": "TANK_2", "water_bbl_hr": 30, "lost_usd_hr": 300 },
+    { "id": "WELL_9",  "tank_id": "TANK_3", "water_bbl_hr": 60, "lost_usd_hr": 240 },
+    { "id": "WELL_10", "tank_id": "TANK_3", "water_bbl_hr": 50, "lost_usd_hr": 320 },
+    { "id": "WELL_11", "tank_id": "TANK_3", "water_bbl_hr": 40, "lost_usd_hr": 380 },
+    { "id": "WELL_12", "tank_id": "TANK_3", "water_bbl_hr": 30, "lost_usd_hr": 450 },
+    { "id": "WELL_13", "tank_id": "TANK_4", "water_bbl_hr": 30, "lost_usd_hr": 300 },
+    { "id": "WELL_14", "tank_id": "TANK_4", "water_bbl_hr": 30, "lost_usd_hr": 300 },
+    { "id": "WELL_15", "tank_id": "TANK_4", "water_bbl_hr": 30, "lost_usd_hr": 300 },
+    { "id": "WELL_16", "tank_id": "TANK_4", "water_bbl_hr": 30, "lost_usd_hr": 300 },
+    { "id": "WELL_17", "tank_id": "TANK_5", "water_bbl_hr": 30, "lost_usd_hr": 300 },
+    { "id": "WELL_18", "tank_id": "TANK_5", "water_bbl_hr": 30, "lost_usd_hr": 300 },
+    { "id": "WELL_19", "tank_id": "TANK_5", "water_bbl_hr": 30, "lost_usd_hr": 300 },
+    { "id": "WELL_20", "tank_id": "TANK_5", "water_bbl_hr": 30, "lost_usd_hr": 300 },
+    { "id": "WELL_21", "tank_id": "TANK_6", "water_bbl_hr": 30, "lost_usd_hr": 300 },
+    { "id": "WELL_22", "tank_id": "TANK_6", "water_bbl_hr": 30, "lost_usd_hr": 300 },
+    { "id": "WELL_23", "tank_id": "TANK_6", "water_bbl_hr": 30, "lost_usd_hr": 300 },
+    { "id": "WELL_24", "tank_id": "TANK_6", "water_bbl_hr": 30, "lost_usd_hr": 300 }
+  ],
+  "disposal_wells": [
+    { "id": "SWD_1", "max_bbl_hr": 600 },
+    { "id": "SWD_2", "max_bbl_hr": 600 }
+  ],
+  "trucks": [
+    { "id": "TRUCK_1", "capacity_bbl": 130, "minutes_to": { "TANK_3": 35, "TANK_4": 38 }, "load_min": 20, "haul_to_swd_min": 30 },
+    { "id": "TRUCK_2", "capacity_bbl": 130, "minutes_to": { "TANK_3": 50, "TANK_4": 52 }, "load_min": 20, "haul_to_swd_min": 30 }
+  ],
+  "lead_min": {
+    "_note": "How long an action takes to start working after the operator decides. This is what makes options expire.",
+    "SET_VALVE_manual": 20,
+    "SET_VALVE_remote": 1,
+    "CHOKE_WELL": 2,
+    "SEND_TRUCK": 5,
+    "SET_PUMP": 1
+  },
+  "costs": {
+    "_note": "Placeholders. Ask the mentors.",
+    "truck_usd_hr": 150,
+    "disposal_usd_bbl": 1.0,
+    "well_restart_usd": 500
+  }
+}
