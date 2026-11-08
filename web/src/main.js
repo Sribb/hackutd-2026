@@ -1,4 +1,5 @@
 import "@fontsource/gloock/400.css";
+import "./phonealerts.js"; // window.gaiaPhone: text and voice alerts to the judge's phone (#160)
 import "@fontsource/azeret-mono/400.css";
 import "@fontsource/azeret-mono/600.css";
 import * as THREE from "three";
