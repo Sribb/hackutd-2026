@@ -61,7 +61,7 @@ function buzz() {
 
 liveFeed.on("alert", (msg) => {
   if (!msg.alert) return;
-  if (!alerts.has(msg.alert.id)) { fresh.add(msg.alert.id); buzz(); }
+  if (!alerts.has(msg.alert.id) && msg.alert.active !== false) { fresh.add(msg.alert.id); buzz(); }
   alerts.set(msg.alert.id, msg.alert);
   draw();
 });
@@ -98,12 +98,16 @@ function describe(a) {
 }
 
 function draw() {
-  const list = [...alerts.values()].sort((a, b) => (String(b.t) > String(a.t) ? 1 : String(b.t) < String(a.t) ? -1 : 0));
+  // Active alerts first, newest first; resolved ones (active: false) sink and dim.
+  const list = [...alerts.values()].sort((a, b) => (a.active === false) - (b.active === false)
+    || (String(b.t) > String(a.t) ? 1 : String(b.t) < String(a.t) ? -1 : 0)).slice(0, 12);
   $("phAlerts").innerHTML = list.length
-    ? list.map((a) => `<article class="ph-alert ${esc(a.severity)} ${fresh.has(a.id) ? "new" : ""}">
-        <div class="ph-meta"><span class="sev">${esc(a.severity)}</span><span>${esc(String(a.kind || "").replace(/_/g, " "))}</span><time>${esc(a.t || "")}</time></div>
+    ? list.map((a) => `<article class="ph-alert ${esc(a.severity)} ${fresh.has(a.id) ? "new" : ""} ${a.active === false ? "resolved" : ""}">
+        <div class="ph-meta"><span class="sev">${a.active === false ? "RESOLVED" : esc(a.severity)}</span><span>${esc(String(a.kind || "").replace(/_/g, " "))}</span><time>${esc(clockOf(a))}</time></div>
         <h2>${esc(a.message)}</h2>
-        ${a.asset_id ? `<div class="ph-asset">${esc(nice(a.asset_id))}</div>` : ""}
+        <div class="ph-row">${a.asset_id ? `<span class="ph-asset">${esc(nice(a.asset_id))}</span>` : ""}
+          ${a.asset_id ? `<button class="ph-show" data-show="${esc(a.asset_id)}">Show</button>` : ""}
+          ${a.active !== false && !a.acked ? `<button class="ph-ack" data-ack="${esc(a.id)}">Ack</button>` : a.acked ? `<span class="ph-asset">acked</span>` : ""}</div>
       </article>`).join("")
     : `<p class="ph-empty">No alerts. This page buzzes when one comes in.</p>`;
 
@@ -111,22 +115,45 @@ function draw() {
   const done = [...proposals.values()].filter((p) => p.status !== "PENDING").slice(-3).reverse();
   $("phProps").innerHTML = (pend.length ? `<h3>Waiting for you</h3>` : "") + pend.map((p) => `
       <article class="ph-prop">
-        <h2>${esc(describe(p.action))}</h2>
+        <h2>${esc(p.text || describe(p.action))}</h2>
         ${p.reason ? `<p>${esc(p.reason)}</p>` : ""}
         <div class="ph-btns">
           <button class="ph-reject" data-reject="${esc(p.id)}">Reject</button>
           <button class="ph-confirm hold" data-confirm="${esc(p.id)}"><i></i><span>Hold to confirm</span></button>
         </div>
       </article>`).join("")
-    + (done.length ? `<h3>Decided</h3>` + done.map((p) => `<div class="ph-done ${esc(p.status)}"><b>${esc(p.status)}</b> ${esc(describe(p.action))}</div>`).join("") : "");
+    + (done.length ? `<h3>Decided</h3>` + done.map((p) => `<div class="ph-done ${esc(p.status)}"><b>${esc(p.status)}</b> ${esc(p.text || describe(p.action))}${p.decided_by ? ` <span>by ${esc(p.decided_by)}</span>` : ""}</div>`).join("") : "");
+  $("phAlerts").querySelectorAll("[data-ack]").forEach((b) => { b.onclick = () => ack(b.dataset.ack); });
+  // "Show" points every open console at the asset (ws ui focus, #38).
+  $("phAlerts").querySelectorAll("[data-show]").forEach((b) => {
+    b.onclick = () => { if (!liveFeed.send({ type: "ui", action: "focus", asset_id: b.dataset.show })) $("phFoot").textContent = "Not connected, so the consoles can't be pointed."; };
+  });
   $("phProps").querySelectorAll("[data-reject]").forEach((b) => { b.onclick = () => decide(b.dataset.reject, "reject"); });
   $("phProps").querySelectorAll("[data-confirm]").forEach((b) => holdButton(b, () => decide(b.dataset.confirm, "confirm"), 1500));
   $("phFoot").innerHTML = `Backend ${esc(BASE)} · no login (demo only)`;
 }
 
+// The live clock ("01:48") if the backend sent one, else the time part of the ISO stamp.
+function clockOf(a) {
+  if (a.clock) return a.clock;
+  const m = String(a.t || "").match(/T(\d\d:\d\d)/);
+  return m ? m[1] : String(a.t || "");
+}
+
+// Acknowledge = "I've seen it". It doesn't resolve the alert or change equipment.
+async function ack(id) {
+  try {
+    const out = await call(`/api/alerts/${encodeURIComponent(id)}/ack`, {});
+    alerts.set(id, { ...alerts.get(id), acked: true, ...(out && out.id ? out : {}) });
+  } catch (e) {
+    $("phFoot").textContent = e.message;
+  }
+  draw();
+}
+
 async function decide(id, verb) {
   try {
-    const out = await call(`/api/actions/${encodeURIComponent(id)}/${verb}`, {});
+    const out = await call(`/api/actions/${encodeURIComponent(id)}/${verb}`, { by: "phone" });
     proposals.set(out.id, out);
   } catch (e) {
     $("phFoot").textContent = e.status === 409 ? "Already decided on another screen." : e.message;
@@ -141,6 +168,6 @@ addEventListener("pointerdown", async () => {
   try { if (navigator.wakeLock) await navigator.wakeLock.request("screen"); } catch { /* not allowed here */ }
 }, { once: true });
 
-liveFeed.start(BASE);
+liveFeed.start(BASE, "phone");
 load();
 draw();

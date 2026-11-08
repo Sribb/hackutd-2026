@@ -39,3 +39,8 @@ main { max-width: 560px; margin: 0 auto; padding: max(16px, env(safe-area-inset-
 .ph-done b { font-size: 11px; letter-spacing: .12em; margin-right: 6px; color: var(--good); }
 .ph-done.REJECTED b, .ph-done.FAILED b { color: var(--muted); }
 .ph-foot { margin-top: 24px; font-size: 11px; color: var(--muted); word-break: break-all; }
+.ph-alert.resolved { opacity: .45; border-left-color: var(--muted); }
+.ph-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.ph-ack, .ph-show { font: 600 12px var(--mono); letter-spacing: .14em; text-transform: uppercase; background: transparent; color: var(--ink); border: 1px solid var(--ink-2); padding: 10px 18px; }
+.ph-done span { color: var(--muted); }
+.ph-row .ph-asset { flex: 1; }

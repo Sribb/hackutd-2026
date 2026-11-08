@@ -8,6 +8,7 @@
 // marked stale and the UI says "live feed lost". Nothing freezes silently.
 
 let base = "";
+let role = "web";
 let ws = null, tries = 0, pollTimer = 0, lostTimer = 0;
 const subs = new Map(); // type -> Set(fn)
 
@@ -31,9 +32,10 @@ function emit(type, msg) {
   }
 }
 
-export function start(apiBase) {
+export function start(apiBase, as = "web") {
   if (base || !apiBase) return;
   base = apiBase.replace(/\/$/, "");
+  role = as;
   poll();
   connect();
 }
@@ -47,7 +49,9 @@ function mergeState(s) {
     const staleNow = a.stale === true || (typeof a.stale === "number" && a.stale > 0);
     // A sensor that reports "stale" stopped reading when we first saw it stale, not now.
     const staleSince = staleNow ? (prev.staleSince || now) : null;
-    live.assets[id] = { ...prev, ...a, staleSince, seenAt: staleNow ? (prev.seenAt || now) : now };
+    // The last status that came from a fresh reading, for "last known: ALARM".
+    const lastKnown = !staleNow && a.status && a.status !== "UNKNOWN" ? a.status : prev.last_known || null;
+    live.assets[id] = { ...prev, ...a, staleSince, last_known: lastKnown, seenAt: staleNow ? (prev.seenAt || now) : now };
     if (!staleNow) delete live.assets[id].stale;
   }
   if (Array.isArray(s.connectors)) live.connectors = s.connectors;
@@ -82,7 +86,7 @@ async function healthConnectors() {
 
 function connect() {
   try {
-    ws = new WebSocket(base.replace(/^http/, "ws") + "/ws");
+    ws = new WebSocket(base.replace(/^http/, "ws") + `/ws?role=${role}`);
   } catch {
     return retry();
   }
@@ -112,6 +116,14 @@ function connect() {
     emit("feed", live);
     retry();
   };
+}
+
+// Send a message on the shared socket, e.g. {type: "ui", action: "focus", asset_id} to point
+// every console at an asset. Returns false if the socket isn't open.
+export function send(msg) {
+  if (!ws || ws.readyState !== 1) return false;
+  ws.send(JSON.stringify(msg));
+  return true;
 }
 
 function retry() {
@@ -144,7 +156,7 @@ export function reading(id) {
   const out = { ...a, stale };
   // A stale reading is UNKNOWN, whatever it last said. The last status is kept so the
   // panel can say "last known ALARM", but it is never shown as the current state.
-  if (stale) { out.last_status = a.status || null; out.status = "UNKNOWN"; }
+  if (stale) { out.last_status = a.status && a.status !== "UNKNOWN" ? a.status : a.last_known; out.status = "UNKNOWN"; }
   return out;
 }
 
