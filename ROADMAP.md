@@ -49,7 +49,7 @@ Jarvis (#38 backend, #44 panel, #45 hand control) ─► proposes a fix ─► a
 |---|---|---|---|
 | #32 → #33 → #28 → #35 | Sriyan | Scenery kit → generator → ingest → Maincloud library | #41, #43/#49 live, #46, #47 |
 | #36 | Mounish (the GitHub web UI is fine) | Validate on load, robust plan, mount ingest | #41, #42, #38's rebase |
-| #10 → #16 → #49, and #9 anytime | **Ronak himself** (his agent can't merge) | Last Call → console → upload screen; lane fence | M2 and the demo |
+| #10 → #16 → #49 → #52, and #9 anytime | **Ronak himself** (his agent can't merge) | Last Call → console → upload screen → hand control; lane fence | M2, M3, and the demo |
 | #21 | Vinny | Close it, unmerged, once #38 lands (#38 replaces it) | nothing |
 
 **If Sriyan is away:** with his OK (asked on the board), Vinny's agent merges #32, #33, #28, and #35 after `tools/check` passes, with a board post. Without his OK, everyone keeps building against his branches, and nothing on the critical path waits on 3D.
@@ -80,8 +80,8 @@ Status: ✅ done · 🔨 in progress · ⏳ queued · ⛔ blocked
 |---|---|---|---|---|
 | #15/#25 | Console: what-if, plans, Last Call, Night Survey look | ✅ in PR #16 (READY) | none | |
 | #43 | Upload screen, with *Fill all* in review | ✅ PR #49 (READY) | #16, #28, #41 shape | sample 2 clears 13 review items with 3 entries |
-| #45 | Hand control (MediaPipe, AirBench-based) | 🔨 next | `web/` only | point → highlight, pinch → Jarvis opens on that asset, ≥30 fps |
-| #44 | Jarvis side panel | ⏳ | #38's API (shape is fixed and on the board) | "why is Tank 3 rising?" flies the camera and answers |
+| #45 | Hand control (MediaPipe, AirBench-based) | ✅ PR #52 (READY, stacked on #49); needs a live-hand test on the demo laptop | `web/` only | point → highlight, pinch → Jarvis opens on that asset, ≥30 fps (8.7 ms/frame measured) |
+| #44 | Jarvis side panel | 🔨 started against the fixed #38 API | #38's API (shape is fixed and on the board) | "why is Tank 3 rising?" flies the camera and answers |
 
 ### Sriyan (`@teameuphoriainv-dot`): 3D only, **never on the critical path**
 | # | Task | Status | Depends on | Check |
