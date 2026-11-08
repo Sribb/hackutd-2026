@@ -660,7 +660,10 @@ class Jarvis:
 
         # Status.
         if re.search(r"status|what'?s (failing|wrong|happening|going on|broken)|report|sitrep|alarms?|alerts?|problem|update", t):
-            active = sorted(live.detector.active.values(), key=lambda a: a["severity"] != "ALARM")
+            # Root causes first, then by priority (CF-7), then alarms before warnings.
+            active = sorted(live.detector.active.values(),
+                            key=lambda a: (a.get("root_id") is not None, a.get("priority") or "P3",
+                                           a["severity"] != "ALARM"))
             if not active:
                 return f"All quiet at {live.fmap.clock_text(live.t)}. No active alerts."
             await self._focus(active[0]["asset_id"], ctx)

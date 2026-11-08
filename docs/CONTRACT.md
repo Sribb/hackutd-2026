@@ -391,7 +391,13 @@ The live clock starts at the blueprint's `clock_start` and runs at `FREEBOARD_SP
 ```json
 { "id": "alert_1", "asset_id": "PUMP_3", "kind": "PUMP_TRIP", "severity": "ALARM",
   "message": "Pump 3 tripped: flow reads 0 bbl/hr, it should be moving 150. Tank 3 is filling.",
-  "t": "2026-11-07T07:12:03+00:00", "clock": "01:48", "active": true }
+  "t": "2026-11-07T07:12:03+00:00", "clock": "01:48", "active": true,
+  "root_id": null, "priority": "P1",
+  "minutes_to_consequence": 61, "minutes_to_consequence_low": 53,
+  "consequence": "Tank 3 reaches shutdown at 2:51 AM. 4 wells go down with it.",
+  "consequence_asset_id": "TANK_3", "consequence_clock": "2:51 AM", "consequence_t": 63.5,
+  "usd_at_risk": 7241,
+  "shelved_until": null, "shelved_until_t": null, "shelve_reason": null, "shelved_by": null, "shelved_t": null }
 ```
 
 | `kind` | `severity` | Raised when |
@@ -399,10 +405,30 @@ The live clock starts at the blueprint's `clock_start` and runs at `FREEBOARD_SP
 | `PUMP_TRIP` | `ALARM` | The pump reports `running` false, or its flow is under 10% of its rate while it should run, or its tank rises faster than its wells explain. Confirmed over 2 readings, so it alerts within 3. |
 | `SENSOR_STALE` | `WARNING` | No reading of a signal for `stale_after_min`. |
 | `VALVE_MISMATCH` | `WARNING` | A valve's reported position differs from the position a person confirmed, for 2 readings after a 1 minute grace. |
+| `TANK_HIGH` | `WARNING` | A fresh tank level at or over `warning_pct` (default `shutdown_pct - 10`) for 2 readings. Clears 1 point below it. |
+| `TANK_HIGH_HIGH` | `ALARM` | A fresh tank level at or over `high_high_pct` (default `shutdown_pct - 5`) for 2 readings. Clears 1 point below it. A stale tank raises neither: it is `SENSOR_STALE`. |
 | `RUN_PAUSED` | `ALARM` | A plan run paused itself: a step's effect wasn't seen, a tank is rising faster than forecast, or a step was rejected or failed. `asset_id` is that step's asset or tank. The message names the re-plan run once Jarvis has one. Resolves (`active: false`) when the run resumes or ends: replaced, cancelled, failed, or done. See [Plan runs](#plan-runs-63). |
 | `RUN_FAILED` | `ALARM` | A tank reached shutdown during a plan run, which ends the run as `FAILED`. `asset_id` is the tank. Resolves (`active: false`) when that tank reads below shutdown again, or when a person starts another run. |
 
 `t` is when it was raised (ISO). When the condition clears, the same alert is sent again with `"active": false` and `resolved_t`. An alert closed because the field was reloaded (see below) also has `resolved_reason`.
+
+#### Priority, consequence, and root cause (CF-7)
+
+- `priority` is `P1`, `P2`, or `P3`, from the **baseline forecast** (`POST /api/forecast` with no actions, run on the live readings, with every active `PUMP_TRIP` as a failure). `P1` if the alarm leads to a tank shutdown within 60 minutes, `P2` within 180, `P3` otherwise. It is ranked on the early end of the forecast's give-or-take (`minutes_to_consequence_low`, inflow 15% high), so a shutdown forecast at 61 minutes, give or take 9, is `P1`.
+- Which shutdown an alarm leads to: `PUMP_TRIP` its tank; `TANK_HIGH` and `TANK_HIGH_HIGH` that tank; `VALVE_MISMATCH` its pump's tank (a discharge valve) or the earlier of its two tanks (a crossover). `SENSOR_STALE` on a tank level is `P2` with `minutes_to_consequence` null and a `consequence` saying it is unknown (never safe); any other stale signal is `P3`.
+- `minutes_to_consequence` is whole minutes to that shutdown in the baseline forecast (null when there is none in the 6 hour horizon), `minutes_to_consequence_low` the early end. `consequence` is the forecast event's text, `consequence_asset_id` the tank, `consequence_clock` its time ("2:51 AM"), `consequence_t` its live minute (compare with `state.t`). `usd_at_risk` is what the forecast charges for that shutdown: the shut-in wells' lost production to the end of the horizon plus a restart for each (0 when there is no consequence).
+- **Recomputed as the forecast changes:** whenever an alert is raised or resolved, and at least every live minute while any alert is active. When an alert's `priority` or consequence changes, or its consequence time moves 2 minutes or more, it is sent again over `/ws` with `"event": "updated"`. A plain countdown is not re-sent; `GET /api/alerts` always has the current numbers.
+- `root_id` points a consequential alarm at the alarm that caused it, or is null for a root. A tank's `TANK_HIGH` or `TANK_HIGH_HIGH` points at an active `PUMP_TRIP` on one of the tank's pumps, else a `VALVE_MISMATCH` on one of their discharge valves; a `TANK_HIGH_HIGH` with neither points at the same tank's `TANK_HIGH`. A root that appears after its consequence (the trip confirmed after the tank already read high) is linked then, with `"event": "updated"`. Once set, `root_id` stays, even after the root resolves. Group the list by it: after a Pump 3 trip there is one `P1` root and the Tank 3 high and high-high alarms fold under it.
+
+#### Shelving (CF-7)
+
+`POST /api/alerts/{id}/shelve` with `{"minutes": 30, "reason": "Crew is on the way to Pump 3", "by": "optional name"}` (phone or operator token) → the alert, with:
+
+- `shelved_until` its end on the clock ("3:05 AM"), `shelved_until_t` the live minute (time left is `shelved_until_t - state.t`), `shelve_reason`, `shelved_by` (from the token's role when tokens are on, as `decided_by` is), `shelved_t` (ISO).
+- **422** when `reason` is missing or blank, or `minutes` is missing or outside 15 to 240 (live minutes). **404** for an unknown id, **409** for an alert that has already cleared. Shelving a shelved alert replaces its timer.
+- A shelved alert stays `active` and keeps its priority current. It comes back by itself when `state.t` reaches `shelved_until_t`: the shelve fields go back to null, it is sent over `/ws` with `"event": "unshelved"`, and pushed to the phone again. An alert that clears while shelved ends its shelf too.
+- `POST /api/alerts/{id}/unshelve` (optional body `{"by": "name"}`, phone or operator token) brings it back early. 409 if it isn't shelved.
+- Every shelve and unshelve is in the audit log (`shelved`, `unshelved`, see below).
 
 ### Actions (human-confirmed)
 
@@ -454,10 +480,10 @@ One mechanism for the console link, the phone QR, and the typed PIN. Code: `back
 |---|---|
 | `FREEBOARD_TOKEN` | operator: everything |
 | `OPERATOR_PIN` | operator too: a short PIN a person can type (CF-5's prompt fills the same header) |
-| `FREEBOARD_PHONE_TOKEN` | phone: confirm, reject, and ack only |
+| `FREEBOARD_PHONE_TOKEN` | phone: confirm, reject, ack, shelve, and unshelve only |
 
 - **None set:** every route behaves exactly as before.
-- **Any set:** every `POST` in the live layer needs the header `X-Freeboard-Token`: `/api/actions` (create), `/api/actions/{id}/confirm` and `/reject`, `/api/alerts/{id}/ack`, `/api/live/faults`, `/api/live/sim`, `/api/jarvis`. Missing or wrong → **401** `{"detail": "Enter the operator PIN to send commands."}`. The phone token on an operator-only route → **403**. `POST /api/live/readings/{connector_id}` keeps its own connector token (`token_env`). Reads (`GET`) stay open. Tokens are compared with `hmac.compare_digest` and never logged.
+- **Any set:** every `POST` in the live layer needs the header `X-Freeboard-Token`: `/api/actions` (create), `/api/actions/{id}/confirm` and `/reject`, `/api/alerts/{id}/ack`, `/shelve`, and `/unshelve`, `/api/live/faults`, `/api/live/sim`, `/api/jarvis`. Missing or wrong → **401** `{"detail": "Enter the operator PIN to send commands."}`. The phone token on an operator-only route → **403**. `POST /api/live/readings/{connector_id}` keeps its own connector token (`token_env`). Reads (`GET`) stay open. Tokens are compared with `hmac.compare_digest` and never logged.
 - `WS /ws?token=<token>`: a wrong token is closed with code **1008**. No token connects read-only: it gets every message, but its `ui` messages are ignored. Operator and phone tokens may send `ui`.
 - **Other lanes** put the same check on their routes (`/api/blueprints/*`, approve, spacetime sync #105; `/api/ingest` #106):
 
@@ -489,9 +515,11 @@ def post_approve(plan_id: str, caller: Caller = Depends(require_role("operator")
 | `confirmed` | A person (or `JARVIS_CONFIRM=0`) confirmed it; it is now `SENDING` | same, plus `auto` `"JARVIS_CONFIRM=0"` on the automatic path |
 | `result` | The connector answered | `status` `CONFIRMED` or `FAILED` (or `UNCERTAIN` once that state exists), `result` |
 | `rejected` | A person rejected it, or a reload closed it (`source` `blueprint`) | `result?` |
-| `acked` | An alert was acknowledged (the first time only) | `alert_id`, `kind`, `severity`, `message` |
+| `acked` | An alert was acknowledged (the first time only) | `alert_id`, `kind`, `severity`, `message`, `priority` |
+| `shelved` | A person shelved an alert (CF-7) | `alert_id`, `kind`, `priority`, `minutes`, `reason`, `shelved_until`, `shelved_until_t` |
+| `unshelved` | A shelf ended | `alert_id`, `kind`, `priority`, `why` (`expired` with `source` `timer`, `by hand`, `resolved` with `source` `detector`, or `reloaded` with `source` `blueprint`), `shelve_reason`, `shelved_until` |
 
-- `t` is the wall time (ISO), `clock` and `live_t` the live clock. `role` is the token role (`operator`, `phone`, or null when no token is configured or nobody asked). `source` is `console`, `phone`, `jarvis`, or `blueprint`; for a Jarvis proposal, `role` is the operator who asked. `by` is the stored `decided_by`.
+- `t` is the wall time (ISO), `clock` and `live_t` the live clock. `role` is the token role (`operator`, `phone`, or null when no token is configured or nobody asked). `source` is `console`, `phone`, `jarvis`, `blueprint`, `timer` (a shelf ran out), or `detector` (an alert cleared while shelved); for a Jarvis proposal, `role` is the operator who asked. `by` is the stored `decided_by`.
 - **Other lanes** log their own steps (approve, activate, shelve) with `app.state.audit.append("approved", source=caller.device, role=caller.role, plan_id=...)`. Any extra keyword is kept on the entry. It is safe to call from a sync endpoint's worker thread.
 
 ### Following the active blueprint
@@ -568,7 +596,7 @@ Connect to `ws://127.0.0.1:8000/ws?role=web` (`role` is `web`, `phone`, `device`
 | `type` | Payload | When |
 |---|---|---|
 | `state` | `{"type": "state", "seq": 1, "state": <GET /api/live/state body>}` | On connect, every tick, and after each confirm |
-| `alert` | `{"type": "alert", "seq": 2, "alert": <alert>}` | Raised or resolved |
+| `alert` | `{"type": "alert", "seq": 2, "event": "raised", "alert": <alert>}` | `event` is `raised`, `resolved`, `updated` (priority, consequence, or root changed), `shelved`, or `unshelved`. Replace the row with the same `alert.id`. |
 | `proposal` | `{"type": "proposal", "seq": 3, "proposal": <proposal>}` | Created, sending, confirmed, rejected, or failed |
 | `ui` | `{"type": "ui", "seq": 4, "action": "focus", "asset_id": "PUMP_3", "reason": "...", "source": "jarvis"}` | Jarvis, a new ALARM, a proposal, or a phone wants every screen on an asset |
 | `run` | `{"type": "run", "seq": 5, "run": <run>}` (`run.steps[]` has `proposal_id`, `action`, `status`) | A [plan run](#plan-runs-63) is created, or its status, a step's status, or its re-plan changes |
@@ -590,7 +618,7 @@ Clients may send `{"type": "ping"}` (answered with `pong`) and `{"type": "ui", "
 | `CORS_ORIGINS` | unset | Extra allowed origins, comma separated. Localhost is always allowed. |
 | `FREEBOARD_TOKEN` | unset | Operator control token (#103). Any of these three turns the write lock on. |
 | `OPERATOR_PIN` | unset | Operator PIN, same role as `FREEBOARD_TOKEN` (CF-15). Never commit it. |
-| `FREEBOARD_PHONE_TOKEN` | unset | Phone control token: confirm, reject, and ack only. |
+| `FREEBOARD_PHONE_TOKEN` | unset | Phone control token: confirm, reject, ack, shelve, and unshelve only. |
 | `FREEBOARD_AUDIT_FILE` | unset | Also append the audit log here as JSON lines (relative = under `backend/data/`). |
 | `*_env` in connector config | | Names the variable holding a connector secret, e.g. `"token_env": "HOOK_TOKEN"`. |
 
