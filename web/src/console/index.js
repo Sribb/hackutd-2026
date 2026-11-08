@@ -173,12 +173,14 @@ export function mountConsole(H) {
   agent = mountAgent({
     side, stream, apply: (d) => directives.apply(d), nice, hasId: H.hasId, selected: H.selected, tankOf: H.tankOf,
     brief: () => computeBrief(), alerts: () => activeAlerts(), unknown: () => unknownTanks(),
+    mics: [side.talk, status.el.querySelector("#csTalkBar")].filter(Boolean),
     say: (t, x) => say(t, x), ask: (t) => { setOpen(true); ask(t); }, closePanels: () => closeDrawer(true), BASE, getJson,
     chart: (t) => { const m = intents.match(t, { hasId: H.hasId, ids: H.ids, selected: H.selected, opened: () => false }); return m && m.chart && !m.chart.error ? charts.answer(m.chart) : "I couldn't draw that chart here."; },
     // The console's own clock words: "2:47 am" on the live field, "11:57 utc" on a dataset (#153).
     now: () => nowMin(), dataset: () => onDataset(),
     clock: (min) => (onDataset() ? `${String(Math.floor((((min % 1440) + 1440) % 1440) / 60)).padStart(2, "0")}:${String((((min % 1440) + 1440) % 1440) % 60).padStart(2, "0")} utc` : clock12(min).toLowerCase()),
   });
+  addEventListener("gaia:listening", () => { if (!open) setOpen(true); });
   function onDataset() { const d = H.data(); return !!(liveFeed.live.dataset || (d && d.field && d.field.mode === "dataset")); }
   // Chart cards (chartask.js): drawn from the data in the browser, no AI. A click flies to the asset.
   const charts = makeCharts({
@@ -478,7 +480,6 @@ export function mountConsole(H) {
   function say(text, extra = {}) {
     const safe = guard(text);
     stream.post("J", { text: safe, ids: extra.ids || [], tag: extra.tag || "local", ...extra, text: safe });
-    if (agent) agent.spoke(safe);
   }
   // Never an all-clear while a tank is unknown or the feed is lost, whoever wrote the words.
   function guard(text) {

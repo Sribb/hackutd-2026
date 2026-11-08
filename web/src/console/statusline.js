@@ -29,6 +29,7 @@ export function mountStatusLine(host, on) {
     </span>
     <span class="cs-grow"></span>
     <time id="csClock">--:--</time>
+    <button type="button" class="cs-icon cs-talkbar" id="csTalkBar" aria-label="Talk to gaia">${ICON.mic}<span>talk</span></button>
     <button type="button" class="cs-icon" id="csLayers" data-seg="LAYERS" title="Layers: time, sky, scenery" aria-label="Layers">${LAYERS}</button>
     <button type="button" class="cs-icon" id="csXray" data-seg="XRAY" title="X-ray: hide the scenery" aria-label="X-ray">${XRAY}</button>
     <button type="button" class="cs-icon" id="csFollow" data-seg="FOLLOW" title="Follow the incident" aria-label="Follow the incident">${FOLLOW}</button>

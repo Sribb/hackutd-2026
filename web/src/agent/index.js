@@ -1,8 +1,9 @@
-// gaia as an agent (#171): it works on the screen in steps, talks, and listens.
+// gaia as an agent (#171): it works on the screen in steps and listens. Speech is the main
+// control and typing the fallback; gaia answers on screen only, never aloud.
 //   steps.js     plays a reply's UI directives one by one under a ticking step list
-//   voice.js     push to talk (hold space or click the mic) and spoken replies, with mute
+//   voice.js     push to talk: hold space, or hold or click any mic
 //   playbook.js  "walk me through it" with no Claude: the same steps from the console's data
-// console/index.js mounts this once and calls play(), spoke(), before() and stop(); the open
+// console/index.js mounts this once and calls play(), before() and stop(); the open
 // palm (hands.js, agentic mode) calls stop() through the "gaia:palm" event.
 
 import { makeSteps } from "./steps.js";
@@ -23,7 +24,7 @@ export function mountAgent(H) {
   const apply = (d) => (d.action === "chart" ? (H.chart && chartText(d) ? H.chart(chartText(d)) : "") : H.apply(d));
   const steps = makeSteps({ stream: H.stream, apply, nice: H.nice, hasId: H.hasId });
   const voice = mountVoice({
-    dock: H.side.el.querySelector(".cs-dock"), input: H.side.input, mic: H.side.mic,
+    dock: H.side.el.querySelector(".cs-dock"), input: H.side.input, mic: H.side.mic, mics: H.mics || [],
     send: (text) => H.ask(text),
   });
 
@@ -59,7 +60,6 @@ export function mountAgent(H) {
 
   function stop() {
     steps.cancel();
-    voice.hush();
     voice.stopListening();
     H.closePanels();
   }
@@ -67,10 +67,9 @@ export function mountAgent(H) {
 
   return {
     play: (list) => steps.play(list),
-    spoke: (text) => voice.speak(text),
-    hush: () => voice.hush(),
+    addMic: (b) => voice.addMic(b),
     before,
     stop,
-    state: () => ({ llm, busy: steps.busy(), listening: voice.listening(), muted: voice.muted(), voice: voice.supported() }),
+    state: () => ({ llm, busy: steps.busy(), listening: voice.listening(), voice: voice.supported() }),
   };
 }
