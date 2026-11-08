@@ -26,7 +26,15 @@ export function eogClient(base = "") {
   }).then(json);
   return {
     datasets: () => get("/datasets"),
-    activate: (id) => post("/datasets/activate", { id }),
+    // Switching the recording on screen sends no command, so #152's /api/dataset/load takes no
+    // operator token (same-site only). The /api/eog route, which needs one, is the fallback.
+    async activate(id) {
+      const r = await fetch(`${base}/api/dataset/load`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ folder: id }),
+      });
+      if (r.status !== 404 && r.status !== 405) { await json(r); return get("/datasets"); }
+      return post("/datasets/activate", { id });
+    },
     alerts: (at) => get("/alerts", at),
     events: (at) => get("/events", at),
     plans: (at) => get("/plans", at),
