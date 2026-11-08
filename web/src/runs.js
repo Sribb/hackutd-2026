@@ -24,6 +24,14 @@ let run = null;            // the run on screen
 let offer = null;          // { kind: "stale"|"replan", text, plan?, run? }
 let note = "";
 const props = new Map();   // proposal id -> proposal (for SENDING / UNCERTAIN / FAILED)
+
+// Lone-worker check-in. A step that sends a person out alone at night (the rover to a manual
+// valve) starts a check-in clock once it is confirmed. NIOSH/OSHA (OSHA 3843, MMWR 65(1)):
+// nine workers died at production tanks in 2010-2015, all working alone. Missed check-ins
+// say so on the console and in the shift log. Field time (the live clock), so it runs at
+// demo speed in a rehearsal.
+const CHECK_MIN = 20;
+const crew = new Map();    // `${run}:${n}` -> { who, asset, text, since, last, missed }
 let lastStatus = "";
 
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
@@ -109,10 +117,39 @@ function headline(r) {
   return r.status;
 }
 
+// The live minute now (carried on while the feed is lost), or null with no live layer.
+const nowT = () => { const c = liveFeed.clockEstimate(); return c && typeof c.t === "number" ? c.t : null; };
+
+// Start a check-in clock for each confirmed step that sends someone out alone.
+function trackCrew(r) {
+  const t = nowT();
+  if (t == null) return;
+  for (const s of r.steps) {
+    const key = `${r.id}:${s.n}`;
+    if (crew.has(key) || !["VERIFYING", "DONE", "MISMATCH"].includes(s.status)) continue;
+    const who = hooks.outside && hooks.outside(s.action);
+    if (!who) continue;
+    crew.set(key, { who, asset: s.action.asset_id, text: s.text, since: t, last: t, missed: false });
+    hooks.log(`${who} out at ${hooks.nice(s.action.asset_id)}. Check in every ${CHECK_MIN} min.`);
+  }
+}
+
+function crewHtml() {
+  const t = nowT();
+  if (!crew.size || t == null) return "";
+  return `<div class="run-crew"><div class="run-offer-k">People out</div>${[...crew.entries()].map(([k, c]) => {
+    const due = c.last + CHECK_MIN, late = Math.floor(t - due);
+    if (late >= 0 && !c.missed) { c.missed = true; hooks.log(`MISSED CHECK-IN: ${c.who} at ${hooks.nice(c.asset)}. Call them; send backup if no answer.`); }
+    return `<div class="crew-row ${late >= 0 ? "late" : ""}"><span>${esc(c.who)} at ${esc(hooks.nice(c.asset))}</span>
+      <span class="crew-due">${late >= 0 ? `MISSED CHECK-IN ${late < 1 ? "just now" : `${late} min ago`}. Call them.` : `check in by ${esc(hooks.clockIn(due - t))}`}</span>
+      <span class="plan-btns"><button data-checkin="${esc(k)}">Checked in</button><button data-back="${esc(k)}">Back in</button></span></div>`;
+  }).join("")}</div>`;
+}
+
 function draw() {
   if (!box) return;
   if (isHolding()) { afterHold(draw); return; }
-  if (!run && !offer && !note) { box.hidden = true; box.innerHTML = ""; return; }
+  if (!run && !offer && !note && !crew.size) { box.hidden = true; box.innerHTML = ""; return; }
   box.hidden = false;
   const r = run;
   const steps = r ? r.steps : [];
@@ -132,12 +169,24 @@ function draw() {
     ${offer ? `<div class="run-offer"><div class="run-offer-k">${offer.kind === "stale" ? "This plan is out of date" : "Re-plan offered"}</div>
         <p>${esc(offer.text)}</p>
         ${offer.plan || offer.run ? `<div class="plan-btns"><button class="primary hold" data-offer title="Press and hold to start it"><i></i><span>Hold to run it</span></button></div>` : ""}</div>` : ""}
+    ${crewHtml()}
     ${note ? `<div class="run-note" role="alert">${esc(note)}</div>` : ""}
     ${r && ACTIVE.has(r.status) ? `<div class="plan-btns run-ctl">${r.status === "RUNNING" ? `<button data-pause>Pause</button>` : ""}${r.status === "PAUSED" && r.started !== false && !offer ? `<button data-resume>Resume</button>` : ""}${r.status !== "CANCELLING" ? `<button class="hold" data-cancel title="Press and hold to cancel the run"><i></i><span>Hold to cancel run</span></button>` : ""}</div>` : ""}`;
 
   box.querySelectorAll("[data-asset]").forEach((li) => {
     li.querySelector(".run-text").onclick = () => li.dataset.asset && hooks.select(li.dataset.asset);
   });
+  box.querySelectorAll("[data-checkin]").forEach((b) => { b.onclick = () => {
+    const c = crew.get(b.dataset.checkin), t = nowT();
+    if (c && t != null) { c.last = t; c.missed = false; hooks.log(`${c.who} checked in at ${hooks.nice(c.asset)}.`); }
+    draw();
+  }; });
+  box.querySelectorAll("[data-back]").forEach((b) => { b.onclick = () => {
+    const c = crew.get(b.dataset.back);
+    if (c) hooks.log(`${c.who} back in from ${hooks.nice(c.asset)}.`);
+    crew.delete(b.dataset.back);
+    draw();
+  }; });
   box.querySelectorAll("[data-reject]").forEach((b) => { b.onclick = () => decide(b.dataset.reject, "reject"); });
   box.querySelectorAll("[data-confirm]").forEach((b) => holdButton(b, () => decide(b.dataset.confirm, "confirm"), 1500));
   const ob = box.querySelector("[data-offer]");
@@ -161,6 +210,7 @@ function setRun(r) {
     lastStatus = r.status;
   }
   hooks.progress(r);
+  trackCrew(r);
   if (r.status === "PAUSED" && r.replan_run_id) loadReplan(r.replan_run_id);
   else if (!(offer && offer.kind === "stale")) offer = null;
   draw();
@@ -269,6 +319,11 @@ export async function execute(plan, opts = {}) {
 }
 
 export function currentRun() { return run; }
+// For the handoff: who is still out, and when they last checked in.
+export function peopleOut() {
+  const t = nowT();
+  return [...crew.values()].map((c) => ({ who: c.who, asset: c.asset, lastAgo: t == null ? null : Math.max(0, Math.round(t - c.last)), missed: t != null && t >= c.last + CHECK_MIN }));
+}
 
 export function mountRuns(el, h) {
   box = el;
@@ -292,4 +347,7 @@ export function mountRuns(el, h) {
   });
   // Safety net when the socket is quiet: re-read the run every 10 s while it is active.
   setInterval(() => { if (run && ACTIVE.has(run.status)) refresh(); }, 10000);
+  // Check-in clocks run on field time (15x real time at demo speed): redraw often enough that a
+  // missed check-in shows within a field minute. Not under a hold (draw defers itself).
+  setInterval(() => { if (crew.size) draw(); }, 4000);
 }

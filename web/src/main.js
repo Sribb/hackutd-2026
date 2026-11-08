@@ -22,7 +22,7 @@ import { mountScenery } from "./scenery.js";
 import { mountInspect } from "./inspect.js";
 import { mountAlarms, alarms } from "./alarms.js";
 import { startTrend, trendHtml, wireTrend } from "./trend.js";
-import { mountRuns, runsSupported, execute as executeRun } from "./runs.js";
+import { mountRuns, runsSupported, execute as executeRun, peopleOut } from "./runs.js";
 
 const $ = (id) => document.getElementById(id);
 // Meshopt-compressed glb (#112/#117) loads with no extra files; a plain glb is unaffected.
@@ -1037,6 +1037,7 @@ function handoffText() {
   const now = shutdownOf(fc);
   L.push(`  On screen${actions.length ? ` (with ${actions.map(describe).join(" + ")})` : ""}: ${now ? `${nice(now.asset_id)} reaches shutdown at ${clockAt(now.t_min)}.` : noShutdownText(blindTanks())}`);
 
+  for (const p of peopleOut()) L.push(`  PEOPLE OUT: ${p.who} at ${nice(p.asset)}${p.lastAgo != null ? `, last check-in ${p.lastAgo} min ago` : ""}${p.missed ? " (MISSED CHECK-IN)" : ""}.`);
   L.push(`  Weather: ${wxSummary()}`);
   const sq = seismicSummary(undefined, (field.disposal_wells || []).map((d) => nice(d.id)));
   L.push(`  Seismic: ${sq.line}${sq.flag ? ` ${sq.detail}` : ""}`);
@@ -1431,6 +1432,9 @@ async function boot() {
     base: api.usingBackend ? api.BASE : "",
     usd,
     nice,
+    clockIn: (m) => shiftlog.clockNow(false, m),
+    // Who a step sends out alone: the rover to a manual valve (a remote valve is worked from here).
+    outside: (a) => (a && a.type === "SET_VALVE" && exposure({ actions: [a] }, field).length ? "Rover" : null),
     select: (id) => select(id, true),
     log: (text) => { shiftlog.add("step", text); renderLog(); },
     progress: (r) => {
