@@ -34,6 +34,13 @@ PALETTE = {
     "M_LAMP": ((0.86, 0.86, 0.82), 0.0, 0.4),     # status lights and lamps: the console lights these
     "M_WOOD": ((0.32, 0.26, 0.20), 0.0, 0.9),
     "M_WIRE": ((0.10, 0.10, 0.10), 0.5, 0.5),
+    # Role names for parts with a clear finish. look.py gives each its textured material; without
+    # it they keep these flat colors. Everything else gets its role from the asset it is under.
+    "M_GALV": ((0.36, 0.38, 0.36), 0.35, 0.5),       # handrails, ladders, gratings, cages, posts
+    "M_MOTOR": ((0.15, 0.16, 0.17), 0.0, 0.6),       # electric motors and their fan covers
+    "M_HDPE": ((0.017, 0.018, 0.019), 0.0, 0.6),     # black HDPE flowlines
+    "M_LINER": ((0.014, 0.015, 0.015), 0.0, 0.75),   # containment liner
+    "M_BUILDING": ((0.43, 0.40, 0.33), 0.0, 0.6),    # metal buildings, enclosures, RTU and control boxes
 }
 
 AXES = {
