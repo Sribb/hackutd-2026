@@ -33,6 +33,5 @@ export function eogClient(base = "") {
     handoff: (at) => get("/handoff", at),
     whatif: (body) => post("/whatif", body),
     approve: (eventId, at) => post(`/plans/${encodeURIComponent(eventId)}/approve`, { at }),
-    eventsUrl: (at) => `${root}/events${q(at, { download: 1 })}`,
   };
 }

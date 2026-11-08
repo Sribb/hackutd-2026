@@ -42,6 +42,7 @@ const state = {
   view: "map", // map | 3d
   sys3d: null,
   plans: new Map(), // per alert and moment: the what-if plan the operator is editing
+  approved: new Map(), // per alert and moment: the approve answer (steps, radio script)
   loadSeq: 0,
   alertSeq: 0,
 };
@@ -119,11 +120,15 @@ async function loadFolder(folder) {
   state.folder = folder;
   state.selected = null;
   state.plans.clear();
+  state.approved.clear();
   state.picked?.clear(); // picks name this folder's sensors
   state.alerts = [];
   state.resolved = [];
   state.plansBy = new Map();
+  state.planSystems = [];
   state.detection = "loading";
+  state.storeFolder = null; // the readings on screen belong to no folder until this one loads
+  $("dsAt").disabled = true; // no time travel on the old folder's readings under the new name
   try { localStorage.setItem("freeboard.dataset.folder", folder); } catch {}
   const url = new URL(location.href);
   url.searchParams.set("folder", folder);
@@ -140,10 +145,20 @@ async function loadFolder(folder) {
   } catch (e) {
     if (seq !== state.loadSeq) return;
     setStatus(`Could not load ${folder}: ${e.message}`, "alarm");
+    // Never leave the previous folder's map and alerts up under this folder's name.
+    state.store = state.network = state.ops = null;
+    state.selected = null;
+    $("dsMap").innerHTML = "";
+    $("dsAlerts").innerHTML = "";
+    $("dsAlertCount").textContent = "";
+    $("dsResolvedWrap").hidden = true;
+    $("dsDetail").innerHTML = "";
+    $("dsFoot").textContent = "";
     return;
   }
   if (seq !== state.loadSeq) return;
   Object.assign(state, data);
+  state.storeFolder = folder;
   state.assets = assetIndex(data.network);
   const problems = checkDataset(data.network, data.ops);
   const atParam = Number(params.get("at"));
@@ -162,12 +177,15 @@ let slideTimer = null; // a pending alerts refresh from the slider; a folder loa
 
 function setupSlider() {
   const s = $("dsAt");
+  s.disabled = false;
+  const loadSeq = state.loadSeq; // this slider belongs to this load only
   // Start an hour in: a detector needs some history before "now".
   s.min = String(Math.min(state.store.now, state.store.start + 3600));
   s.max = String(state.store.now);
   s.step = String(STEP_S);
   s.value = String(state.at);
   s.oninput = () => {
+    if (loadSeq !== state.loadSeq) return;
     state.at = Number(s.value);
     // The alerts on screen belong to the old moment: never show them as current.
     state.alertSeq++;
@@ -176,9 +194,9 @@ function setupSlider() {
     renderNow();
     renderMap();
     renderAlerts();
+    renderDetail(); // a plan or what-if on screen belongs to the old moment
     clearTimeout(slideTimer);
-    const seq = state.loadSeq;
-    slideTimer = setTimeout(() => { if (seq === state.loadSeq) { syncAtToUrl(); refreshAlerts(); } }, 250);
+    slideTimer = setTimeout(() => { if (loadSeq === state.loadSeq) { syncAtToUrl(); refreshAlerts(); } }, 250);
   };
   $("dsLatest").onclick = () => { s.value = String(state.store.now); s.oninput(); };
 }
@@ -219,13 +237,15 @@ async function ensureActive(folder) {
 async function refreshAlerts() {
   const seq = ++state.alertSeq;
   const at = state.at, folder = state.folder;
+  if (state.storeFolder !== folder) return; // the folder's own readings are not in yet
   try {
     await ensureActive(folder);
     if (seq !== state.alertSeq) return;
     const [al, ev, pl] = await Promise.all([state.eog.alerts(at), state.eog.events(at), state.eog.plans(at)]);
     if (seq !== state.alertSeq || at !== state.at || folder !== state.folder) return;
     // Another tab (the console, a teammate) can switch the backend's dataset.
-    if (al.dataset !== folder) { state.backend = null; throw Object.assign(new Error(`the backend has ${al.dataset} active now, not ${folder}`), { status: 409 }); }
+    const other = [al, ev, pl].find((r) => r.dataset !== folder);
+    if (other) { state.backend = null; throw Object.assign(new Error(`the backend has ${other.dataset} active now, not ${folder}`), { status: 409 }); }
     state.plansBy = new Map((pl.plans || []).map((p) => [p.event?.id ?? p.plan?.event_id, p]));
     state.planSystems = pl.systems || [];
     state.alerts = normAlerts(al).map((a) => {
@@ -240,6 +260,7 @@ async function refreshAlerts() {
     state.alerts = [];
     state.resolved = [];
     state.plansBy = new Map();
+    state.planSystems = [];
     state.detection = !e.status || e.status === 503 ? "absent" : "error";
     state.detectionNote = !e.status ? "The backend is not running."
       : e.status === 503 ? `The backend's dataset mode is off (${e.message})`
@@ -292,12 +313,15 @@ function alertCard(a, rank) {
   const since = a.onset !== null ? `since ${fmtTime(a.onset, true)} (${durationText((state.at - a.onset) / 3600)} ago)` : "";
   let body = "";
   if (a.category === "pump_failure") {
-    const when = a.hours !== null ? fmtTime(state.at + a.hours * 3600) : null;
+    // The backend's trips_at is null when the repair comes first, even with an hours_to_limit.
+    const when = a.tripsAt !== null ? fmtTime(a.tripsAt) : null;
     const range = a.hoursP10 !== null && a.hoursP90 !== null ? ` <span class="ds-range">(${durationText(a.hoursP10)} to ${durationText(a.hoursP90)})</span>` : "";
     body += a.tripped
       ? `<div class="ds-count-big"><span class="kicker">Tank at shutdown</span><b>Wells shut in</b><span>${a.tripsAt !== null ? `since ${esc(fmtTime(a.tripsAt))} UTC, ` : ""}until the repair${a.repairEnd ? ` at ${esc(fmtTime(a.repairEnd))} UTC` : ""}</span></div>`
-      : a.hours !== null
-      ? `<div class="ds-count-big"><span class="kicker">Shuts in at</span><b>${esc(when)} UTC</b><span>in ${esc(durationText(a.hours))}${range}</span></div>`
+      : a.tripsAt !== null
+      ? `<div class="ds-count-big"><span class="kicker">Shuts in at</span><b>${esc(when)} UTC</b><span>in ${esc(durationText(Math.max(0, a.tripsAt - state.at) / 3600))}${range}</span></div>`
+      : a.levelPct === null
+      ? `<div class="ds-count-big"><span class="kicker">Countdown</span><b>No level readings</b><span>treat the tank as filling: not checked, not safe</span></div>`
       : `<div class="ds-count-big quiet"><span class="kicker">Countdown</span><b>Will not trip</b><span>tank stays under shutdown until the repair</span></div>`;
     if (a.levelPct !== null) body += `<div class="ds-meta">Tank ${Math.round(a.levelPct)}% now</div>`;
   }
@@ -443,7 +467,11 @@ async function open3d() {
     f3dLoading = import("./field3d.js").then(({ mountField3d }) => {
       // The generated field (#131) comes from the backend's dataset mode; in file mode
       // the view is built from network.json only.
-      const glbUrl = () => null;
+      // #152's generated field per system (ingest.eog_field). field3d.js keeps the view it
+      // builds from network.json when the route is missing or the build fails.
+      const glbUrl = (sys) => state.detection === "ok"
+        ? { glb: `${API}/api/dataset/field.glb?system=${encodeURIComponent(sys)}`, ids: `${API}/api/dataset/field_ids?system=${encodeURIComponent(sys)}` }
+        : null;
       f3d = mountField3d($("ds3dHost"), { onPick: (fac) => fac && select({ kind: "facility", id: fac }), glbUrl });
       f3d.setTip(tipFor);
       window.__dataset.f3d = f3d;
@@ -576,8 +604,8 @@ function compare(box, systemId) {
     <div class="ds-win" role="group" aria-label="Metric">${COMPARE.map((c) => `<button type="button" data-m="${c.key}" class="${c.key === m.key ? "on" : ""}">${esc(c.label)}</button>`).join("")}</div>
     <div class="ds-win" role="group" aria-label="Trend window">${[[6, "6 h"], [24, "24 h"], [72, "3 d"], [168, "week"]].map(([h, l]) =>
       `<button type="button" data-h="${h}" class="${state.win === h * 3600 ? "on" : ""}">${l}</button>`).join("")}</div></div>`;
-  const sp = state.planSystems?.find((x) => x.system === sys.id);
-  if (sp) box.insertAdjacentHTML("beforeend", `<p class="ds-outage-sum">${esc(sys.id)} now: ${sp.events.length} pump failure${sp.events.length === 1 ? "" : "s"} planned together on ${sp.trucks_used} of ${sp.fleet_size} trucks, <b>${money(sp.cost)}</b> in all.</p>`);
+  const sp = state.detection === "ok" ? state.planSystems?.find((x) => x.system === sys.id) : null;
+  if (sp) box.insertAdjacentHTML("beforeend", `<p class="ds-outage-sum">${esc(sys.id)} at ${esc(fmtTime(state.at))} UTC: ${esc(sp.events.length)} pump failure${sp.events.length === 1 ? "" : "s"} planned together on ${esc(sp.trucks_used)} of ${esc(sp.fleet_size)} trucks, <b>${money(sp.cost)}</b> in all.</p>`);
   for (const b of box.querySelectorAll("[data-m]")) b.onclick = () => { state.compareMetric = b.dataset.m; renderDetail(); };
   for (const b of box.querySelectorAll("[data-h]")) b.onclick = () => { state.win = Number(b.dataset.h) * 3600; renderDetail(); };
   const wrap = document.createElement("div");
@@ -689,6 +717,9 @@ function pickedCharts(f, wrap, add, R) {
 // (shared trucks), the other options, Last Call (what waiting costs), approval with steps
 // and a radio script, and a what-if the backend replays (POST /api/eog/whatif).
 const planText = (p) => esc(p.summary || "");
+// The approve answer's steps and radio script (kept in state.approved, so a refresh keeps them).
+const stepsHtml = (r) => !r ? "" : `<ol class="ds-plan">${(r.steps || []).map((x) => `<li>${esc(x.at ? fmtTime(x.at) + " UTC · " : "")}${esc(x.text)}</li>`).join("")}</ol>
+  ${r.radio_script ? `<span class="kicker">Radio script</span><p class="ds-radio">${esc(r.radio_script)}</p>` : ""}`;
 function planPanel(f, s, alert) {
   const box = document.createElement("div");
   box.className = "ds-whatif";
@@ -710,7 +741,7 @@ function planPanel(f, s, alert) {
     <table class="ds-costs"><tbody>${alts}</tbody></table>
     <div class="ds-approve">${appr
       ? `<p class="ds-check ok">Approved by ${esc(appr.by || "operator")} at ${esc(fmtTime(appr.at))} UTC.</p>`
-      : `<button type="button" data-act="approve">Approve this plan</button>`}<div class="ds-steps"></div></div>
+      : `<button type="button" data-act="approve">Approve this plan</button>`}<div class="ds-steps">${stepsHtml(state.approved.get(`${alert.id}@${at}`))}</div></div>
     <details class="ds-wi-edit"><summary>Try another plan (the backend replays it)</summary><div class="ds-wi-body"></div></details>`;
 
   // Last Call: the cost of this failure if nobody acts until each 5-minute start.
@@ -741,8 +772,8 @@ function planPanel(f, s, alert) {
     ab.textContent = "Approving…";
     try {
       const r = await state.eog.approve(alert.id, at);
-      box.querySelector(".ds-steps").innerHTML = `<ol class="ds-plan">${(r.steps || []).map((x) => `<li>${esc(x.at ? fmtTime(x.at) + " UTC · " : "")}${esc(x.text)}</li>`).join("")}</ol>
-        ${r.radio_script ? `<span class="kicker">Radio script</span><p class="ds-radio">${esc(r.radio_script)}</p>` : ""}`;
+      state.approved.set(`${alert.id}@${at}`, r); // the steps and script stay on screen through the refresh
+      box.querySelector(".ds-steps").innerHTML = stepsHtml(r);
       ab.replaceWith(Object.assign(document.createElement("p"), { className: "ds-check ok", textContent: `Approved by ${r.approval?.by || "operator"}. Nothing moves by itself: call the field with the script below.` }));
       refreshAlerts();
     } catch (e) {
@@ -754,8 +785,8 @@ function planPanel(f, s, alert) {
 
   const det = box.querySelector(".ds-wi-edit");
   det.open = state.plans.has(`${alert.id}@${at}`);
-  det.ontoggle = () => { if (det.open) whatIfEditor(det.querySelector(".ds-wi-body"), f, s, alert, item); };
-  if (det.open) whatIfEditor(det.querySelector(".ds-wi-body"), f, s, alert, item);
+  det.ontoggle = () => { if (det.open) whatIfEditor(det.querySelector(".ds-wi-body"), f, s, alert, item, at); };
+  if (det.open) whatIfEditor(det.querySelector(".ds-wi-body"), f, s, alert, item, at);
   return box;
 }
 
@@ -774,8 +805,8 @@ const toActions = (e) => {
 };
 
 let whatIfSeq = 0;
-function whatIfEditor(host, f, s, alert, item) {
-  const at = state.at;
+// `at` is the moment the panel was built for: the plan, free trucks and repair time are its.
+function whatIfEditor(host, f, s, alert, item, at) {
   const key = `${alert.id}@${at}`;
   if (!state.plans.has(key)) state.plans.set(key, toEdit(item.plan?.actions));
   const e = state.plans.get(key);
@@ -798,7 +829,7 @@ function whatIfEditor(host, f, s, alert, item) {
       }).join("")}</div>
       <div class="ds-wi-buttons"><button type="button" data-act="rec">Recommended plan</button><button type="button" data-act="none">Do nothing</button></div>
     </div><div class="ds-wi-result"><p class="ds-hint">Replaying…</p></div></div>`;
-  const redo = () => whatIfEditor(host, f, s, alert, item);
+  const redo = () => whatIfEditor(host, f, s, alert, item, at);
   for (const sel of host.querySelectorAll("select[data-k]")) sel.onchange = () => { e[sel.dataset.k] = Number(sel.value); if (e.trucks && !e.trips) e.trips = 1; redo(); };
   for (const cb of host.querySelectorAll("input[data-well]")) cb.onchange = () => {
     e.shutIns = e.shutIns.filter((x) => x.well !== cb.dataset.well);
@@ -816,7 +847,7 @@ function whatIfEditor(host, f, s, alert, item) {
   const seq = ++whatIfSeq;
   const out = host.querySelector(".ds-wi-result");
   state.eog.whatif({ facility_id: f.id, actions: toActions(e), at }).then((w) => {
-    if (seq !== whatIfSeq || !out.isConnected) return;
+    if (seq !== whatIfSeq || !out.isConnected || at !== state.at) return;
     const r = w.result, b = w.baseline;
     const lim = state.network.defaults.tank_limits_pct;
     out.innerHTML = `<div class="ds-wi-verdict ${r.trip_at ? "alarm" : "ok"}">${r.trip_at
@@ -863,7 +894,9 @@ $("dsHandoff").onclick = async () => {
   if (!state.store) return;
   if (state.detection !== "ok") { openDialog("Shift handoff", `Detection did not run, so this is not an all-clear. ${state.detectionNote}`); return; }
   try {
+    await ensureActive(state.folder);
     const h = await state.eog.handoff(state.at);
+    if (h.dataset !== state.folder) throw new Error(`the backend has ${h.dataset} active, not ${state.folder}`);
     openDialog("Shift handoff", h.text);
   } catch (e) {
     openDialog("Shift handoff", `The handoff did not load (${e.message}). This is not an all-clear.`);
@@ -881,15 +914,16 @@ function download(name, text) {
 
 $("dsExport").onclick = async () => {
   if (!state.store) return;
-  const url = state.eog.eventsUrl(state.at);
   if (state.detection !== "ok") {
     openDialog("events.json", state.detection === "loading" ? "No events to export yet: detection is still loading." : `No events to export: ${state.detectionNote}`);
     return;
   }
   try {
-    const r = await fetch(url, { cache: "no-store" });
-    if (!r.ok) throw new Error(`${r.status}`);
-    download("events.json", await r.text());
+    // The view (not ?download=1) names its dataset, so the file is never another folder's.
+    await ensureActive(state.folder);
+    const v = await state.eog.events(state.at);
+    if (v.dataset !== state.folder) throw new Error(`the backend has ${v.dataset} active, not ${state.folder}`);
+    download("events.json", JSON.stringify(v.events, null, 2));
   } catch (e) {
     openDialog("events.json", `The export did not load (${e.message}).`);
   }

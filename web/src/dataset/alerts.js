@@ -104,14 +104,17 @@ export function actionLines(alert, ctx = {}) {
       out.push(`Send an inspector to ${a.asset_id || alert.asset}`);
     } else if (a.type === "none") {
       out.push(alert.category === "pump_failure" && alert.tripped ? "The tank is at shutdown: its wells stay shut in until the repair. Get the pump fixed"
-        : alert.category === "pump_failure" && alert.hours !== null ? "Accept the automatic shut-in: it is the cheapest option" : "No action needed");
+        : alert.category === "pump_failure" && alert.tripsAt !== null ? "Accept the automatic shut-in: it is the cheapest option"
+        : alert.category === "pump_failure" && alert.levelPct === null ? "No level readings: treat the tank as filling and check it on site" : "No action needed");
     }
   }
   if (!out.length) {
     if (alert.category === "pump_failure" && alert.tripped) {
       out.push("The tank is at shutdown: its wells stay shut in until the repair. Get the pump fixed");
     } else if (alert.category === "pump_failure") {
-      out.push(alert.hours === null ? "No action needed: the tank stays under shutdown until the repair" : "No plan from the backend yet");
+      // trips_at is null when the repair comes first; a missing level is never "safe".
+      out.push(alert.levelPct === null ? "No level readings: treat the tank as filling and check it on site"
+        : alert.tripsAt === null ? "No action needed: the tank stays under shutdown until the repair" : "No plan from the backend yet");
     } else {
       out.push(`Send an inspector to ${alert.asset || alert.facility || "the site"}`);
     }

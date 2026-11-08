@@ -11,7 +11,7 @@ const raw = [
     recommended_actions: [{ type: "shut_in_wells", wells: ["S2_WELL_A1"], start_after_min: 30 }] },
   { event_id: "P0", category: "pump_failure", status: "ongoing", system_id: "S2", facility_id: "S2_FACILITY_C", hours_to_limit: 1.0, lost_revenue_per_hour: 10 },
   { event_id: "W", category: "pump_degradation", status: "ongoing", asset_id: "S3_PUMP_A", onset_unix: 50 },
-  { event_id: "Q", category: "pump_failure", status: "ongoing", system_id: "S4", facility_id: "S4_FACILITY_A", hours_to_limit: null },
+  { event_id: "Q", category: "pump_failure", status: "ongoing", system_id: "S4", facility_id: "S4_FACILITY_A", hours_to_limit: null, level_pct: 40 },
   { event_id: "R", category: "pump_failure", status: "resolved", end_unix: 9 },
 ];
 const list = normAlerts({ alerts: raw });
@@ -51,6 +51,12 @@ assert.equal(pf.expiresAt, 640);
 assert.equal(pf.actions[0].type, "dispatch_truck");
 assert.match(actionLines(eog.find((a) => a.id === "EV-2"))[0], /inspector to S5_PIPELINE_B/);
 assert.equal(money(3108.33), "$3,108");
+// Review fixes: hours_to_limit without trips_at means the repair comes first; no level is never safe.
+const rc = normAlerts([{ event_id: "R1", category: "pump_failure", status: "ongoing", countdown: { level_pct: 60, hours_to_limit: { p50: 6.5 }, trips_at: null, repair_end: 900 },
+  action: { type: "plan", actions: [{ type: "none" }] } }])[0];
+assert.match(actionLines(rc)[0], /No action needed/);
+const nl = normAlerts([{ event_id: "N1", category: "pump_failure", status: "ongoing", countdown: { level_pct: null, hours_to_limit: null, trips_at: null } }])[0];
+assert.match(actionLines(nl)[0], /No level readings/);
 
 // Parser: shared grid, a missing cell stays NaN, stale readings are not carried forward.
 const csv = [
