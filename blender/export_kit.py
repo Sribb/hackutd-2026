@@ -58,7 +58,8 @@ KIT_DIR = os.path.join(HERE, "kit")
 TOKEN = "KIT"
 GLYPHS = ("ABCDEFGHIJKLMNOPQRSTUVWXYZ" "abcdefghijklmnopqrstuvwxyz" "0123456789" "-.+/#&()%:,'")
 SOURCES = ("field_parts.py", "detail_equipment.py", "detail_site.py", "field_build.py", "piping.py",
-           "layout.py", "build_field.py", "equipment_parts.py", "iot_parts.py")
+           "layout.py", "build_field.py", "equipment_parts.py", "iot_parts.py", "well_parts.py", "swd_parts.py",
+           "truck_parts.py", "terrain.py")
 MOVING = {"LEVEL", "gauge", "rotor", "wheel", "beam", "crank", "gate", "axle_1", "axle_2", "axle_3"}
 LIGHTS = {"light", "beacon", "headlights", "lamps"}
 SENSORS = {"lt", "lshh"}
@@ -118,10 +119,20 @@ def build_pump(s):
     return root, {"anchors": {"suction": v3(pts["suction"]), "discharge": v3(pts["discharge"])}}
 
 
-def build_valve(s):
-    root, pts = fp.build_valve(s, TOKEN, (0, 0, 0), 0.0)
-    de.valve_extras(s, TOKEN, root, TOKEN)
-    return root, {"anchors": {"north": v3(pts["north"]), "south": v3(pts["south"])}}
+def build_valve(manual):
+    """fp.build_valve with a handwheel (manual) or an electric actuator (remote): the blueprint's
+    manual/remote picks one per valve ID (fp.valve_modes), so the kit has both."""
+    def make(s):
+        fp.VALVE_MANUAL.clear()
+        fp.VALVE_MANUAL[TOKEN] = manual
+        try:
+            root, pts = fp.build_valve(s, TOKEN, (0, 0, 0), 0.0)
+            de.valve_extras(s, TOKEN, root, TOKEN)
+        finally:
+            fp.VALVE_MANUAL.clear()
+        return root, {"anchors": {"north": v3(pts["north"]), "south": v3(pts["south"])},
+                      "actuation": "manual" if manual else "remote"}
+    return make
 
 
 def build_well(s):
@@ -161,11 +172,14 @@ def build_loadout(s):
 
 
 def build_pad(s):
-    """field_build.build_pad on an empty pad at the origin, keeping only PAD_KIT and its children."""
+    """field_build.build_pad on an empty pad at the origin, keeping only PAD_KIT and its children.
+    The berm is left out: its gaps follow each pad's flowlines and neighbors (#98, #122), so the
+    assembler builds PAD_n_berm per pad (kit_routes.berm)."""
     pad = {"frame": lay.Frame(0.0, 0.0), "tank": "TANK_PADKIT", "n": "KIT", "capacity": None}
     supports = fp.Kit(s, "SITE_supports", None)
-    field_build.build_pad(s, supports, pad, [], [], [])
+    field_build.build_pad(s, supports, pad, [], [], [], [])
     supports.done()
+    remove("PAD_KIT_berm")
     root = bpy.data.objects["PAD_KIT"]
     keep = {root, *root.children_recursive}
     for obj in [o for o in bpy.data.objects if o not in keep]:
@@ -188,12 +202,25 @@ def build_equipment(model):
     return make
 
 
-def build_sensor(mount):
-    """iot_parts.sensor on a surface, a bracket, or a post. The manifest keeps iot_parts.MOUNTS."""
+def sensor_kinds():
+    """Every asset kind iot_parts.build() can put a sensor on: MOUNTS, plus equipment on a post."""
+    return list(iot.MOUNTS) + ["equipment"]
+
+
+def sensor_type(kind):
+    """The kit type for a sensor on this kind of asset: sensor_<device>_<mount>, because the
+    hardware follows the asset (#100: a radar on a tank roof, a puck on a truck)."""
+    mount = iot.MOUNTS[kind][3] if kind in iot.MOUNTS else "post"
+    return f"sensor_{iot.DEVICE.get(kind, 'pressure')}_{mount}"
+
+
+def build_sensor(kind):
+    """iot_parts.sensor as it builds on this kind of asset, at the origin."""
     def make(s):
-        iot.sensor(s, TOKEN, None, (0, 0, 0), mount, [], [])
-        mounts = {k: [float(v[0]), float(v[1]), float(v[2]), v[3]] for k, v in iot.MOUNTS.items()}
-        return bpy.data.objects[f"SENSOR_{TOKEN}"], {"mounts": mounts}
+        mount = iot.MOUNTS[kind][3] if kind in iot.MOUNTS else "post"
+        iot.sensor(s, TOKEN, None, (0, 0, 0), mount, [], [], kind)
+        root = bpy.data.objects[f"SENSOR_{TOKEN}"]
+        return root, {"device": root["device"], "mount": mount}
     return make
 
 
@@ -209,8 +236,10 @@ def build_rtu(s):
 TYPES = {   # type: (kind, token, how the assembler names the root, builder)
     "tank": ("tank", TOKEN, "{id}", build_tank),
     "pump": ("pump", TOKEN, "{id}", build_pump),
-    "valve_discharge": ("valve", TOKEN, "{id}", build_valve),
-    "valve_crossover": ("valve", TOKEN, "{id}", build_valve),
+    "valve_discharge": ("valve", TOKEN, "{id}", build_valve(True)),
+    "valve_crossover": ("valve", TOKEN, "{id}", build_valve(True)),
+    "valve_discharge_remote": ("valve", TOKEN, "{id}", build_valve(False)),
+    "valve_crossover_remote": ("valve", TOKEN, "{id}", build_valve(False)),
     "well": ("well", TOKEN, "{id}", build_well),
     "disposal_well": ("disposal_well", TOKEN, "{id}", build_swd(1)),
     "disposal_well_mirror": ("disposal_well", TOKEN, "{id}", build_swd(-1)),
@@ -224,9 +253,19 @@ if eq is not None:
     for _model in list(getattr(eq, "MODELS", {})) + [None]:
         TYPES[f"equipment_{(_model or 'placeholder').lower()}"] = ("equipment", TOKEN, "{id}", build_equipment(_model))
 if iot is not None:
-    for _mount in ("surface", "bracket", "post"):
-        TYPES[f"sensor_{_mount}"] = ("sensor", f"SENSOR_{TOKEN}", "SENSOR_{id}", build_sensor(_mount))
+    for _kind in sensor_kinds():
+        TYPES.setdefault(sensor_type(_kind), ("sensor", f"SENSOR_{TOKEN}", "SENSOR_{id}", build_sensor(_kind)))
     TYPES["rtu"] = ("rtu", f"RTU_PAD_{TOKEN}", "RTU_PAD_{n}", build_rtu)
+
+
+def iot_info():
+    """What kit_extras.iot() needs to pick and place a sensor: iot_parts.MOUNTS, and each asset
+    kind's device and kit type."""
+    if iot is None:
+        return None
+    return {"mounts": {k: [float(v[0]), float(v[1]), float(v[2]), v[3]] for k, v in iot.MOUNTS.items()},
+            "devices": {k: iot.DEVICE.get(k, "pressure") for k in sensor_kinds()},
+            "types": {k: sensor_type(k) for k in sensor_kinds()}}
 
 
 # ---------- export ----------
@@ -362,10 +401,13 @@ def main():
         "token": TOKEN,
         "axes": "anchors and bounds are in the type's own frame with Blender axes: x east, y north, z up",
         "detail": {"levels": bf.LEVELS, "dropped": bf.DROPPED, "budget_triangles": bf.BUDGET_TRIS,
-                   "budget_mb": bf.BUDGET_MB, "full_detail_max_tanks": bf.FULL_DETAIL_MAX_TANKS},
+                   "budget_mb": bf.BUDGET_MB, "budget_draw_calls": bf.BUDGET_DRAWS,
+                   "full_detail_max_tanks": bf.FULL_DETAIL_MAX_TANKS},
         "layout": {"pad_top": lay.PAD_TOP, "tank_y": lay.TANK_Y, "yard_slots": [list(s) for s in lay.YARD_SLOTS]},
         "types": {},
     }
+    if iot_info():
+        manifest["iot"] = iot_info()
     export_types(manifest)
     export_glyphs(manifest)
     export_palette(manifest)
