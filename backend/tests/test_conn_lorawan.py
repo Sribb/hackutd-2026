@@ -3,6 +3,7 @@
 Everything binds 127.0.0.1 on free ports. Each test stops what it started."""
 import asyncio
 import copy
+import json
 import time
 
 import pytest
@@ -186,15 +187,38 @@ def test_value_held_only_within_uplink_window(broker, make_live):
         sent = f.sent[-1]["time"]
         first = [r for r in c.read() if r["asset_id"] == "TANK_3"]
         assert first and first[0]["value"] == 62.0
-        again = [r for r in c.read() if r["asset_id"] == "TANK_3"]
-        assert again and again[0]["value"] == 62.0            # held between uplinks
+        # Held means still good, not handed on again: a repeated reading with a new t
+        # would put flat points in the level history and hide a filling tank's rate.
+        assert c.read() == []
+        assert q(c, "TANK_3", "level_pct") == "good"
         c.clock = lambda: sent + 899.0                        # still inside 1.5 x 10 min
-        assert any(r["asset_id"] == "TANK_3" for r in c.read())
+        assert c.read() == [] and q(c, "TANK_3", "level_pct") == "good"
         c.clock = lambda: sent + 901.0                        # past it: never held longer
-        assert [r for r in c.read() if r["asset_id"] in ("TANK_3", "TANK_4")] == []
+        assert c.read() == []
         assert q(c, "TANK_3", "level_pct") == "stale"
         assert "uplink_interval_min" in c.quality[("TANK_3", "level_pct")]["detail"]
         assert c.read() == []
+    finally:
+        f.stop()
+
+
+def test_held_value_never_flattens_level_history(broker, make_live):
+    f = fake_lorawan.start(broker.port, "chirpstack", APP, devices=copy.deepcopy(DEVICES), period_s=60)
+    try:
+        lf = make_live(make_spec(broker.port, uplink_interval_min=10))
+        c = conn_of(lf)
+        wait_for(lambda: status_of(lf)["status"] == "connected", what="connected")
+        f.pause()
+        n = c.uplinks
+        f.set("tank-3-level", "level_pct", 70.0, send=False)
+        assert f.uplink("tank-3-level")
+        wait_for(lambda: c.uplinks > n, what="an uplink")
+        wait_value(lf, "TANK_3", "level_pct", 70.0)
+        for _ in range(8):                                    # 4 live minutes with no new uplink
+            lf.step(0.5)
+        points = list(lf.history[("TANK_3", "level_pct")])
+        assert len(points) == 1, points                       # one uplink, one point
+        assert lf.detector.rates["TANK_3"]["observed_bbl_hr"] is None
     finally:
         f.stop()
 
@@ -308,6 +332,34 @@ def test_close_returns_quickly(broker, ns, make_live):
     assert c.status()["available"] is False
     assert c.read() == []
     assert all(v["quality"] == "comm_lost" for v in c.quality.values())
+
+
+def test_message_racing_close_gives_no_reading(broker, ns, make_live):
+    lf = make_live(make_spec(broker.port))
+    c = conn_of(lf)
+    wait_value(lf, "TANK_3", "level_pct", 62.0)
+    topic = ns.topic("tank-3-level")
+    doc = ns.payload("tank-3-level", time.time())
+    c.close()
+    # paho's thread may be inside _handle when close() runs; what it puts must not count.
+    c._handle(topic, json.dumps(doc).encode(), False)
+    assert c.read() == []
+    assert all(v["quality"] == "comm_lost" for v in c.quality.values())
+
+
+def test_refused_subscription_is_unavailable(broker, ns, make_live):
+    from paho.mqtt.packettypes import PacketTypes
+    from paho.mqtt.reasoncodes import ReasonCode
+    lf = make_live(make_spec(broker.port))
+    c = conn_of(lf)
+    wait_value(lf, "TANK_3", "level_pct", 62.0)
+    # A broker ACL (a TTN API key without read rights) answers SUBACK 0x80 but keeps the link.
+    c._on_subscribe(c._client, None, 1, [ReasonCode(PacketTypes.SUBACK, identifier=0x80)], None)
+    s = c.status()
+    assert s["available"] is False and "refused the subscription" in s["detail"]
+    assert all(v["quality"] == "comm_lost" for v in c.quality.values())
+    c._on_subscribe(c._client, None, 2, [ReasonCode(PacketTypes.SUBACK, identifier=0)], None)
+    assert c.status()["available"] is True
 
 
 # ---------- config ----------

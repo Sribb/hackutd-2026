@@ -25,19 +25,29 @@ Each declared signal's `scale` and its rule in config.signal_map are applied
 motor amps at least 0.
 
 Freshness. Uplinks are infrequent, so a value may be held: with config
-uplink_interval_min above 0, read() hands on the last good value of each signal again
-until uplink_interval_min * 1.5 after its uplink time, and never past that. After that
-the signal gets no reading (it goes stale and shows UNKNOWN) and its quality is stale.
-The default uplink_interval_min is 0: no hold, and an uplink must be at most
-config max_age_s (60) old when it arrives. An uplink is not fresh, and gives no
-values, when it is retained, has no readable time, is older than that window (or that
-far in the future), or is not newer than the last uplink taken from the same device
-(a replay or a duplicate). A missing field, a codec error, or a value out of range
-gives no value for that signal, and the held value is dropped at once.
+uplink_interval_min above 0, a signal's quality stays good until uplink_interval_min
+* 1.5 after its uplink time, and never past that; then it turns stale. read() hands
+each uplink's value on once, when it arrives, and never again with a new time: a
+repeated reading would put flat points in the live layer's level history between
+uplinks, so detect.py's observed fill rate would read near 0 while a tank fills. The
+live layer keeps the value until sensors.stale_after_min; set that to cover the
+uplink interval to show the value between uplinks (a shorter one shows UNKNOWN
+between them, which is never falsely safe). The default uplink_interval_min is 0: no
+hold, and an uplink must be at most config max_age_s (60) old when it arrives. An
+uplink is not fresh, and gives no values, when it is retained, has no readable time,
+is older than that window (or that far in the future), or is not newer than the last
+uplink taken from the same device (a replay or a duplicate). A missing field, a codec
+error, or a value out of range gives no value for that signal, and its quality says
+why at once.
+
+The window is measured on the wall clock, against the uplink's own time from the
+network server, not in live minutes: the device uplinks in real time whatever speed
+the live clock runs at.
 
 A value that isn't good becomes no reading (see signalmap.py); `quality` says why at
 once, for every declared signal: {(asset_id, signal): {"quality", "detail", "t"}}.
-Losing the broker turns every declared signal comm_lost and drops every held value.
+Losing the broker, or the broker refusing the subscription, turns every declared
+signal comm_lost and makes status() unavailable.
 
 Config: network ("chirpstack" or "ttn"), host, port (1883, or 8883 with tls),
 application_id, tenant (ttn, default "ttn"), username, password_env (a FREEBOARD_CONN_
@@ -205,10 +215,11 @@ class LorawanConnector(Connector):
 
         self._lock = threading.RLock()
         self._inbox = Inbox()
-        self._held: dict[tuple, tuple] = {}         # (asset_id, signal) -> (value, expires at, epoch s)
+        self._held: dict[tuple, float] = {}         # (asset_id, signal) -> good until, epoch s
         self._last_up: dict[str, float] = {}         # device -> uplink time of the last uplink taken
         self._backoff = Backoff(initial_s=1.0, max_s=30.0)
         self._connected = False
+        self._subscribed = False                     # the broker granted the uplink topic
         self._closed = False
         self._why = f"connecting to {self.host}:{self.port}"
         self._refused = ""
@@ -242,6 +253,7 @@ class LorawanConnector(Connector):
         client.on_disconnect = self._on_disconnect
         client.on_connect_fail = self._on_connect_fail
         client.on_message = self._on_message
+        client.on_subscribe = self._on_subscribe
         self._client = client
         client.connect_async(self.host, self.port, keepalive=self.keepalive_s)
         client.loop_start()
@@ -260,14 +272,31 @@ class LorawanConnector(Connector):
             return
         with self._lock:
             self._connected = True
-            self._why = ""
+            self._subscribed = False
+            self._why = f"connected to {self.host}:{self.port}; waiting for the broker to grant {self.topic}"
             self._refused = ""
         self._backoff.reset()
         client.subscribe(self.topic, qos=0)
 
-    def _lost(self, why: str) -> None:
+    def _on_subscribe(self, _client, _userdata, _mid, reason_codes, _props=None) -> None:
+        if self._closed:
+            return
+        codes = list(reason_codes or [])
+        if not codes or any(getattr(rc, "is_failure", rc == 0x80) for rc in codes):
+            why = (f"the broker refused the subscription to {self.topic} "
+                   "(check application_id, tenant, and the account's read rights)")
+            with self._lock:
+                self._why = why
+            self._lost(why, link_up=True)
+            return
         with self._lock:
-            self._connected = False
+            self._subscribed = True
+            self._why = ""
+
+    def _lost(self, why: str, link_up: bool = False) -> None:
+        with self._lock:
+            self._connected = link_up
+            self._subscribed = False
             self._held = {}
             self._inbox.clear()
         self._mark_all(COMM_LOST, why)
@@ -418,9 +447,11 @@ class LorawanConnector(Connector):
     def _put(self, aid: str, sig: str, mapped: Mapped, expires: Optional[float] = None) -> None:
         key = (aid, sig)
         with self._lock:
+            if self._closed and mapped.good:
+                return                               # a message that raced close()
             self._inbox.put(aid, sig, mapped)
             if mapped.good and expires is not None:
-                self._held[key] = (mapped.value, expires)
+                self._held[key] = expires
             else:
                 self._held.pop(key, None)
             detail = mapped.detail if not mapped.good else ""
@@ -441,12 +472,13 @@ class LorawanConnector(Connector):
     def read(self) -> list[Reading]:
         now = self.clock()
         with self._lock:
-            fresh = {(aid, sig): value for aid, sig, value in self._inbox.drain()}
-            out = dict(fresh)
-            for key, (value, expires) in list(self._held.items()):
+            if self._closed:
+                self._inbox.clear()
+                return []
+            out = {(aid, sig): value for aid, sig, value in self._inbox.drain()}
+            for key, expires in list(self._held.items()):
                 if now >= expires:
                     del self._held[key]
-                    fresh.pop(key, None)
                     out.pop(key, None)
                     if self.interval_min > 0:
                         text = (f"no uplink within {self.window_s / 60:g} min "
@@ -454,13 +486,11 @@ class LorawanConnector(Connector):
                     else:
                         text = f"no uplink within max_age_s {self.window_s:g} s"
                     self.quality[key] = {"quality": STALE, "detail": text, "t": self._t()}
-                elif self.interval_min > 0 and key not in out:
-                    out[key] = value
         return [self.reading(aid, sig, value) for (aid, sig), value in out.items()]
 
     def status(self) -> dict:
         base = {"id": self.id, "kind": self.kind}
-        if self._client is None or self._closed or not self._connected:
+        if self._client is None or self._closed or not self._connected or not self._subscribed:
             why = "closed" if self._closed else self._why or f"connecting to {self.host}:{self.port}"
             return {**base, "available": False, "detail": why}
         with self._lock:
