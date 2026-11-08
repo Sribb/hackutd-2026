@@ -26,10 +26,12 @@ const mean = (a, i, n) => { let s = 0; for (let k = i - n + 1; k <= i; k++) s +=
 
 // Least-squares onset. step: the value jumps at t0 then ramps (leak); else a ramp from 0
 // (wear). Returns the reading time that best splits "healthy" from "event".
-export function fitOnset(x, iDet, step, stepMin = 0) {
+export function fitOnset(x, iDet, step, stepMin = 0, floor = 0) {
   const tDet = x[iDet][0];
   let i0 = iDet;
-  while (i0 > 0 && x[i0 - 1][0] >= tDet - BACK_S) i0--;
+  // Never look back past `floor`: readings from an earlier event on the same asset are
+  // not "healthy" and would drag the onset into it.
+  while (i0 > floor && x[i0 - 1][0] >= tDet - BACK_S) i0--;
   // A step sits at a reading (it shows at once). A ramp starts from 0, so it can start
   // inside a pump-off gap: try every 5-minute step there too.
   const cands = [];
@@ -71,12 +73,13 @@ export function fitOnset(x, iDet, step, stepMin = 0) {
 export function scan(x, { enter, leave, step, stepMin, faults = [], win = W }) {
   const out = [];
   let on = null;
+  let floor = 0; // first reading after the previous event ended
   let i = win - 1;
   while (i < x.length) {
     const t = x[i][0];
     if (!on) {
       if (enter(mean(x, i, win))) {
-        const f = fitOnset(x, i, step, stepMin);
+        const f = fitOnset(x, i, step, stepMin, floor);
         on = { onset: f.onset, seen: t, end: null, endSeen: null, afterGap: f.afterGap, from: f.from, peak: 0, atSeen: mean(x, i, win) };
       }
       i++;
@@ -84,23 +87,23 @@ export function scan(x, { enter, leave, step, stepMin, faults = [], win = W }) {
     }
     const v = x[i][1];
     if (Math.abs(v) > Math.abs(on.peak)) on.peak = v;
-    const fault = faults.find((ft) => ft >= on.seen - win * STEP_S && ft <= t);
+    const fault = faults.find((ft) => ft > on.seen && ft <= t); // a fault before it was seen can't end it
     if (fault !== undefined) {
       on.end = on.endSeen = fault;
-      out.push(on); on = null; i += win; continue;
+      out.push(on); on = null; floor = i; i += win; continue;
     }
     if (i >= 2 && leave(mean(x, i, 3))) {
       const j = i - 2; // the first of the three healthy readings
       on.end = x[j][0] - x[j - 1][0] <= STEP_S ? x[j - 1][0] + STEP_S : x[j][0];
       on.endAfterGap = x[j][0] - x[j - 1][0] > 2 * STEP_S;
       on.endSeen = t;
-      out.push(on); on = null; i += win; continue;
+      out.push(on); on = null; floor = i - 2; i += win; continue;
     }
     i++;
   }
   if (on) {
     // The pump can fail after its last running reading: that ends the wear too.
-    const fault = faults.find((ft) => ft >= on.seen - win * STEP_S);
+    const fault = faults.find((ft) => ft > on.seen);
     if (fault !== undefined) on.end = on.endSeen = fault;
     out.push(on);
   }
@@ -175,9 +178,18 @@ export function faultRuns(store, pumpId) {
   const { times } = store;
   for (let i = 0; i < times.length; i++) {
     if (col[i] !== 2 || (i > 0 && col[i - 1] === 2)) continue;
-    let j = i;
-    while (j + 1 < times.length && col[j + 1] === 2) j++;
-    out.push({ onset: times[i], last: times[j], end: j + 1 < times.length && Number.isFinite(col[j + 1]) ? times[j + 1] : null });
+    // It ends at the first real reading that is not a fault; a gap with no readings
+    // doesn't end it (a fault on both sides is one run), and a gap that runs to the end
+    // of the data leaves it open.
+    let j = i, k;
+    for (;;) {
+      while (j + 1 < times.length && col[j + 1] === 2) j++;
+      k = j + 1;
+      while (k < times.length && !Number.isFinite(col[k])) k++;
+      if (k < times.length && col[k] === 2) { j = k; continue; }
+      break;
+    }
+    out.push({ onset: times[i], last: times[j], end: k < times.length && col[k] !== 2 ? times[k] : null });
     i = j;
   }
   return out;

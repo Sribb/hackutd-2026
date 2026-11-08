@@ -98,6 +98,7 @@ async function boot() {
 
 async function loadFolder(folder) {
   const seq = ++state.loadSeq;
+  clearTimeout(slideTimer);
   state.alertSeq++; // an alerts request for the previous folder must not land on this one
   state.folder = folder;
   state.selected = null;
@@ -138,6 +139,8 @@ async function loadFolder(folder) {
 
 // ---------- time travel ----------
 
+let slideTimer = null; // a pending alerts refresh from the slider; a folder load cancels it
+
 function setupSlider() {
   const s = $("dsAt");
   // Start an hour in: a detector needs some history before "now".
@@ -145,7 +148,6 @@ function setupSlider() {
   s.max = String(state.store.now);
   s.step = String(STEP_S);
   s.value = String(state.at);
-  let timer = null;
   s.oninput = () => {
     state.at = Number(s.value);
     // The alerts on screen belong to the old moment: never show them as current.
@@ -155,8 +157,9 @@ function setupSlider() {
     renderNow();
     renderMap();
     renderAlerts();
-    clearTimeout(timer);
-    timer = setTimeout(() => { syncAtToUrl(); refreshAlerts(); }, 250);
+    clearTimeout(slideTimer);
+    const seq = state.loadSeq;
+    slideTimer = setTimeout(() => { if (seq === state.loadSeq) { syncAtToUrl(); refreshAlerts(); } }, 250);
   };
   $("dsLatest").onclick = () => { s.value = String(state.store.now); s.oninput(); };
 }
@@ -324,10 +327,30 @@ function fleetHtml(systemId) {
 
 // ---------- the page's own screen ----------
 
-let screenMemo = { key: null, events: [] };
+// Pumps the screen could not check at this moment: stopped ones (no flow to compare), and
+// ones missing a fresh reading of any signal the screen reads. Faulted pumps are listed
+// as failures, so they are not repeated here.
+function unscreened(at = state.at) {
+  const off = [], blind = [];
+  for (const sys of state.network.systems) {
+    const disp = Number(sys.disposal_site?.pressure_psi);
+    for (const f of sys.facilities) {
+      const st = state.store.latest(f.pump.id, "status", at);
+      if (st === 2) continue;
+      if (st === 0) { off.push(f.pump.id); continue; }
+      const fresh = st === 1 && Number.isFinite(disp) && ["flow_bpd", "discharge_psi"].every((m) => state.store.latest(f.pump.id, m, at) !== null)
+        && state.store.latest(f.pipeline.id, "receive_flow_bpd", at) !== null;
+      if (!fresh) blind.push(f.pump.id);
+    }
+  }
+  return { off, blind };
+}
+
+// Memos are keyed on the store object itself, so a folder reload (even one with the same
+// name or the same "now") can never serve another load's screen.
+let screenMemo = { store: null, events: [] };
 function screenEvents() {
-  const key = `${state.folder}@${state.store?.now}`;
-  if (screenMemo.key !== key) screenMemo = { key, events: state.store && state.network ? screenDataset(state.network, state.store) : [] };
+  if (screenMemo.store !== state.store) screenMemo = { store: state.store, events: state.store && state.network ? screenDataset(state.network, state.store) : [] };
   return screenMemo.events;
 }
 
@@ -338,10 +361,9 @@ const blank = { confidence: null, estCost: null, doNothingCost: null, hours: nul
 
 // Leaks and worn pumps the screen had seen by `at`, plus pump failures that had already
 // ended, as alert-shaped objects with plain-English evidence. Memoized per moment.
-let poolMemo = { key: null, list: [] };
+let poolMemo = { store: null, at: null, list: [] };
 function screenPool() {
-  const key = `${state.folder}@${state.at}`;
-  if (poolMemo.key === key) return poolMemo.list;
+  if (poolMemo.store === state.store && poolMemo.at === state.at) return poolMemo.list;
   const at = state.at;
   const list = [];
   for (const e of screenAt(screenEvents(), at)) {
@@ -351,7 +373,7 @@ function screenPool() {
     const ser = screenSeries(state.store, hit.f, disp);
     const ongoing = e.status === "ongoing";
     const ev = [];
-    const pumpOff = ongoing && state.store.latest(hit.f.pump.id, "status", at) !== 1;
+    const pumpSt = ongoing ? state.store.latest(hit.f.pump.id, "status", at) : 1;
     if (e.category === "pipeline_leak") {
       const now = ongoing ? recentMean(ser.lost, at) : e.atSeen;
       const flow = state.store.mean(hit.f.pump.id, "flow_bpd", ongoing ? at : e.seen, 3600, true);
@@ -369,7 +391,8 @@ function screenPool() {
     const sig = e.category === "pipeline_leak" ? ser.lost : ser.excess;
     const conf = confidenceAt(sig, ongoing ? at : e.seen, noiseSd(sig, e.onset), e.category === "pipeline_leak" ? 1 : -1, 24, e.onset);
     if (conf) ev.push(`Confidence ${Math.round(conf.share * 100)}%: ${conf.k} of the ${conf.n} latest running readings since it started sit outside this ${e.category === "pipeline_leak" ? "line" : "pump"}'s normal noise (±${e.category === "pipeline_leak" ? pct1(conf.band) : `${Math.round(conf.band)} psi`}).`);
-    if (pumpOff) ev.push("The pump is not running now, so these are its last running readings.");
+    if (pumpSt === null) ev.push("No fresh reading from the pump now, so these are its last running readings. Not checked since.");
+    else if (pumpSt !== 1) ev.push("The pump is not running now, so these are its last running readings.");
     if (!ongoing) ev.push(e.endedByFault ? `Ended when the pump failed at ${fmtTime(e.end, true)} UTC (a separate pump failure).` : `Back to normal by ${fmtTime(e.end, true)} UTC.`);
     list.push({ ...blank, id: `screen:${e.category}:${e.asset}:${e.onset}`, screened: true, category: e.category, status: e.status,
       system: e.system, facility: e.facility, asset: e.asset, onset: e.onset, end: e.end, evidence: ev, confidence: conf ? conf.share : null,
@@ -384,7 +407,7 @@ function screenPool() {
         evidence: [`${f.pump.id} read status 2 (fault) from ${fmtTime(r.onset, true)} to ${fmtTime(r.last, true)} UTC.`] });
     }
   }
-  poolMemo = { key, list };
+  poolMemo = { store: state.store, at: state.at, list };
   return list;
 }
 
@@ -453,19 +476,14 @@ function renderAlerts() {
     const wrap = document.createElement("div");
     wrap.className = "ds-faults";
     wrap.innerHTML = `<span class="kicker">Leaks and worn pumps, from the readings</span>`;
-    if (live.length) live.forEach((a, i) => wrap.appendChild(alertCard(a, rows.length + i + 1)));
-    else {
-      // Only a running pump can be screened: a stopped line carries no flow to compare.
-      const off = [], blind = [];
-      for (const sys of state.network.systems) for (const f of sys.facilities) {
-        const st = state.store.latest(f.pump.id, "status", state.at);
-        if (st === 0) off.push(f.pump.id);
-        else if (st === null) blind.push(f.pump.id);
-      }
-      wrap.insertAdjacentHTML("beforeend", `<p class="ds-hint">None in progress at ${esc(fmtTime(state.at, true))} UTC among the pumps running now.${
-        off.length ? ` ${off.length} pump${off.length === 1 ? " is" : "s are"} stopped, so ${off.length === 1 ? "its line" : "their lines"} can't be checked until ${off.length === 1 ? "it runs" : "they run"}.` : ""}${
-        blind.length ? ` No fresh reading from ${esc(blind.join(", "))}: not checked.` : ""}</p>`);
-    }
+    live.forEach((a, i) => wrap.appendChild(alertCard(a, rows.length + i + 1)));
+    const gaps = unscreened();
+    const note = [
+      !live.length ? `None in progress at ${esc(fmtTime(state.at, true))} UTC among the pumps it could check.` : "",
+      gaps.off.length ? `${gaps.off.length} pump${gaps.off.length === 1 ? " is" : "s are"} stopped, so ${gaps.off.length === 1 ? "its line" : "their lines"} can't be checked until ${gaps.off.length === 1 ? "it runs" : "they run"}.` : "",
+      gaps.blind.length ? `Not checked, no fresh reading: ${esc(gaps.blind.join(", "))}.` : "",
+    ].filter(Boolean).join(" ");
+    if (note) wrap.insertAdjacentHTML("beforeend", `<p class="ds-hint">${note}</p>`);
     box.appendChild(wrap);
   } else if (!live.length) {
     box.innerHTML = `<div class="ds-clear"><b>No problems in progress</b><p>Every pump and pipeline reads normal at ${esc(fmtTime(state.at, true))} UTC.</p></div>`;
@@ -1031,10 +1049,16 @@ $("dsHandoff").onclick = () => {
   if (!state.store) return;
   const screened = usesScreen();
   const alerts = screened ? [...faultRows().map((r) => r.a), ...pool()] : state.alerts;
-  openDialog("Shift handoff", handoffText({
+  let text = handoffText({
     folder: state.folder, at: state.at, now: state.store.now, alerts,
     resolved: alerts.filter((a) => a.status === "resolved"), detection: screened ? "screen" : state.detection, ops: state.ops,
-  }));
+  });
+  if (screened) {
+    const gaps = unscreened();
+    if (gaps.off.length) text += `\nStopped, so their lines could not be checked: ${gaps.off.join(", ")}.`;
+    if (gaps.blind.length) text += `\nNot checked, no fresh reading: ${gaps.blind.join(", ")}.`;
+  }
+  openDialog("Shift handoff", text);
 };
 
 // events.json in the SPEC shape, from the page's own screen (file mode). Every event says

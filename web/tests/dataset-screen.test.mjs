@@ -95,4 +95,33 @@ function dataset({ pump = () => 1, leakPct = () => 0, wearPsi = () => 0 }) {
   assert.ok(ev[0].onset > t0 + 100 * STEP, "onset is never placed before the drift began");
 }
 
+// Review fixes.
+// A second leak on the same line gets its own onset, not one dragged into the first.
+{
+  const leak = (i) => (i >= 120 && i < 240 ? 1.8 + 0.35 * ((i - 120) / 12) : i >= 360 ? 1.8 + 0.35 * ((i - 360) / 12) : 0);
+  const { network, store } = dataset({ leakPct: leak });
+  const ev = screenDataset(network, store);
+  assert.equal(ev.length, 2);
+  assert.ok(Math.abs(ev[1].onset - (t0 + 360 * STEP)) <= 30 * 60, `second leak onset near reading 360 (got ${(ev[1].onset - t0) / STEP})`);
+}
+// A one-reading fault glitch before the wear was seen does not end it.
+{
+  const { network, store } = dataset({
+    pump: (i) => (i === 250 ? 2 : 1), // the wear shows at about reading 268
+    wearPsi: (i) => (i >= 200 ? -1.5 * ((i - 200) / 12) : 0),
+  });
+  const ev = screenDataset(network, store).filter((e) => e.category === "pump_degradation");
+  assert.equal(ev.length, 1);
+  assert.ok(ev[0].end === null || ev[0].end > ev[0].seen, "never ends before it is seen");
+}
+// A fault run followed by missing readings ends at the next real reading; one across a
+// gap with a fault on both sides is one run.
+{
+  const times = new Float64Array([0, 300, 600, 900, 1200, 1500, 1800]);
+  const runs = (vals) => faultRuns(makeStore(times, new Map([["P|status", new Float64Array(vals)]])), "P").map((r) => [r.onset, r.end]);
+  assert.deepEqual(runs([1, 2, 2, NaN, 1, 1, 1]), [[300, 1200]]);
+  assert.deepEqual(runs([1, 2, NaN, 2, 1, 1, 1]), [[300, 1200]]);
+  assert.deepEqual(runs([1, 2, 2, NaN, NaN, NaN, NaN]), [[300, null]]);
+}
+
 console.log("dataset-screen: all pass");

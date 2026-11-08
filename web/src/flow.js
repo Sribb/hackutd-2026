@@ -102,7 +102,9 @@ export function mountFlow(root) {
 
   const DOWN = new Set(["ALARM", "OFFLINE", "NO_DATA", "UNKNOWN"]);
   const runs = (v) => !!v && !DOWN.has(v.status) && v.running !== false && v.stale !== true;
-  const pumpFlows = (view, n) => runs(view[`PUMP_${n}`]) && (view[`VALVE_D_${n}`] || {}).position !== 0;
+  // CONTRACT.md: valve position is "OPEN" or "CLOSED". A valve with no known position
+  // shows no flow: the scene never draws water it can't vouch for.
+  const pumpFlows = (view, n) => runs(view[`PUMP_${n}`]) && (!node(`VALVE_D_${n}`) || (view[`VALVE_D_${n}`] || {}).position === "OPEN");
 
   const flowing = (p, view) => {
     const f = p.feeds;
