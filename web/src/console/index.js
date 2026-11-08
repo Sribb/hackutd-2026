@@ -33,7 +33,7 @@ import {
 import "./console.css";
 import { mountIntro } from "../gaia/intro.js";
 import { mountThreads } from "../gaia/threads.js";
-import { mountMic } from "../gaia/mic.js";
+import { mountAgent } from "../agent/index.js";
 import { makeLayout } from "../gaia/layout.js";
 import { mountRail } from "../gaia/rail.js";
 
@@ -129,7 +129,7 @@ export function mountConsole(H) {
   });
   const rail = mountRail(app, { newChat: () => threads.newChat(), nav: (v) => layout.nav(v), navOpen: () => layout.navOpen(), layers: () => onSegment("LAYERS") });
   railRef.r = rail;
-  mountMic(side.mic, side.input, () => side.el.querySelector("#csAsk").requestSubmit());
+  let agent = null; // gaia as an agent (agent/index.js): steps, voice, the offline walk-through
 
   const fix = makeFixCard(side.fix, {
     post, clockNow: () => nowClock(), liveClock: () => liveFeed.live.clock,
@@ -165,6 +165,12 @@ export function mountConsole(H) {
   function view() {
     return H.view || (window.__console3d && window.__console3d.view) || stub;
   }
+  agent = mountAgent({
+    side, stream, apply: (d) => directives.apply(d), nice, hasId: H.hasId, selected: H.selected, tankOf: H.tankOf,
+    brief: () => computeBrief(), alerts: () => activeAlerts(), unknown: () => unknownTanks(),
+    say: (t, x) => say(t, x), ask: (t) => { setOpen(true); ask(t); }, closePanels: () => closeDrawer(true), BASE, getJson,
+    chart: (t) => { const m = intents.match(t, { hasId: H.hasId, ids: H.ids, selected: H.selected, opened: () => false }); return m && m.chart && !m.chart.error ? charts.answer(m.chart) : ""; },
+  });
   // Chart cards (chartask.js): drawn from the data in the browser, no AI. A click flies to the asset.
   const charts = makeCharts({
     BASE, data: H.data, hasId: H.hasId, nice, stream, say: (text, extra) => say(text, extra),
@@ -463,6 +469,7 @@ export function mountConsole(H) {
   function say(text, extra = {}) {
     const safe = guard(text);
     stream.post("J", { text: safe, ids: extra.ids || [], tag: extra.tag || "local", ...extra, text: safe });
+    if (agent) agent.spoke(safe);
   }
   // Never an all-clear while a tank is unknown or the feed is lost, whoever wrote the words.
   function guard(text) {
@@ -477,11 +484,12 @@ export function mountConsole(H) {
     const text = String(message || "").trim();
     if (!text) return;
     if (!opts.quiet) stream.line("you", text);
-    const ctx = { hasId: H.hasId, ids: H.ids, selected: H.selected, opened: () => (view().state() || {}).open };
+    if (agent && agent.before(text)) return;
+    const ctx ={ hasId: H.hasId, ids: H.ids, selected: H.selected, opened: () => (view().state() || {}).open };
     const m = intents.match(text, ctx);
     if (m) {
       if (m.chart) { askChain = askChain.then(() => charts.answer(m.chart)).catch(() => {}); return; }
-      if (m.hands) { setHands(m.hands === "on"); say(m.hands === "on" ? "Hands on. Point to look, pinch to open, open palm to turn, fist to reset." : "Hands off. The mouse does everything."); return; }
+      if (m.hands) { setHands(m.hands === "on"); say(m.hands === "on" ? "Hands on. Point to look, pinch to select, pinch and drag to turn, open palm to stop." : "Hands off. The mouse does everything."); return; }
       if (m.clearWhatif) { H.setActions([]); say("Cleared every what-if. Back to the do-nothing forecast."); return; }
       const said = directives.apply({ action: m.action, asset_id: m.asset_id, args: m.args });
       if (m.action === "focus") {
@@ -503,7 +511,7 @@ export function mountConsole(H) {
     let r, out;
     try {
       const sel = H.selected();
-      r = await post("/api/jarvis", { message: text, selected_asset_ids: sel ? [sel] : [] }, 30000);
+      r = await post("/api/jarvis", { message: text, selected: sel || null, selected_asset_ids: sel ? [sel] : [] }, 30000);
       out = await r.json().catch(() => ({}));
     } catch (e) {
       clearTimeout(slow);
@@ -521,12 +529,8 @@ export function mountConsole(H) {
       return;
     }
     const ids = [];
-    let said = "";
-    for (const d of out.ui || []) {
-      const s = directives.apply(d);
-      if (s && !said) said = s;
-      if (d.asset_id && !ids.includes(d.asset_id)) ids.push(d.asset_id);
-    }
+    for (const d of out.ui || []) if (d.asset_id && d.asset_id !== "ALL" && !ids.includes(d.asset_id)) ids.push(d.asset_id);
+    const said = await agent.play(out.ui || []); // several steps play one by one under a step list
     const reply = out.reply || said || "";
     say(reply, { ids: [...ids, ...stream.chipsFor(reply)].filter((x, i, a) => a.indexOf(x) === i), tag: out.source || "rules", ...offerCards(out.offers) });
     for (const p of out.proposals || []) fix.take(p, true);
@@ -815,6 +819,8 @@ export function mountConsole(H) {
     unknown: () => unknownTanks(), now: () => nowMin(), reach: () => reach, vouchable: () => vouchable(), card: () => fix.shown(), cardLog: () => fix.log(),
     ask: (t) => ask(t), view: () => view(), reset: () => api.reset(), directives: () => directives.seen(),
     threads: () => threads.list(), thread: (id) => (id ? threads.view(id) : threads.viewing()), intro: () => intro.state(),
+    agent: () => (agent ? agent.state() : null),
+    camera: () => (H.controls && H.controls.target ? H.controls.target.toArray().map((x) => +x.toFixed(2)) : null),
     notify: () => notifier.state(),
   };
   // #154, for the judge tour: gaiaNotify() shows the current top alert; gaiaNotify(alert or id) a given one.

@@ -5,6 +5,10 @@
 //   open palm, moving          orbits the camera                                 = drag
 //   two hands apart/together   zooms                                             = wheel
 //
+// Agentic mode (the gaia console, #171: hooks.agentic): pinch selects what's under the cursor
+// when it lets go (the selection chip follows), pinch and drag orbits, and an open palm is
+// "stop": hooks.palm() hushes gaia and closes panels. Point still hovers.
+//
 // MediaPipe Hand Landmarker (@mediapipe/tasks-vision, Apache-2.0) runs in the browser. The
 // camera feed never leaves the laptop. The gesture rules follow AirBench
 // (github.com/VARSHITH707/AirBench, MIT): a gesture counts only after it holds for a few
@@ -15,6 +19,7 @@ const LOCAL_MODEL = "/mediapipe/hand_landmarker.task"; // drop the file here to 
 const HOLD_FRAMES = 4;      // a gesture must hold this many frames before it counts
 const SMOOTH = 0.35;        // cursor smoothing, 0..1 (higher follows faster)
 const PINCH_ON = 0.33, PINCH_OFF = 0.45; // thumb-index gap / hand size, with hysteresis
+const DRAG_START = 0.03;    // agentic pinch: the hand moves this far (of the frame) before it orbits
 
 const $ = (id) => document.getElementById(id);
 
@@ -32,7 +37,9 @@ export async function loadLandmarker() {
 }
 
 export function mountHands(hooks) {
-  // hooks: { canvas, stage, hoverAt(x, y) -> id|null, clickAt(x, y) -> id|null, orbit(dx, dy), zoom(factor) }
+  // hooks: { canvas, stage, hoverAt(x, y) -> id|null, clickAt(x, y) -> id|null, orbit(dx, dy), zoom(factor),
+  //          agentic?: bool, palm?() }
+  const agentic = !!hooks.agentic;
   const btn = document.createElement("button");
   btn.id = "handsBtn";
   btn.className = "hands-btn";
@@ -45,7 +52,7 @@ export function mountHands(hooks) {
   hud.hidden = true;
   hud.innerHTML = `<video id="handsVideo" playsinline muted></video>
     <div class="hands-read"><b id="handsGesture">starting</b><span id="handsFps"></span></div>
-    <div class="hands-legend">point = hover · pinch = select · open palm = orbit · two hands = zoom</div>`;
+    <div class="hands-legend">${agentic ? "point = hover · pinch = select · pinch and drag = turn · open palm = stop · two hands = zoom" : "point = hover · pinch = select · open palm = orbit · two hands = zoom"}</div>`;
   hooks.stage.appendChild(hud);
 
   const cursor = document.createElement("div");
@@ -96,6 +103,7 @@ export function mountHands(hooks) {
   let cand = "none", candN = 0, gesture = "none";
   let cur = null;              // smoothed cursor in stage pixels
   let palmPrev = null, spanPrev = null, pinched = false;
+  let pinchFrom = null, dragged = false, lastAt = null; // agentic pinch: where it began, did it move
 
   function loop() {
     if (!running) return;
@@ -115,8 +123,11 @@ export function mountHands(hooks) {
     if (seen === cand) candN++;
     else { cand = seen; candN = 1; }
     if (candN >= HOLD_FRAMES && gesture !== cand) {
+      const was = gesture;
       gesture = cand;
       palmPrev = spanPrev = null;
+      if (agentic && was === "pinch") endPinch();
+      if (agentic && gesture === "palm" && hooks.palm) hooks.palm();
     }
     $("handsGesture").textContent = gesture === "none" ? "no hand" : gesture;
     cursor.className = `hands-cursor ${gesture}`;
@@ -132,7 +143,7 @@ export function mountHands(hooks) {
       cursor.hidden = true;
       return;
     }
-    if (!hands.length) { cursor.hidden = true; hooks.hoverAt(null); pinched = false; return; }
+    if (!hands.length) { cursor.hidden = true; hooks.hoverAt(null); pinched = false; pinchFrom = null; return; }
 
     const h = hands[0];
     const target = gesture === "orbit" ? toStage(palm(h)) : toStage(h[8]);
@@ -147,9 +158,25 @@ export function mountHands(hooks) {
       palmPrev = p;
       return;
     }
+    if (agentic && gesture === "pinch") {
+      // Pinch and drag orbits; a pinch that lets go without moving selects (endPinch).
+      const p = palm(h);
+      if (!pinchFrom) { pinchFrom = p; dragged = false; palmPrev = p; lastAt = { x: cx, y: cy }; }
+      if (!dragged && dist(p, pinchFrom) > DRAG_START) dragged = true;
+      if (dragged && palmPrev) hooks.orbit(-(p.x - palmPrev.x), p.y - palmPrev.y);
+      else { lastAt = { x: cx, y: cy }; hooks.hoverAt(cx, cy); }
+      palmPrev = p;
+      return;
+    }
     if (gesture === "point" || gesture === "pinch") hooks.hoverAt(cx, cy);
-    if (gesture === "pinch" && !pinched) { pinched = true; hooks.clickAt(cx, cy); }
+    if (!agentic && gesture === "pinch" && !pinched) { pinched = true; hooks.clickAt(cx, cy); }
     if (gesture !== "pinch") pinched = false;
+  }
+
+  function endPinch() {
+    if (pinchFrom && !dragged && lastAt) hooks.clickAt(lastAt.x, lastAt.y);
+    pinchFrom = null;
+    dragged = false;
   }
 
   // ---------------------------------------------------------- gestures ----
@@ -159,7 +186,7 @@ export function mountHands(hooks) {
     const h = hands[0];
     const r = pinchRatio(h);
     if (r < PINCH_ON || (gesture === "pinch" && r < PINCH_OFF)) return "pinch";
-    if (openPalm(h)) return "orbit";
+    if (openPalm(h)) return agentic ? "palm" : "orbit";
     if (extended(h, 8, 6) && !extended(h, 12, 10) && !extended(h, 16, 14)) return "point";
     return gesture === "pinch" || gesture === "point" ? gesture : "none";
   }
