@@ -209,6 +209,39 @@ def blender(args, script=os.path.join(HERE, "build_field.py")):
     return subprocess.run(cmd + args, cwd=ROOT, capture_output=True, text=True, timeout=600)
 
 
+def check_rigs(label, glb, bp, data):
+    """Hero equipment (#100): pumpjack pivots unchanged, pitman and bridle hang from the beam,
+    and every valve says whether it is manual or remote, as the blueprint does."""
+    def local(name):
+        nd = glb.nodes[glb.idx(name)]
+        return nd.get("translation", (0, 0, 0)), nd.get("rotation", (0, 0, 0, 1))
+    pivots, rigs = True, True
+    for w in bp["wells"]:
+        (bx, by, bz), _ = local(w["id"] + "_beam")
+        (cx, cy, cz), _ = local(w["id"] + "_crank")
+        pivots &= max(abs(bx), abs(by - 4.1), abs(bz)) < 1e-4            # three.js (x, height, -y)
+        pivots &= max(abs(cx), abs(cy - 1.6), abs(cz + 2.7)) < 1e-4
+        for part in ("_pitman", "_bridle"):
+            i = glb.by_name.get(w["id"] + part, [None])[0]
+            rigs &= i is not None and glb.parent.get(i) == glb.idx(w["id"] + "_beam")
+            rigs &= i is not None and max(abs(q) for q in glb.nodes[i].get("rotation", (0, 0, 0, 1))[:3]) < 1e-6
+    ok(pivots, f"{label}: pumpjack beam and crank pivots are where the console expects them")
+    ok(rigs, f"{label}: every pitman and bridle hangs from its beam with no rotation")
+    acts = {nd["name"]: nd.get("extras", {}).get("actuation") for nd in glb.nodes
+            if nd.get("extras", {}).get("kind") == "valve"}
+    want = {v["id"]: "manual" if v.get("manual") is True or v.get("remote") is False else "remote"
+            for v in data.get("valves", []) if isinstance(v, dict) and v.get("id") in acts}
+    ok(all(acts.get(v) == m for v, m in want.items()) and all(a in ("manual", "remote") for a in acts.values()),
+       f"{label}: {len(acts)} valves carry actuation, matching manual/remote "
+       f"({sum(1 for a in acts.values() if a == 'manual')} manual)")
+    kinds = names.asset_kinds(bp)
+    want_dev = {"tank": "radar_level", "valve": "position", "truck": "telematics", "yard": "gateway"}
+    devs = {nd["extras"]["for_asset"]: nd["extras"].get("device") for nd in glb.nodes
+            if nd.get("extras", {}).get("kind") == "sensor"}
+    ok(all(d == want_dev.get(kinds.get(a), "pressure") for a, d in devs.items()),
+       f"{label}: {len(devs)} sensors say which instrument they are, by asset kind")
+
+
 def check_build(label, bp_path, out_dir, expect_level=None, max_seconds=30):
     data = load(bp_path)
     bp = blueprint.check(data)[0]
@@ -247,6 +280,7 @@ def check_build(label, bp_path, out_dir, expect_level=None, max_seconds=30):
             parents_ok &= glb.parent.get(glb.idx(a["id"] + part)) == glb.idx(a["id"])
             parents_ok &= max(abs(q) for q in nd.get("rotation", (0, 0, 0, 1))[:3]) < 1e-6
     ok(parents_ok, f"{label}: moving parts sit under their asset with no rotation; levels ship at 0.55")
+    check_rigs(label, glb, bp, data)
 
     pos_ok = True
     for p in L["pads"]:
@@ -345,7 +379,7 @@ def test_builds(tmp):
     print(f"      sample 2 draft from {source}")
     cases = [("small", os.path.join(HERE, "samples", "small.json"), "full"),
              ("default", None, "full"),
-             ("large", os.path.join(HERE, "samples", "large.json"), "full"),
+             ("large", os.path.join(HERE, "samples", "large.json"), None),     # full or lite, see below
              ("sample1", SAMPLE1, "full"),
              ("sample2_draft", draft, "full")]
     paths = variants(tmp)
@@ -374,6 +408,9 @@ def test_builds(tmp):
                        for a in data.get(k, []) if a.get("x") is not None)
         ok(reports["sample2_draft"]["placed"]["given"] == given,
            f"sample2_draft: every position from the CSV is used ({len(given)} assets)")
+    if "large" in reports:   # 47 wells: hero full fits only under a budget above about 450k triangles
+        ok(reports["large"]["detail"]["level"] in ("full", "lite"),
+           f"large: builds at full or lite, never bare ({reports['large']['detail']['level']})")
     if "max20" in reports:
         r = reports["max20"]
         ok(r["detail"]["level"] != "full" and any("dropped" in w for w in r["warnings"]),

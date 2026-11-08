@@ -73,21 +73,23 @@ LEVELS = {
 }
 DROPPED = {
     "full": [],
-    "lite": ["bolts", "small labels, tags and signs", "containment and fence posts"],
+    "lite": ["bolts", "small labels, tags and signs", "containment and fence posts",
+             "hero trim: pumpjack ladders, wellhead valves and gauges, crank guards, roof walkway rails"],
     "bare": ["bolts", "small labels, tags and signs", "containment and fence posts",
+             "hero trim: pumpjack ladders, wellhead valves and gauges, crank guards, roof walkway rails",
              "wellhead trees, crank guards and well signs"],
 }
 # Triangles each asset adds at each level, measured from the sample builds. A tank includes
 # its pad and load-out, a pump its valve and lines, a well its flowline. The site (ground,
 # road, power, trunk, yard) costs one triangle per 12.5 m2 of ground plus 28 per road meter.
 # A tank also pays for its pad's RTU, and every monitored asset for its sensor node.
-COSTS = {
-    "full": {"tank": 7570, "pump": 4150, "well": 1900, "swd": 3800, "truck": 3100, "xo": 1750, "equipment": 2400,
-             "sensor": 150},
-    "lite": {"tank": 6800, "pump": 3350, "well": 1820, "swd": 3120, "truck": 3100, "xo": 1350, "equipment": 2200,
-             "sensor": 150},
-    "bare": {"tank": 6800, "pump": 3350, "well": 1060, "swd": 3120, "truck": 3100, "xo": 1350, "equipment": 2200,
-             "sensor": 150},
+COSTS = {   # full is the hero detail (#100); lite costs about what full did before it
+    "full": {"tank": 8820, "pump": 5220, "well": 4050, "swd": 7040, "truck": 5250, "xo": 1950, "equipment": 2400,
+             "sensor": 380},
+    "lite": {"tank": 7160, "pump": 3540, "well": 1830, "swd": 4590, "truck": 4190, "xo": 1400, "equipment": 2200,
+             "sensor": 300},
+    "bare": {"tank": 7160, "pump": 3540, "well": 1480, "swd": 4590, "truck": 4190, "xo": 1400, "equipment": 2200,
+             "sensor": 300},
 }
 
 
@@ -282,6 +284,8 @@ def run(opts, src, out_dir, report):
     report["warnings"] += warnings
     if report["errors"]:
         return 1
+    fp.VALVE_MANUAL.clear()
+    fp.VALVE_MANUAL.update(fp.valve_modes(data))   # handwheel or actuator, from manual/remote
     L = layout.plan(bp)
     report["warnings"] += L["warnings"]
     report["errors"] += L["errors"]
