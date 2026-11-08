@@ -145,9 +145,10 @@ def box(bm, size, center, rot=None):
     bmesh.ops.create_cube(bm, size=1.0, matrix=m)
 
 
-def cyl(bm, r, depth, center, axis="Z", segs=16, r2=None):
+def cyl(bm, r, depth, center, axis="Z", segs=16, r2=None, caps=True):
+    """A cylinder or cone frustum. caps=False leaves the ends open, for ends nobody can see."""
     m = Matrix.Translation(Vector(center)) @ AXES[axis]
-    bmesh.ops.create_cone(bm, cap_ends=True, cap_tris=False, segments=segs,
+    bmesh.ops.create_cone(bm, cap_ends=caps, cap_tris=False, segments=segs,
                           radius1=r, radius2=r if r2 is None else r2, depth=depth, matrix=m)
 
 
@@ -229,54 +230,116 @@ def polar(r, deg, z=0.0):
     return Vector((r * math.cos(a), r * math.sin(a), z))
 
 
+def fine():
+    """True at full detail: chamfers, rungs, and small hardware. Lite and bare skip them."""
+    return LOD["bolts"]
+
+
+def strut(bm, a, b, w, d=None):
+    """A rectangular bar from a to b, w by d in section: structural tube, flat bar, or rail."""
+    a, b = Vector(a), Vector(b)
+    v = b - a
+    if v.length < 1e-4:
+        return
+    rot = Vector((0, 0, 1)).rotation_difference(v.normalized()).to_matrix().to_4x4()
+    box(bm, (w, d or w, v.length), (a + b) / 2, rot)
+
+
+def rbox(bm, size, center, rot=None, bevel=0.02):
+    """A box with chamfered edges, so it catches a highlight. A plain box below full detail."""
+    before = set(bm.verts)
+    box(bm, size, center, rot)
+    if not fine() or bevel <= 0:
+        return
+    verts = [v for v in bm.verts if v not in before]
+    edges = list({e for v in verts for e in v.link_edges})
+    bmesh.ops.bevel(bm, geom=verts + edges, offset=min(bevel, min(size) * 0.3), segments=1,
+                    affect="EDGES", clamp_overlap=True)
+
+
+def prism(bm, pts, d0, d1, plane="YZ"):
+    """Extrude a 2D outline [(u, v)] from depth d0 to d1. plane YZ: outline in (y, z), depth along x."""
+    place = {"YZ": lambda u, v, w: (w, u, v), "XZ": lambda u, v, w: (u, w, v),
+             "XY": lambda u, v, w: (u, v, w)}[plane]
+    a = [bm.verts.new(place(u, v, d0)) for u, v in pts]
+    b = [bm.verts.new(place(u, v, d1)) for u, v in pts]
+    bm.faces.new(a)
+    bm.faces.new(list(reversed(b)))
+    for i in range(len(pts)):
+        j = (i + 1) % len(pts)
+        bm.faces.new((a[i], a[j], b[j], b[i]))
+
+
+def hull(points):
+    """2D convex hull (monotone chain), counterclockwise."""
+    pts = sorted(set((round(x, 5), round(y, 5)) for x, y in points))
+
+    def half(seq):
+        out = []
+        for p in seq:
+            while len(out) >= 2 and ((out[-1][0] - out[-2][0]) * (p[1] - out[-2][1])
+                                     - (out[-1][1] - out[-2][1]) * (p[0] - out[-2][0])) <= 0:
+                out.pop()
+            out.append(p)
+        return out
+    lower, upper = half(pts), half(reversed(pts))
+    return lower[:-1] + upper[:-1]
+
+
+def circle_pts(c, r, n, a0=0.0, a1=2 * PI):
+    """n points on a circle (or arc a0..a1, inclusive) around c in 2D."""
+    full = abs(a1 - a0 - 2 * PI) < 1e-6
+    k = n if full else n - 1
+    return [(c[0] + r * math.cos(a0 + (a1 - a0) * i / k), c[1] + r * math.sin(a0 + (a1 - a0) * i / k))
+            for i in range(n)]
+
+
+def handwheel(bm, r, center=(0, 0, 0), spokes=3):
+    """A valve handwheel in the XY plane: rim, spokes, hub. Turns about local Z."""
+    c = Vector(center)
+    small = r < 0.15
+    ring(bm, r, max(0.01, r * 0.1), c, segs=8 if small else min(16, round(r * 56)), rsegs=3 if small else 4)
+    for i in range(2 if small else spokes):
+        a = i * PI / (2 if small else spokes)
+        strut(bm, c + Vector((r * math.cos(a), r * math.sin(a), 0)),
+              c - Vector((r * math.cos(a), r * math.sin(a), 0)), r * 0.08, r * 0.06)
+    cyl(bm, r * 0.2, r * 0.25, c, segs=6 if small else 8)
+
+
 # ---------- assets ----------
 
 TANK_R, TANK_H, WALL, FLOOR = 3.25, 4.9, 0.08, 0.15
 CUT = (-130.0, -50.0)            # the opening faces -Y, toward the road
 NOZZLE_R = TANK_R + 0.45
 OUTLET = (-40.0, 0.85)           # angle, height: suction to the pump
-INLET = (100.0, 4.3)             # angle, height: produced water in from the header
-LADDER = 70.0
+INLET = (140.0, 4.3)             # angle, height: produced water in from the header
 
 
 def build_tank(site, tid, loc, rot_z=0.0, outlets=(OUTLET[0],), xo_angles=()):
-    """Cutaway tank. outlets are nozzle angles for its pumps, xo_angles for its crossovers."""
+    """Cutaway tank. outlets are nozzle angles for its pumps, xo_angles for its crossovers.
+
+    The stair, roof walkway, hatches and vents are in detail_equipment.tank_extras.
+    """
     root = site.empty(tid, loc, rot_z, kind="tank", size=4)
     k = Kit(site, tid, root)
     a0, a1 = math.radians(CUT[1]), math.radians(CUT[0] + 360)
     arc_wall(k["M_TANK"], TANK_R, TANK_R - WALL, 0, TANK_H, a0, a1, 44)
-    for z in (1.6, 3.25):
+    for z in (0.12, 1.6, 3.25):                                       # shell courses and the bottom chime
         arc_wall(k["M_TANK"], TANK_R + 0.03, TANK_R - 0.01, z, z + 0.07, a0, a1, 44)
-    arc_wall(k["M_STEEL"], TANK_R + 0.06, TANK_R - 0.01, TANK_H - 0.1, TANK_H, a0, a1, 44)
+    arc_wall(k["M_STEEL"], TANK_R + 0.06, TANK_R - 0.01, TANK_H - 0.1, TANK_H, a0, a1, 44)   # top angle
+    if fine():                                                        # vertical seams between the shell sheets
+        for deg in range(-35, 230, 30):
+            box(k["M_TANK"], (0.05, 0.09, TANK_H - 0.3), polar(TANK_R + 0.02, deg, TANK_H / 2),
+                Matrix.Rotation(math.radians(deg), 4, "Z"))
     arc_roof(k["M_TANK"], TANK_R + 0.05, TANK_H, TANK_H + 0.08, TANK_H + 0.55, a0, a1, 44)
     cyl(k["M_TANK"], TANK_R, FLOOR, (0, 0, FLOOR / 2), segs=44)
     cyl(k["M_CONCRETE"], TANK_R + 0.4, 0.16, (0, 0, -0.06), segs=44)
     nozzles = [(a, OUTLET[1]) for a in outlets] + [INLET] + [(a, 0.85) for a in xo_angles]
     for deg, z in nozzles:
         tube(k["M_PIPE"], polar(TANK_R - 0.05, deg, z), polar(NOZZLE_R, deg, z), 0.11, 12)
-    # ladder up the side and a small roof platform with a guard rail
-    n_vec, t_vec = polar(1, LADDER), polar(1, LADDER + 90)
-    base = n_vec * (TANK_R + 0.22)
-    for side in (-0.22, 0.22):
-        p = base + t_vec * side
-        tube(k["M_STEEL"], (p.x, p.y, 0.2), (p.x, p.y, TANK_H + 1.0), 0.025, 6)
-    z = 0.45
-    while z < TANK_H + 0.3:
-        a, b = base - t_vec * 0.22, base + t_vec * 0.22
-        tube(k["M_STEEL"], (a.x, a.y, z), (b.x, b.y, z), 0.018, 6)
-        z += 0.3
-    turn = Matrix.Rotation(math.radians(LADDER), 4, "Z")
-    deck = n_vec * (TANK_R - 0.55)
-    box(k["M_STEEL_DARK"], (1.3, 0.9, 0.06), (deck.x, deck.y, TANK_H + 0.3), turn)
-    posts = [deck + n_vec * dn + t_vec * dt for dn in (-0.6, 0.6) for dt in (-0.45, 0.45)]
-    for p in posts:
-        tube(k["M_STEEL"], (p.x, p.y, TANK_H + 0.3), (p.x, p.y, TANK_H + 1.3), 0.025, 6)
-    for p, q in ((posts[0], posts[1]), (posts[2], posts[3]), (posts[0], posts[2])):
-        tube(k["M_STEEL"], (p.x, p.y, TANK_H + 1.3), (q.x, q.y, TANK_H + 1.3), 0.022, 6)
-    hatch = polar(1.6, 120, TANK_H + 0.45)
-    cyl(k["M_STEEL_DARK"], 0.22, 0.3, hatch, segs=14)
-    tube(k["M_PIPE"], (0, 0, TANK_H + 0.4), (0, 0, TANK_H + 1.15), 0.07, 10)
-    ball(k["M_PIPE"], 0.13, (0, 0, TANK_H + 1.2))
+    tube(k["M_PIPE"], (0, 0, TANK_H + 0.4), (0, 0, TANK_H + 1.15), 0.07, 10)   # center vent, gooseneck
+    ball(k["M_PIPE"], 0.1, (0, 0, TANK_H + 1.15), segs=8)
+    tube(k["M_PIPE"], (0, 0, TANK_H + 1.15), (0.3, 0, TANK_H + 1.0), 0.07, 10)
     k.done()
     lvl = bmesh.new()
     depth = TANK_H - FLOOR - 0.15
@@ -290,23 +353,29 @@ def build_tank(site, tid, loc, rot_z=0.0, outlets=(OUTLET[0],), xo_angles=()):
 
 
 def build_pump(site, pid, loc, rot_z=0.0):
-    """Centrifugal transfer pump on a skid. Suction faces -X, motor at +X."""
+    """Centrifugal transfer pump on a skid. Suction faces -X, motor at +X.
+
+    Suction strainer, check valve, gauges and the coupling guard are in detail_equipment.pump_extras.
+    """
     root = site.empty(pid, loc, rot_z, kind="pump", size=1.5)
     k = Kit(site, pid, root)
+    st, dk = k["M_STEEL"], k["M_STEEL_DARK"]
     box(k["M_CONCRETE"], (3.8, 1.8, 0.2), (0, 0, 0.1))
-    box(k["M_STEEL_DARK"], (3.3, 1.2, 0.18), (0.1, 0, 0.29))
-    cyl(k["M_STEEL"], 0.42, 0.38, (-0.8, 0, 0.85), axis="X", segs=20)
-    box(k["M_STEEL"], (0.3, 0.5, 0.45), (-0.8, 0, 0.6))
+    box(dk, (3.3, 1.2, 0.18), (0.1, 0, 0.29))                          # skid
+    for y in (-0.55, 0.55):
+        box(dk, (3.3, 0.08, 0.06), (0.1, y, 0.41))                     # drip lip
+    cyl(st, 0.42, 0.34, (-0.8, 0, 0.85), axis="X", segs=20)            # volute
+    cyl(st, 0.3, 0.08, (-1.01, 0, 0.85), axis="X", segs=16)            # suction cover
+    box(st, (0.3, 0.5, 0.45), (-0.8, 0, 0.6))                          # volute foot
     tube(k["M_PIPE"], (-1.75, 0, 0.85), (-0.99, 0, 0.85), 0.12, 12)
     tube(k["M_PIPE"], (-0.8, 0, 1.2), (-0.8, 0, 1.9), 0.1, 12)
-    tube(k["M_STEEL_DARK"], (-0.8, 0.08, 1.6), (-0.8, 0.22, 1.6), 0.02, 6)
-    cyl(k["M_STEEL"], 0.09, 0.05, (-0.8, 0.25, 1.6), axis="Y", segs=14)
-    box(k["M_STEEL"], (0.7, 0.34, 0.34), (-0.2, 0, 0.85))
-    box(k["M_STEEL"], (0.4, 0.5, 0.45), (-0.2, 0, 0.6))
-    box(k["M_STEEL_DARK"], (0.55, 0.42, 0.42), (0.35, 0, 0.85))
-    cyl(k["M_STEEL"], 0.36, 1.0, (1.1, 0, 0.82), axis="X", segs=20)
-    box(k["M_STEEL_DARK"], (0.8, 0.6, 0.08), (1.1, 0, 0.42))
-    box(k["M_STEEL_DARK"], (0.25, 0.2, 0.25), (1.1, 0.38, 0.95))
+    cyl(st, 0.16, 0.6, (-0.3, 0, 0.85), axis="X", segs=14)            # bearing frame
+    box(st, (0.4, 0.5, 0.45), (-0.25, 0, 0.6))
+    cyl(st, 0.36, 1.0, (1.1, 0, 0.82), axis="X", segs=20)              # motor
+    for x in (0.62, 1.58):
+        cyl(dk, 0.37, 0.05, (x, 0, 0.82), axis="X", segs=20)           # end bells
+    box(dk, (0.8, 0.6, 0.08), (1.1, 0, 0.42))
+    box(dk, (0.25, 0.2, 0.25), (1.1, 0.38, 0.95))                      # terminal box
     k.done()
     fan = bmesh.new()
     cyl(fan, 0.34, 0.1, (0, 0, 0), axis="X", segs=20)
@@ -317,67 +386,62 @@ def build_pump(site, pid, loc, rot_z=0.0):
     return root, {"suction": m @ Vector((-1.75, 0, 0.85)), "discharge": m @ Vector((-0.8, 0, 1.9))}
 
 
+VALVE_MANUAL = {}   # valve ID -> True for a handwheel valve, False for one with a remote actuator
+
+
+def valve_modes(data):
+    """{valve ID: manual?} from a raw blueprint. A valve is manual when it says manual: true or
+    remote: false, the way the backend reads it; otherwise it has an actuator."""
+    out = {}
+    for v in (data or {}).get("valves") or []:
+        if isinstance(v, dict) and isinstance(v.get("id"), str):
+            out[v["id"]] = v.get("manual") is True or v.get("remote") is False
+    return out
+
+
 def build_valve(site, vid, loc, rot_z=0.0):
-    """Gate valve. The pipe runs along local Y; the handwheel turns about local Z."""
+    """Rising-stem gate valve. The pipe runs along local Y; the handwheel turns about local Z.
+
+    A manual valve (VALVE_MANUAL, default manual) has a big handwheel and a rising stem. A
+    remote one has an electric actuator on the yoke with a smaller override handwheel. Either
+    way VID_wheel keeps its pivot at (0, 0, 0.88).
+    """
+    manual = VALVE_MANUAL.get(vid, True)
     root = site.empty(vid, loc, rot_z, kind="valve", size=0.8)
+    root["actuation"] = "manual" if manual else "remote"
     k = Kit(site, vid, root)
-    cyl(k["M_STEEL_DARK"], 0.2, 0.46, (0, 0, 0), axis="Y", segs=16)
-    for y in (-0.24, 0.24):
-        cyl(k["M_STEEL_DARK"], 0.27, 0.06, (0, y, 0), axis="Y", segs=16)
-    cyl(k["M_STEEL_DARK"], 0.1, 0.35, (0, 0, 0.36), segs=12)
-    box(k["M_STEEL_DARK"], (0.05, 0.24, 0.32), (0, 0, 0.66))
-    tube(k["M_STEEL"], (0, 0, 0.5), (0, 0, 0.86), 0.025, 8)
+    st, dk = k["M_STEEL"], k["M_STEEL_DARK"]
+    cyl(dk, 0.13, 0.44, (0, 0, 0), axis="Y", segs=14)                   # ends
+    rbox(dk, (0.24, 0.2, 0.44), (0, 0, 0.02), bevel=0.04)               # gate body
+    for y in (-0.235, 0.235):
+        cyl(dk, 0.21, 0.05, (0, y, 0), axis="Y", segs=16)               # end flanges
+    cyl(dk, 0.16, 0.05, (0, 0, 0.26), segs=14)                          # bonnet flange
+    cyl(dk, 0.1, 0.2, (0, 0, 0.38), segs=12, r2=0.075)                  # bonnet
+    for sx in (-0.075, 0.075):
+        strut(st, (sx, 0, 0.47), (sx * 0.9, 0, 0.83), 0.035, 0.05)      # yoke
+    box(st, (0.24, 0.08, 0.06), (0, 0, 0.83))
+    if manual:
+        cyl(st, 0.018, 0.75, (0, 0, 0.86), segs=8)                      # rising stem, through the wheel
+        cyl(dk, 0.03, 0.05, (0, 0, 1.23), segs=8)
+    else:
+        rbox(dk, (0.34, 0.3, 0.3), (0, 0, 1.07), bevel=0.03)            # actuator gearcase
+        cyl(st, 0.11, 0.3, (0.3, 0, 1.03), axis="X", segs=14)           # motor
+        cyl(dk, 0.115, 0.03, (0.44, 0, 1.03), axis="X", segs=14)
+        rbox(dk, (0.16, 0.13, 0.14), (-0.05, 0, 1.29), bevel=0.015)     # terminal box and controls
+        cyl(k["M_GLASS"], 0.045, 0.01, (-0.05, -0.07, 1.29), axis="Y", segs=10)   # local display
+        line(dk, [(-0.13, 0, 1.29), (-0.25, 0, 1.29), (-0.25, 0, 0.3), (-0.25, 0.3, 0.0)], 0.018, segs=6)
     k.done()
     wheel = bmesh.new()
-    ring(wheel, 0.26, 0.025, (0, 0, 0), segs=20, rsegs=4)
-    for i in range(3):
-        box(wheel, (0.5, 0.02, 0.025), (0, 0, 0), Matrix.Rotation(i * PI / 3, 4, "Z"))
-    cyl(wheel, 0.05, 0.06, (0, 0, 0), segs=10)
+    handwheel(wheel, 0.26 if manual else 0.17, (0, 0, 0))
     site.mesh(f"{vid}_wheel", wheel, "M_STEEL", root, loc=(0, 0, 0.88))
     m = root.matrix_basis.copy()
     return root, {"north": m @ Vector((0, 0.27, 0)), "south": m @ Vector((0, -0.27, 0))}
 
 
 def build_pumpjack(site, wid, loc, rot_deg):
-    """Beam pumping unit. The horse head points to local -Y, over the wellhead."""
-    root = site.empty(wid, loc, math.radians(rot_deg), kind="well", size=2)
-    k = Kit(site, wid, root)
-    box(k["M_GRAVEL"], (5.0, 10.5, 0.12), (0, 0.2, 0.06))
-    box(k["M_CONCRETE"], (2.2, 7.6, 0.3), (0, 0.4, 0.15))
-    box(k["M_STEEL_DARK"], (1.1, 6.8, 0.22), (0, 0.5, 0.41))
-    for sx in (-0.6, 0.6):
-        tube(k["M_STEEL"], (sx, -0.7, 0.5), (sx * 0.15, 0, 3.9), 0.08, 8)
-    tube(k["M_STEEL"], (0, 1.3, 0.5), (0, 0.05, 3.9), 0.08, 8)
-    box(k["M_STEEL_DARK"], (0.5, 0.4, 0.25), (0, 0, 3.95))
-    box(k["M_STEEL_DARK"], (0.8, 0.8, 0.6), (0, 2.7, 0.82))
-    box(k["M_STEEL"], (0.9, 1.0, 0.9), (0, 2.7, 1.55))
-    box(k["M_STEEL_DARK"], (0.7, 0.9, 0.7), (0, 3.95, 0.87))
-    box(k["M_STEEL_DARK"], (0.12, 1.4, 0.8), (0.52, 3.35, 1.0))
-    cyl(k["M_STEEL_DARK"], 0.18, 1.0, (0, -3.45, 0.6), segs=12)
-    cyl(k["M_STEEL"], 0.26, 0.12, (0, -3.45, 0.75), segs=12)
-    cyl(k["M_STEEL_DARK"], 0.1, 0.25, (0, -3.45, 1.22), segs=10)
-    tube(k["M_PIPE"], (0, -3.45, 0.85), (0.6, -3.45, 0.85), 0.07, 8)
-    k.done()
-    beam = bmesh.new()
-    for z in (0.03, 0.47):
-        box(beam, (0.36, 6.4, 0.06), (0, 0.1, z))
-    box(beam, (0.06, 6.4, 0.38), (0, 0.1, 0.25))
-    box(beam, (0.5, 0.4, 0.3), (0, 3.05, -0.1))
-    # horse head: an arc centered on the pivot, so the cable stays vertical as the beam rocks
-    before = set(beam.verts)
-    arc_wall(beam, 3.47, 3.12, -0.21, 0.21, math.radians(-22), math.radians(12), 10)
-    turn_to_yz = Matrix(((0, 0, 1, 0), (-1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 0, 1)))
-    bmesh.ops.transform(beam, matrix=turn_to_yz, verts=[v for v in beam.verts if v not in before])
-    tube(beam, (0, -3.47, -1.3), (0, -3.47, -2.72), 0.03, 6)
-    box(beam, (0.5, 0.08, 0.06), (0, -3.47, -2.72))          # carrier bar on the polished rod
-    site.mesh(f"{wid}_beam", beam, "M_STEEL", root, loc=(0, 0, 4.1))
-    crank = bmesh.new()
-    for sx in (-0.62, 0.62):
-        box(crank, (0.12, 0.3, 1.1), (sx, 0, -0.45))
-        box(crank, (0.2, 0.8, 0.6), (sx * 1.05, 0, -0.85))
-    cyl(crank, 0.12, 1.4, (0, 0, 0), axis="X", segs=10)
-    site.mesh(f"{wid}_crank", crank, "M_STEEL_DARK", root, loc=(0, 2.7, 1.6))
-    return root, {"outlet": root.matrix_basis @ Vector((0.6, -3.45, 0.85))}
+    """Beam pumping unit. The horse head points to local -Y, over the wellhead. See well_parts.py."""
+    import well_parts
+    return well_parts.build(site, wid, loc, rot_deg)
 
 
 def build_swd(site, sid, loc, fx=1, rot_z=0.0):

@@ -41,10 +41,13 @@ def label(site, name, text, size, loc, rot, parent=None, mat="M_STEEL_DARK", sma
     cu.align_x, cu.align_y = "CENTER", "CENTER"
     cu.resolution_u = 3 if small else 6
     tmp = bpy.data.objects.new(f"{name}_tmp", cu)
-    site.col.objects.link(tmp)
-    bpy.context.view_layer.update()
-    me = bpy.data.meshes.new_from_object(tmp.evaluated_get(bpy.context.evaluated_depsgraph_get()))
+    # convert in a private scene: updating the field's own view layer costs more with every object
+    scratch = bpy.data.scenes.new("_LABELS")
+    scratch.collection.objects.link(tmp)
+    scratch.view_layers[0].update()
+    me = bpy.data.meshes.new_from_object(tmp.evaluated_get(scratch.view_layers[0].depsgraph))
     bpy.data.objects.remove(tmp, do_unlink=True)
+    bpy.data.scenes.remove(scratch)
     bpy.data.curves.remove(cu)
     me.name = name
     me.materials.clear()
@@ -87,23 +90,109 @@ def status_light(site, name, parent, loc, r=0.06):
     return site.mesh(name, bm, "M_LAMP", parent, loc=loc)
 
 
+STAIR = (15.0, 108.0)      # circumferential stair, foot to landing (tank-local degrees)
+WALK = 116.0               # roof walkway, from the landing to the center
+DECK_Z = H + 0.62          # walkway deck height
+
+
+def roof_z(r):
+    """Height of the cone roof at radius r, tank-local."""
+    return H + 0.08 + 0.47 * (1 - r / (R + 0.05))
+
+
+def _rail(bm, pts, h=1.0, mid=True, w=0.045):
+    """Handrail along a polyline of deck points: posts at each point, a top rail, a mid rail."""
+    up = Vector((0, 0, h))
+    for p in pts:
+        fp.strut(bm, p, p + up, w)
+    for p, q in zip(pts, pts[1:]):
+        fp.strut(bm, p + up, q + up, w)
+        if mid and fp.fine():
+            fp.strut(bm, p + up / 2, q + up / 2, w * 0.8)
+
+
+def _stair_and_walkway(k):
+    st, dk = k["M_STEEL"], k["M_STEEL_DARK"]
+    a0, a1 = STAIR
+    r0, r1 = R + 0.12, R + 0.92
+    zf = lambda a: 0.05 + (DECK_Z - 0.05) * (a - a0) / (a1 - a0)
+    turn = lambda a: Matrix.Rotation(math.radians(a), 4, "Z")
+    n = 18 if fp.fine() else 10
+    for i in range(n):                                               # treads
+        a = a0 + (a1 - a0) * (i + 0.5) / n
+        box(dk, (r1 - r0 - 0.06, 0.26, 0.035), polar((r0 + r1) / 2, a, zf(a)), turn(a))
+    marks = [a0 + (a1 - a0) * i / 6 for i in range(7)]
+    for r in (r0, r1):                                               # stringers
+        for p, q in zip(marks, marks[1:]):
+            fp.strut(st, polar(r, p, zf(p) - 0.08), polar(r, q, zf(q) - 0.08), 0.07)
+    for a in marks[1::2]:                                            # brackets back to the shell
+        fp.strut(st, polar(R + 0.02, a, zf(a) - 0.12), polar(r0, a, zf(a) - 0.12), 0.06)
+    _rail(st, [polar(r1, a, zf(a)) for a in marks[::2]] + [polar(r1, a1 + 12, DECK_Z)])
+    lm = a1 + 6                                                      # landing at the rim
+    box(dk, (r1 - r0 + 0.1, 0.95, 0.05), polar((r0 + r1) / 2, lm, DECK_Z - 0.025), turn(lm))
+    fp.strut(st, polar(r1, lm, DECK_Z - 0.05), polar(r1, lm, 0.1), 0.08)             # landing leg
+    # walkway from the landing across the roof to the center vent
+    rin, rout = 0.75, R + 0.12
+    box(dk, (rout - rin, 0.76, 0.045), polar((rin + rout) / 2, WALK, DECK_Z - 0.02), turn(WALK))
+    t = polar(1, WALK + 90)
+    for side in (-0.4, 0.4):
+        if fp.fine():
+            _rail(st, [polar(r, WALK, DECK_Z) + t * side for r in (rin, (rin + rout) / 2, rout - 0.3)])
+        for r in (1.3, 2.7):                                         # deck legs down to the roof
+            p = polar(r, WALK) + t * side * 0.8
+            fp.strut(st, (p.x, p.y, roof_z(r)), (p.x, p.y, DECK_Z - 0.04), 0.06)
+
+
+def _hatch(k, r, deg):
+    """Thief hatch: flanged neck, hinged lid, latch."""
+    p = polar(r, deg)
+    z = roof_z(r)
+    cyl(k["M_STEEL_DARK"], 0.21, 0.05, (p.x, p.y, z + 0.03), segs=12)
+    cyl(k["M_STEEL_DARK"], 0.15, 0.2, (p.x, p.y, z + 0.14), segs=12, caps=False)
+    cyl(k["M_STEEL"], 0.2, 0.05, (p.x, p.y, z + 0.265), segs=12)
+    box(k["M_STEEL_DARK"], (0.1, 0.08, 0.08), Vector((p.x, p.y, z + 0.25)) + polar(0.2, deg))
+    fp.strut(k["M_STEEL"], Vector((p.x, p.y, z + 0.3)) - polar(0.15, deg), Vector((p.x, p.y, z + 0.33)) - polar(0.3, deg),
+             0.03)
+
+
+def _pv_vent(k, r, deg):
+    """Pressure-vacuum vent on a flame arrestor, with its weather hood."""
+    p = polar(r, deg)
+    z = roof_z(r)
+    st, dk = k["M_STEEL"], k["M_STEEL_DARK"]
+    cyl(k["M_PIPE"], 0.08, 0.3, (p.x, p.y, z + 0.15), segs=10, caps=False)
+    for dz in (0.31, 0.57):
+        cyl(st, 0.17, 0.035, (p.x, p.y, z + dz), segs=12)                 # arrestor flanges
+    cyl(dk, 0.14, 0.24, (p.x, p.y, z + 0.44), segs=12, caps=False)        # arrestor element housing
+    fp.rbox(dk, (0.32, 0.26, 0.22), (p.x, p.y, z + 0.7), bevel=0.02)       # PV valve body
+    cyl(st, 0.22, 0.08, (p.x, p.y, z + 0.85), segs=12, r2=0.12)          # weather hood
+
+
 def tank_extras(site, tid, root, number, capacity=None, outlets=(fp.OUTLET[0],), xo_angles=(), level=0.55):
-    """Caged ladder, float gauge, level radar, high-level switch, vents, flanges, labels.
+    """Stair and roof walkway, thief hatches, PV vent on a flame arrestor, equalizer line,
+    float gauge, level radar, high-level switch, flanges, drain, labels.
 
     number is the painted tank number (from the ID), capacity the barrels on the shell.
     """
     k = Kit(site, f"{tid}_detail", root)
     steel, dark, pipe = k["M_STEEL"], k["M_STEEL_DARK"], k["M_PIPE"]
-    lad = fp.LADDER
-    base = polar(R + 0.22, lad)
-    turn = Matrix.Translation(base) @ Matrix.Rotation(math.radians(lad), 4, "Z")
-    z = 2.3
-    while z < H + 0.9:
-        placed(steel, turn, fp.arc_wall, 0.42, 0.39, z, z + 0.05, -PI / 2, PI / 2, 10)
-        z += 0.75
-    for deg in (-60, 0, 60):
-        p = base + polar(0.405, lad + deg)
-        tube(steel, (p.x, p.y, 2.3), (p.x, p.y, H + 0.95), 0.015, 5)
+    _stair_and_walkway(k)
+    _hatch(k, 1.75, WALK + 16)
+    if fp.fine():
+        _hatch(k, 2.7, WALK - 12)
+    _pv_vent(k, 1.55, WALK - 30)
+    # equalizer line: a top nozzle down the shell to a valved, blinded tie-in at grade
+    eq = 178.0
+    line(pipe, [polar(R - 0.05, eq, H - 0.45), polar(R + 0.35, eq, H - 0.45), polar(R + 0.35, eq, 0.55),
+                polar(R + 0.95, eq, 0.55)], 0.07, segs=8)
+    flange(steel, polar(R + 0.15, eq, H - 0.45), polar(1, eq), 0.14, segs=10)
+    box(dark, (0.2, 0.2, 0.22), polar(R + 0.7, eq, 0.55), Matrix.Rotation(math.radians(eq), 4, "Z"))
+    flange(dark, polar(R + 0.97, eq, 0.55), polar(1, eq), 0.13, thick=0.04, segs=10)   # blind
+    if fp.fine():
+        fp.strut(steel, polar(R + 0.7, eq, 0.66), polar(R + 0.7, eq, 0.9), 0.025)
+        fp.handwheel(steel, 0.12, polar(R + 0.7, eq, 0.9))
+        for z in (1.6, 3.2):
+            fp.strut(steel, polar(R + 0.02, eq, z), polar(R + 0.35, eq, z), 0.05)      # line clamps
     # float gauge board: the marker is a separate moving part, below
     rot = Matrix.Rotation(math.radians(GAUGE_ANGLE), 4, "Z")
     g = polar(R + 0.07, GAUGE_ANGLE)
@@ -114,44 +203,39 @@ def tank_extras(site, tid, root, number, capacity=None, outlets=(fp.OUTLET[0],),
     top = polar(R + 0.12, GAUGE_ANGLE, H + 0.12)
     ball(steel, 0.08, top)
     tube(steel, top, polar(R - 0.3, GAUGE_ANGLE, H + 0.2), 0.008, 4)
-    # pressure-vacuum vent with flame arrestor, and a gauge hatch
-    v = polar(1.6, 40)
-    cyl(pipe, 0.12, 0.4, (v.x, v.y, H + 0.5), segs=12)
-    box(dark, (0.32, 0.32, 0.26), (v.x, v.y, H + 0.8))
-    cyl(dark, 0.24, 0.06, (v.x, v.y, H + 0.97), segs=14)
-    gh = polar(2.4, 125)
-    cyl(dark, 0.16, 0.12, (gh.x, gh.y, H + 0.25), segs=12)
-    box(steel, (0.06, 0.2, 0.05), (gh.x + 0.17, gh.y, H + 0.33))
     # flanges on every nozzle, and a load-out nozzle with its valve
     nozzles = [(a, fp.OUTLET[1]) for a in outlets] + [fp.INLET, (LOADOUT_ANGLE, 0.85)]
     nozzles += [(a, 0.85) for a in xo_angles]
     for deg, zz in nozzles:
         d = polar(1, deg)
-        flange(steel, polar(R + 0.15, deg, zz), d, 0.19)
-        flange(steel, polar(fp.NOZZLE_R - 0.03, deg, zz), d, 0.19)
+        flange(steel, polar(R + 0.15, deg, zz), d, 0.19, segs=12 if fp.fine() else 8)
+        flange(steel, polar(fp.NOZZLE_R - 0.03, deg, zz), d, 0.19, segs=12 if fp.fine() else 8)
     tube(pipe, polar(R - 0.05, LOADOUT_ANGLE, 0.85), polar(fp.NOZZLE_R, LOADOUT_ANGLE, 0.85), 0.1, 12)
     vb = polar(R + 0.3, LOADOUT_ANGLE, 0.85)
     box(dark, (0.22, 0.22, 0.24), vb, Matrix.Rotation(math.radians(LOADOUT_ANGLE), 4, "Z"))
-    ring(steel, 0.11, 0.012, (vb.x, vb.y, 1.12), segs=12, rsegs=4)
-    tube(dark, (vb.x, vb.y, 0.97), (vb.x, vb.y, 1.12), 0.015, 4)
-    # drain valve, sensor conduit down the shell, junction box
+    fp.strut(dark, (vb.x, vb.y, 0.97), (vb.x, vb.y, 1.12), 0.025)
+    fp.handwheel(steel, 0.11, (vb.x, vb.y, 1.13))
+    # drain valve, sensor conduit down the shell, junction box, grounding strap
     dv = polar(R + 0.25, 30, 0.3)
     tube(pipe, polar(R - 0.05, 30, 0.3), dv, 0.06, 8)
     box(dark, (0.16, 0.16, 0.16), dv)
     line(dark, [polar(R + 0.12, 165, H - 0.75), polar(R + 0.12, 165, 0.6), polar(R + 0.55, 165, 0.6)], 0.02)
     box(dark, (0.3, 0.2, 0.3), polar(R + 0.7, 165, 0.6), Matrix.Rotation(math.radians(165), 4, "Z"))
-    tube(steel, polar(R + 0.02, 120, 0.2), polar(R + 0.3, 120, 0.05), 0.012, 4)   # grounding strap
+    tube(steel, polar(R + 0.02, 120, 0.2), polar(R + 0.3, 120, 0.05), 0.012, 4)
     k.done()
     marker = bmesh.new()
     box(marker, (0.06, 0.24, 0.12), (0, 0, 0), rot)
     m = polar(R + 0.14, GAUGE_ANGLE)
     site.mesh(f"{tid}_gauge", marker, "M_LAMP", root, loc=(m.x, m.y, GAUGE_Z0 + GAUGE_SPAN * level))
+    # guided-wave radar level transmitter on a roof nozzle: flange, neck, housing, cable gland
     lt = bmesh.new()
     p = polar(2.2, 150)
-    zr = H + 0.08 + 0.47 * (1 - 2.2 / (R + 0.05))
-    cyl(lt, 0.13, 0.05, (p.x, p.y, zr + 0.02), segs=14)
-    cyl(lt, 0.06, 0.3, (p.x, p.y, zr + 0.2), segs=10)
-    box(lt, (0.2, 0.16, 0.16), (p.x, p.y, zr + 0.42))
+    zr = roof_z(2.2)
+    cyl(lt, 0.14, 0.05, (p.x, p.y, zr + 0.03), segs=12)
+    cyl(lt, 0.055, 0.22, (p.x, p.y, zr + 0.16), segs=10, caps=False)
+    cyl(lt, 0.12, 0.2, (p.x, p.y, zr + 0.37), segs=12)
+    cyl(lt, 0.1, 0.06, (p.x, p.y, zr + 0.5), segs=12, r2=0.07)
+    fp.strut(lt, (p.x, p.y, zr + 0.37), polar(2.4, 150, zr + 0.37), 0.04)                # cable gland
     site.mesh(f"{tid}_lt", lt, "M_STEEL_DARK", root)
     sw = bmesh.new()
     tube(sw, polar(R, 160, H - 0.6), polar(R + 0.25, 160, H - 0.6), 0.05, 8)
@@ -168,85 +252,135 @@ def tank_extras(site, tid, root, number, capacity=None, outlets=(fp.OUTLET[0],),
 
 
 def pump_extras(site, pid, root):
-    """Anchor bolts, flanges, check valve, motor fins, gauges, bollards, control panel and light."""
+    """Suction strainer, discharge check valve, gauges, coupling guard, motor fins, anchor bolts,
+    bollards, and the control panel with its status light."""
     k = Kit(site, f"{pid}_detail", root)
     steel, dark = k["M_STEEL"], k["M_STEEL_DARK"]
-    for x in (-1.55, -0.5, 0.6, 1.6):
-        for y in (-0.5, 0.5):
-            cyl(dark, 0.025, 0.08, (x, y, 0.42), segs=6)
+    if fp.fine():
+        for x in (-1.55, -0.5, 0.6, 1.6):
+            for y in (-0.5, 0.5):
+                cyl(dark, 0.025, 0.08, (x, y, 0.42), segs=6)
+    # basket strainer on the suction, with its cover, drain and a compound gauge
     flange(steel, (-1.72, 0, 0.85), (1, 0, 0), 0.21)
     bolts(steel, (-1.72, 0, 0.85), "X", 0.17)
+    cyl(dark, 0.18, 0.58, (-1.36, 0, 0.8), segs=14)
+    cyl(steel, 0.21, 0.05, (-1.36, 0, 1.11), segs=14)
+    cyl(dark, 0.06, 0.08, (-1.36, 0, 1.17), segs=6)
+    for x in (-1.6, -1.12):
+        flange(steel, (x, 0, 0.85), (1, 0, 0), 0.19, thick=0.04)
+    fp.strut(steel, (-1.36, 0, 0.51), (-1.36, -0.22, 0.48), 0.03)
+    fp.strut(steel, (-1.15, -0.1, 0.85), (-1.15, -0.1, 1.05), 0.03)
+    gauge(k, (-1.15, -0.1, 1.14), r=0.055)
+    # swing check valve on the discharge riser, then the discharge flange and its gauge
+    fp.rbox(dark, (0.26, 0.24, 0.26), (-0.8, 0, 1.52), bevel=0.03)
+    fp.rbox(steel, (0.18, 0.06, 0.18), (-0.8, -0.14, 1.52), bevel=0.015)       # bonnet cover
+    for z in (1.37, 1.67):
+        flange(steel, (-0.8, 0, z), (0, 0, 1), 0.17, thick=0.04)
     flange(steel, (-0.8, 0, 1.88), (0, 0, 1), 0.18)
     bolts(steel, (-0.8, 0, 1.88), "Z", 0.15)
-    cyl(dark, 0.16, 0.12, (-0.8, 0, 1.45), segs=14)
-    for i in range(14):
-        a = 2 * PI * i / 14
-        box(steel, (0.85, 0.06, 0.025), (1.1, 0.37 * math.cos(a), 0.82 + 0.37 * math.sin(a)),
-            Matrix.Rotation(a, 4, "X"))
-    ring(steel, 0.06, 0.012, (1.1, 0, 1.22), axis="Y", segs=10, rsegs=4)
-    tube(dark, (-1.3, 0, 0.97), (-1.3, 0, 1.12), 0.015, 6)
-    cyl(steel, 0.08, 0.04, (-1.3, 0.02, 1.16), axis="Y", segs=12)
+    fp.strut(steel, (-0.8, -0.1, 1.76), (-0.8, -0.26, 1.76), 0.03)
+    gauge(k, (-0.8, -0.27, 1.84))
+    # coupling guard: a rounded shroud over the shaft between bearing frame and motor
+    shroud = fp.hull(fp.circle_pts((0, 0.85), 0.21, 10, 0, PI) + [(-0.24, 0.42), (0.24, 0.42)])
+    fp.prism(steel, shroud, 0.04, 0.6, "YZ")
+    if fp.fine():
+        for x in (0.1, 0.32, 0.54):
+            box(dark, (0.02, 0.5, 0.02), (x, 0, 1.07))
+    # motor: cooling fins, lifting eye
+    for i in range(10 if fp.fine() else 6):
+        a = 2 * PI * (i + 0.5) / (10 if fp.fine() else 6)
+        if math.sin(a) < 0.9:
+            box(steel, (0.85, 0.06, 0.025), (1.1, 0.37 * math.cos(a), 0.82 + 0.37 * math.sin(a)),
+                Matrix.Rotation(a, 4, "X"))
+    ring(steel, 0.06, 0.012, (1.1, 0, 1.22), axis="Y", segs=8, rsegs=3)
     for x, y in ((-2.0, -1.05), (2.0, -1.05), (-2.0, 1.05), (2.0, 1.05)):
         cyl(steel, 0.1, 1.0, (x, y, 0.5), segs=10)
         ball(steel, 0.1, (x, y, 1.0), segs=8)
     for x in (0.0, 0.8):
-        tube(steel, (x, 1.6, 0.0), (x, 1.6, 1.9), 0.04, 6)
-    box(steel, (1.0, 0.3, 0.9), (0.4, 1.6, 1.35))
+        fp.strut(steel, (x, 1.6, 0.0), (x, 1.6, 1.9), 0.07)
+    fp.rbox(steel, (1.0, 0.3, 0.9), (0.4, 1.6, 1.35), bevel=0.02)
     box(dark, (1.1, 0.4, 0.06), (0.4, 1.6, 1.83))
     box(dark, (0.08, 0.05, 0.08), (0.75, 1.43, 1.35))
     box(dark, (0.12, 0.04, 0.12), (0.2, 1.44, 1.5))
-    line(dark, [(1.1, 0.5, 0.95), (1.1, 1.2, 0.95), (0.4, 1.2, 0.95), (0.4, 1.45, 0.95)], 0.025)
+    line(dark, [(1.1, 0.5, 0.95), (1.1, 1.2, 0.95), (0.4, 1.2, 0.95), (0.4, 1.45, 0.95)], 0.025, segs=6)
     k.done()
     status_light(site, f"{pid}_light", root, (0.1, 1.6, 1.95))
     label(site, f"{pid}_tag", id_text(pid), 0.11, (0.42, 1.44, 1.62), (PI / 2, 0, 0), root, "M_STEEL_DARK")
 
 
 def valve_extras(site, vid, root, tag):
+    """Flange bolts, a stem guard on manual valves, and the tag plate on the yoke."""
     k = Kit(site, f"{vid}_detail", root)
-    for y in (-0.24, 0.24):
-        bolts(k["M_STEEL"], (0, y, 0), "Y", 0.23)
-    box(k["M_STEEL_DARK"], (0.24, 0.24, 0.04), (0, 0, 0.53))
-    tube(k["M_STEEL"], (0.1, 0, 0.72), (0.18, 0, 0.62), 0.006, 4)
+    for y in (-0.235, 0.235):
+        bolts(k["M_STEEL"], (0, y, 0), "Y", 0.17)
+    bolts(k["M_STEEL"], (0, 0, 0.26), "Z", 0.135, n=6)
+    fp.strut(k["M_STEEL"], (0.075, 0, 0.66), (0.17, 0, 0.6), 0.008)
     box(k["M_STEEL"], (0.2, 0.01, 0.09), (0.2, 0, 0.56))
     k.done()
     label(site, f"{vid}_tag", tag, 0.05, (0.2, -0.008, 0.56), (PI / 2, 0, 0), root)
 
 
+def gauge(k, at, facing="-Y", r=0.065):
+    """A dial pressure gauge on a short stub: case and glass. facing is -Y or -X."""
+    at = Vector(at)
+    axis, d = ("Y", Vector((0, -1, 0))) if facing == "-Y" else ("X", Vector((-1, 0, 0)))
+    cyl(k["M_STEEL_DARK"], r, 0.045, at, axis=axis, segs=10)
+    cyl(k["M_GLASS"], r * 0.85, 0.01, at + d * 0.024, axis=axis, segs=10, caps=False)
+    fp.strut(k["M_STEEL"], at - Vector((0, 0, r)), at - Vector((0, 0, r + 0.08)), 0.022)
+
+
 def well_extras(site, wid, root):
-    """Wellhead tree, wing valve and gauge, crank guard, brake, controller with light, sign."""
+    """Wellhead trim (master, wing and casing valves, check valve, gauge), crank guard,
+    pump-off controller with its status light, and the well sign."""
+    import well_parts as wp
     k = Kit(site, f"{wid}_detail", root)
     st, dk = k["M_STEEL"], k["M_STEEL_DARK"]
+    fp.strut(st, (1.8, 3.0, 0.12), (1.8, 3.0, 1.9), 0.08)
+    fp.rbox(st, (0.5, 0.25, 0.6), (1.8, 2.82, 1.45), bevel=0.02)
     if not fp.LOD["trim"]:   # keep only the controller that carries the status light
-        tube(st, (1.8, 3.0, 0.12), (1.8, 3.0, 1.9), 0.05, 6)
-        box(st, (0.5, 0.25, 0.6), (1.8, 2.82, 1.45))
         k.done()
         status_light(site, f"{wid}_light", root, (1.95, 2.82, 1.88), r=0.045)
         return
-    y = -3.45
-    cyl(dk, 0.32, 0.3, (0, y, 0.3), segs=14)
-    cyl(dk, 0.26, 0.15, (0, y, 0.52), segs=14)
-    box(dk, (0.3, 0.3, 0.22), (0, y, 0.7))
-    ring(st, 0.12, 0.015, (0.24, y, 0.7), axis="X", segs=14, rsegs=4)
-    box(dk, (0.18, 0.2, 0.2), (0.38, y, 0.85))
-    tube(dk, (0.38, y, 0.95), (0.38, y, 1.01), 0.012, 4)
-    ring(st, 0.09, 0.012, (0.38, y, 1.02), segs=12, rsegs=4)
-    tube(dk, (0.15, y, 0.92), (0.15, y, 1.05), 0.012, 4)
-    cyl(st, 0.06, 0.03, (0.15, y, 1.08), axis="Y", segs=10)
-    for gx in (-1.3, 1.3):
-        for gy in (1.8, 3.2, 4.6):
-            tube(st, (gx, gy, 0.12), (gx, gy, 1.4), 0.03, 4)
-        for gz in (0.8, 1.35):
-            tube(st, (gx, 1.8, gz), (gx, 4.6, gz), 0.022, 4)
-    for gz in (0.8, 1.35):
-        tube(st, (-1.3, 4.6, gz), (1.3, 4.6, gz), 0.022, 4)
-    tube(st, (0.55, 2.0, 0.5), (0.7, 1.7, 1.6), 0.03, 6)
-    ball(dk, 0.05, (0.7, 1.7, 1.62), segs=8)
-    tube(st, (1.8, 3.0, 0.12), (1.8, 3.0, 1.9), 0.05, 6)
-    box(st, (0.5, 0.25, 0.6), (1.8, 2.82, 1.45))
-    box(dk, (0.6, 0.35, 0.05), (1.8, 2.82, 1.78))
-    line(dk, [(1.8, 2.95, 1.2), (1.8, 3.9, 1.2), (0.36, 3.9, 1.0)], 0.02)
-    tube(st, (-2.0, -5.0, 0.12), (-2.0, -5.0, 1.62), 0.04, 6)
+    y, tz = wp.WELL_Y, wp.TEE_Z
+    box(dk, (0.17, 0.2, 0.2), (0.3, y, tz))                                  # wing valve on the tie-in
+    fp.strut(st, (-2.0, -5.0, 0.12), (-2.0, -5.0, 1.62), 0.07)               # well sign
     box(st, (0.8, 0.04, 0.36), (-2.0, -5.0, 1.45))
+    if not fp.fine():
+        k.done()
+        status_light(site, f"{wid}_light", root, (1.95, 2.82, 1.88), r=0.045)
+        return
+    fp.strut(st, (-0.22, y, tz), (-0.22, y, tz + 0.2), 0.035)                # tubing pressure gauge
+    gauge(k, (-0.22, y, tz + 0.29))
+    gx, ys = 1.45, (1.75, 3.4, 5.05)                                         # crank guard
+    for sx in (-gx, gx):
+        for gy in ys:
+            fp.strut(st, (sx, gy, 0.12), (sx, gy, 1.45), 0.05)
+        fp.strut(st, (sx, ys[0], 1.4), (sx, ys[-1], 1.4), 0.04)
+    fp.strut(st, (-gx, ys[-1], 1.4), (gx, ys[-1], 1.4), 0.04)
+    fp.strut(st, (0, y - 0.1, 0.51), (0, y - 0.3, 0.51), 0.035)              # master valve stem and wheel
+    placed(st, Matrix.Translation((0, y - 0.3, 0.51)) @ Matrix.Rotation(PI / 2, 4, "X"), fp.handwheel, 0.13)
+    fp.strut(st, (0.3, y, tz + 0.1), (0.3, y, tz + 0.34), 0.025)
+    fp.handwheel(st, 0.1, (0.3, y, tz + 0.34))
+    cyl(dk, 0.085, 0.13, (0.47, y, tz), axis="X", segs=10)                  # check valve
+    box(dk, (0.1, 0.12, 0.07), (0.47, y, tz + 0.1))
+    flange(st, (0.54, y, tz), (1, 0, 0), 0.1, thick=0.035, segs=8)
+    cyl(st, 0.04, 0.45, (-0.225, y, 0.18), axis="X", segs=8)                 # casing valve
+    box(dk, (0.14, 0.16, 0.16), (-0.32, y, 0.18))
+    fp.strut(st, (-0.32, y, 0.26), (-0.32, y, 0.38), 0.02)
+    # crank guard: posts and rails around the counterweights' sweep and the belt drive
+    for sx in (-gx, gx):
+        fp.strut(st, (sx, ys[0], 0.8), (sx, ys[-1], 0.8), 0.04)
+    fp.strut(st, (-gx, ys[-1], 0.8), (gx, ys[-1], 0.8), 0.04)
+    for gz in (0.8, 1.4):
+        fp.strut(st, (-gx, ys[0], gz), (-0.95, ys[0], gz), 0.04)
+        fp.strut(st, (0.95, ys[0], gz), (gx, ys[0], gz), 0.04)
+    # pump-off controller: rain hood, door seam, disconnect, conduit underground to the motor
+    box(dk, (0.6, 0.35, 0.05), (1.8, 2.82, 1.78))
+    box(dk, (0.01, 0.01, 0.5), (1.8, 2.69, 1.45))
+    box(dk, (0.3, 0.2, 0.25), (1.8, 2.86, 0.95))
+    for a, b in (((1.8, 2.95, 0.85), (1.8, 2.95, 0.12)), ((1.8, 2.95, 0.14), (1.8, 4.97, 0.14)),
+                 ((1.8, 4.95, 0.14), (0.05, 4.95, 0.14))):
+        fp.strut(dk, a, b, 0.045)
     k.done()
     status_light(site, f"{wid}_light", root, (1.95, 2.82, 1.88), r=0.045)
     label(site, f"{wid}_sign", id_text(wid), 0.12, (-2.0, -5.025, 1.45), (PI / 2, 0, 0), root)

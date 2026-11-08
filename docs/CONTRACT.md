@@ -136,9 +136,11 @@ Positions are plan meters. The lease road runs along x on y = 0, and y points no
 |---|---|---|
 | `<tank>_LEVEL` | Brine level inside the cutaway tank | `scale.y` from 0 (empty) to 1 (full). The file ships at 0.55 for preview. |
 | `<pump>_rotor` | Motor fan, so you can see the pump running | Spin `rotation.x` while running, stop when failed |
-| `<valve>_wheel` | Handwheel on every valve | Turn `rotation.y` while the valve opens or closes |
+| `<valve>_wheel` | Handwheel on every valve: the big wheel of a manual gate valve, or the override wheel under a remote valve's actuator. Its pivot is the same either way. Each valve's `userData.actuation` is `manual` or `remote`, from the blueprint's `manual` / `remote` | Turn `rotation.y` while the valve opens or closes |
 | `<well>_beam` | Pumpjack walking beam | Rock `rotation.x` by about ±0.25 rad while the well produces |
 | `<well>_crank` | Pumpjack crank and counterweights | Spin `rotation.x` while the well produces, stop when shut in |
+| `<well>_pitman` | Both pitman arms, a child of `<well>_beam` with its pivot on the equalizer | Optional. As shipped it rocks with the beam. To keep its foot on the wrist pins, each frame set `rotation.x = atan2(dy, -dz) - beam.rotation.x`, where `(dy, dz)` runs from the equalizer to the wrist pin in the well's frame, in Blender axes (y along the beam toward the motor, z up; three.js local `-z` and `y`). The equalizer is the point `(y 3.55, z -0.24)` in the beam's frame, so in the well's frame it is that point turned by the beam's angle plus `(y 0, z 4.1)`; the pin is `(y 2.7 + 0.85 cos c, z 1.6 + 0.85 sin c)`, with `c` the crank's `rotation.x` |
+| `<well>_bridle` | Wireline bridle, carrier bar and polished rod, a child of `<well>_beam` with its pivot where the line leaves the horse head | Optional. As shipped it rocks with the beam. Set `rotation.x = -beam.rotation.x` each frame to keep it plumb over the wellhead, as a real bridle hangs |
 | `<tank>_gauge` | Float marker on the outside level board | `position.y = 0.3 + 4.3 × level` (0 to 1), in the tank's local space |
 | `<truck>_axle_1` to `_3` | Wheel pairs | Spin `rotation.z` while the truck drives |
 | `<swd>_gate` | Swinging gate in the fence | `rotation.y` 0 is closed, 1.31 rad is open. It ships open. |
