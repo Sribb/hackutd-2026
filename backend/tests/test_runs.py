@@ -563,6 +563,47 @@ def test_truck_step_confirmed_before_a_reload_is_not_flipped_to_mismatch():
     assert "en route for Tank 3" in s["verify"]
 
 
+@needs_field
+def test_reload_that_closes_a_pending_step_pauses_the_run_within_one_tick():
+    """A reload closes a released step's PENDING proposal (its truck is gone from the new
+    blueprint) without a decision event. The next tick still takes the step out of
+    PENDING and the run out of RUNNING, and nothing is sent."""
+    from backend.app.scenario import prepare
+
+    live, runs, _ = field()
+    plan = cheapest(runs)
+    assert any(a["type"] == "SEND_TRUCK" and a["asset_id"] == "TRUCK_2" for a in plan["actions"])
+
+    async def go():
+        run = await runs.execute(plan)
+        await advance(live, 30, confirm=False, until=lambda: any(
+            s["action"].get("asset_id") == "TRUCK_2" and s["status"] == "PENDING" for s in run["steps"]))
+        s = next(s for s in run["steps"] if s["action"].get("asset_id") == "TRUCK_2")
+        assert s["status"] == "PENDING" and run["status"] == "RUNNING"
+        raw = json.loads(TEAM_SCENARIO.read_text())
+        raw["trucks"] = [t for t in raw["trucks"] if t["id"] != "TRUCK_2"]
+        changes = live.reload(prepare(json.loads(json.dumps(raw)), "test"), raw)
+        p = live.proposals[s["proposal_id"]]
+        assert p in changes["closed_proposals"]
+        assert p["status"] == "REJECTED" and p["decided_by"] == "blueprint"
+        assert s["status"] == "PENDING"            # no decision event: the run hasn't seen it yet
+        await live.tick(0.5)                        # one tick, no confirms
+        return run, s, p
+
+    run, s, p = asyncio.run(go())
+    assert s["status"] == "REJECTED" and "Truck 2" in s["result"]
+    assert run["status"] == "PAUSED", run["reason"]
+    assert run["reason"].startswith("Plan paused: the field changed (")
+    assert "Re-plan from the current state." in run["reason"]
+    (paused,) = alerts_of(live, "RUN_PAUSED")
+    assert paused["active"] and paused["message"].startswith("Plan paused: the field changed (")
+    assert run["replan_source"] is not None         # the re-plan path ran
+    # Nothing was sent: no proposal went out, and no truck was dispatched on either simulator.
+    assert not [x for x in live.proposals.values() if x["status"] in ("SENDING", "CONFIRMED", "FAILED")]
+    assert live.registry.sim.truck_jobs == []
+    assert [m["run"]["status"] for t, m in live.hub.sent if t == "run"][-1] == "PAUSED"
+
+
 # ---------- stale plans ----------
 
 @needs_field

@@ -19,6 +19,13 @@ within VERIFY_MIN live minutes. It also replays what was actually confirmed, at 
 times it was confirmed, and watches every tank: one that runs TANK_TOL_PCT points
 above that replay for TANK_SUSTAIN_MIN is "rising faster than forecast".
 
+A live reload (a newly activated blueprint) closes a step's PENDING proposal as REJECTED
+by "blueprint" when its asset is gone, it is no longer valid, or it would now go to
+another connector. live.py sends no decision for that, so every tick re-reads each
+PENDING step's proposal: a closed step becomes REJECTED with live.py's reason, and the
+run pauses (nothing was sent) with "Plan paused: the field changed (...). Re-plan from
+the current state." and a re-plan offered as below.
+
 Any of those, or a step that is rejected or fails at its connector, pauses the run,
 raises a RUN_PAUSED alert, and asks Jarvis for a re-plan from the current state (the
 rules pick with no API key; Claude may pick among the planner's plans with one). The
@@ -537,6 +544,7 @@ class RunManager:
             return  # an offered re-plan: nothing happens until a person starts it
         before = self._sig(run)
         live = self.live
+        await self._resync(run)
         await self._settle_end(run, broadcast=False)
         for s in run["steps"]:
             if s["status"] != "VERIFYING":
@@ -580,8 +588,44 @@ class RunManager:
                 continue
             await self._sync(run, s, p)
 
-    async def _sync(self, run: dict, s: dict, p: dict) -> None:
-        """Bring a step up to date with its proposal. Safe to call twice."""
+    async def _resync(self, run: dict) -> None:
+        """Catch up every PENDING step whose proposal was decided without a decision event:
+        a live reload closes it as REJECTED by "blueprint" and tells no listener. Steps
+        closed by the same reload pause the run once, with one re-plan."""
+        closed = []
+        for s in run["steps"]:
+            if s["status"] != "PENDING":
+                continue
+            p = self._proposal(run, s)
+            if p is None or p["status"] in ("PENDING", "SENDING"):
+                continue
+            await self._sync(run, s, p, closed=closed)
+        await self._field_changed(run, closed)
+
+    @staticmethod
+    def _closed_why(p: dict) -> str:
+        why = str(p.get("result") or "the step is no longer valid").strip()
+        why = why[len("Closed:"):].strip() if why.startswith("Closed:") else why
+        return why.split(" Propose it again")[0].rstrip(". ")
+
+    async def _field_changed(self, run: dict, closed: list[dict]) -> None:
+        """Steps closed by a live reload: the run pauses (nothing was sent) and re-plans."""
+        if not closed or run["status"] not in ACTIVE:
+            return
+        whys = list(dict.fromkeys(s["result"] for s in closed))
+        steps = ", ".join(str(s["n"]) for s in closed)
+        why = (f"Plan paused: the field changed ({'; '.join(whys)}). Re-plan from the current state. "
+               f"{'Steps' if len(closed) > 1 else 'Step'} {steps} {'were' if len(closed) > 1 else 'was'} "
+               f"closed and nothing was sent.")
+        present = set(self.live.fmap.all_ids())
+        ids = [x for s in closed for x in (s["action"].get("asset_id"), s["action"].get("target_id")) if x]
+        asset = next((x for x in ids if x in present), ids[0])   # focus on something still in the field
+        await self._problem(run, asset, why, exclude=set())
+
+    async def _sync(self, run: dict, s: dict, p: dict, closed: Optional[list] = None) -> None:
+        """Bring a step up to date with its proposal. Safe to call twice. A step closed by
+        a live reload goes into `closed` when given (the caller pauses the run once for
+        all of them), else pauses the run here."""
         s["proposal_id"] = p["id"]
         if s["status"] not in ("WAITING", "PENDING"):
             return
@@ -592,6 +636,15 @@ class RunManager:
             s.update(status="VERIFYING", confirmed_t=self.live.t, result=p.get("result"))
             if s["action"]["type"] == "SEND_TRUCK":
                 self._claim_job(run, s)  # the step's job was added before this
+        elif st == "REJECTED" and p.get("decided_by") == "blueprint":
+            if run["status"] not in ACTIVE:
+                s["status"] = "CANCELLED"
+                return
+            s.update(status="REJECTED", result=self._closed_why(p))
+            if closed is not None:
+                closed.append(s)
+            else:
+                await self._field_changed(run, [s])
         elif st == "REJECTED":
             if run["status"] not in ACTIVE:
                 s["status"] = "CANCELLED"
