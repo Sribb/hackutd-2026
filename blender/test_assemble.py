@@ -18,7 +18,7 @@ The assembler runs with python3 -S, so it can only use the standard library. For
    own clock and the process's CPU time, so a busy machine does not fail the test;
 6. against build_field.py on the same blueprint: asset and moving-part positions within
    0.5 m, every pipe's bounding box within 5 cm, the same asset, moving-part, light, and
-   sensor names, and the same report keys.
+   sensor names, the same extras on every node both builds have, and the same report keys.
 
 Then a broken blueprint must exit 1 with no glb, and the kit must stay under 15 MB.
 """
@@ -273,8 +273,10 @@ def compare(label, bp, kit, kit_rep, ref, ref_rep):
     for what, (a, b) in sets.items():
         ok(a == b, f"{label}: the same {len(b)} {what} names as the Blender build "
            f"(kit only {sorted(a - b)[:3]}, Blender only {sorted(b - a)[:3]})")
-    extras = [n for n in iot[1] & iot[0] if kit.nodes[kit.idx(n)].get("extras") != ref.nodes[ref.idx(n)].get("extras")]
-    ok(not extras, f"{label}: sensor and RTU extras match the Blender build {extras[:3]}")
+    both = set(kit.by_name) & set(ref.by_name)
+    extras = sorted(n for n in both if kit.nodes[kit.idx(n)].get("extras") != ref.nodes[ref.idx(n)].get("extras"))
+    ok(not extras, f"{label}: all {len(both)} nodes in both builds carry the Blender build's extras, sensors, "
+       f"RTUs and valve actuation too {extras[:3]}")
     dev = []
     for n in sorted(sets["asset"][1] | sets["moving-part"][1]):
         if n in kit.by_name:
