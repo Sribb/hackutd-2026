@@ -101,3 +101,16 @@ With a backend, `src/live.js` reads `GET /api/live/state` and keeps one `/ws` so
 - The connector badge under the clock lists each connector (sim, mqtt, modbus, opcua, webhook) and marks any that are unavailable. It reads `connectors` from `/api/live/state`, then from `/api/health`. If neither has it, it shows `sim`.
 - If the socket is down for 4 s, the badge turns into **Live feed lost, m:ss ago**, and every OK value becomes UNKNOWN until the feed is back. REST polling runs every 3 s while the socket is down, and the socket reconnects with backoff.
 - A backend without `/api/live/state` (404) leaves the console as it was.
+
+## Phone view (#55)
+
+`/phone` is the page a night operator keeps in their pocket. It shows live alerts, newest first, in big type, and the screen flashes and buzzes on a new one. Below them are the pending fixes from `/api/actions`, with **hold to confirm** or reject. It follows the same rule as the console: nothing moves without a person confirming. A decision on the phone shows up in the console's Jarvis panel over `/ws`.
+
+On a phone on the same Wi-Fi:
+
+    VITE_API=http://<laptop-ip>:8000 npm run phone     # Vite listens on the LAN
+    # open http://<laptop-ip>:5173/phone on the phone
+
+The page picks its backend in this order: `?api=http://<laptop-ip>:8000` (remembered on that phone), then `VITE_API` with any `127.0.0.1` swapped for the host the page came from, then the page's own host on port 8000. The backend has to allow that origin (CORS / `PUBLIC_URL`).
+
+**No login.** Anyone on the same network who opens the page can confirm a fix. That's fine for the demo, not for a real field.

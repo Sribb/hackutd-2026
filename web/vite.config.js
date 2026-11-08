@@ -50,8 +50,24 @@ function mediapipeWasm() {
   };
 }
 
+// The phone view (#55) lives at /phone.
+function phoneRoute() {
+  return {
+    name: "phone-route",
+    configureServer(server) {
+      server.middlewares.use((req, res, next) => {
+        if (/^\/phone\/?(\?|$)/.test(req.url)) req.url = req.url.replace(/^\/phone\/?/, "/phone.html");
+        next();
+      });
+    },
+  };
+}
+
 export default defineConfig({
-  plugins: [fieldGlb(), mediapipeWasm()],
+  plugins: [fieldGlb(), mediapipeWasm(), phoneRoute()],
   server: { host: "127.0.0.1", port: 5173 },
-  build: { chunkSizeWarningLimit: 1200 },
+  build: {
+    chunkSizeWarningLimit: 1200,
+    rollupOptions: { input: { main: path.resolve(__dirname, "index.html"), phone: path.resolve(__dirname, "phone.html") } },
+  },
 });

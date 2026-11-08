@@ -1,0 +1,41 @@
+:root {
+  --bg: #050505; --ink: #e8e2d6; --ink-2: #a39d91; --muted: #5e5a53; --line: rgba(232,226,214,.12);
+  --warning: #c9a14a; --alarm: #ff4b1f; --good: #8fa36b;
+  --mono: "Azeret Mono", ui-monospace, Menlo, monospace; --display: "Gloock", "Times New Roman", serif;
+}
+* { box-sizing: border-box; border-radius: 0; }
+html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--ink); font: 15px/1.45 var(--mono); -webkit-text-size-adjust: 100%; }
+body.flash { animation: flash .9s ease-out; }
+@keyframes flash { 0% { box-shadow: inset 0 0 0 100vmax rgba(255,75,31,.35); } 100% { box-shadow: inset 0 0 0 100vmax rgba(255,75,31,0); } }
+main { max-width: 560px; margin: 0 auto; padding: max(16px, env(safe-area-inset-top)) 16px max(24px, env(safe-area-inset-bottom)); }
+.ph-head { display: flex; justify-content: space-between; align-items: baseline; padding-bottom: 14px; border-bottom: 1px solid var(--line); }
+.ph-head b { font: 400 22px var(--display); letter-spacing: .26em; }
+.ph-feed { font-size: 12px; letter-spacing: .14em; text-transform: uppercase; color: var(--muted); }
+.ph-feed.ok { color: var(--good); }
+.ph-feed.lost { color: var(--alarm); }
+.ph-alerts { display: grid; gap: 12px; padding: 16px 0; }
+.ph-alert { border-left: 3px solid var(--warning); padding: 4px 0 4px 12px; }
+.ph-alert.ALARM { border-left-color: var(--alarm); }
+.ph-alert.new { animation: in .5s ease-out; }
+@keyframes in { from { transform: translateX(-8px); opacity: 0; } }
+.ph-meta { display: flex; gap: 10px; font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: var(--muted); }
+.ph-meta .sev { color: var(--warning); font-weight: 600; } .ALARM .ph-meta .sev { color: var(--alarm); }
+.ph-meta time { margin-left: auto; }
+.ph-alert h2 { font: 400 26px/1.15 var(--display); margin: 6px 0 2px; }
+.ph-asset { font-size: 12px; color: var(--ink-2); }
+.ph-empty { color: var(--muted); padding: 24px 0; }
+.ph-props h3 { font: 400 11px var(--mono); letter-spacing: .18em; text-transform: uppercase; color: var(--muted); margin: 8px 0; }
+.ph-prop { border: 1px solid var(--warning); padding: 14px; margin-bottom: 12px; }
+.ph-prop h2 { font: 400 28px/1.1 var(--display); margin: 0 0 6px; }
+.ph-prop p { margin: 0 0 12px; color: var(--ink-2); font-size: 13px; }
+.ph-btns { display: grid; grid-template-columns: 1fr 2fr; gap: 10px; }
+.ph-btns button { font: 600 13px var(--mono); letter-spacing: .14em; text-transform: uppercase; padding: 18px 8px; background: transparent; color: var(--ink);
+  border: 1px solid var(--ink-2); touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+.ph-confirm { position: relative; overflow: hidden; border-color: var(--ink) !important; }
+.ph-confirm > i { position: absolute; inset: 0; transform-origin: left; transform: scaleX(var(--p, 0)); background: rgba(143,163,107,.45); }
+.ph-confirm > span { position: relative; }
+.ph-confirm.committed { color: var(--good); border-color: var(--good) !important; }
+.ph-done { font-size: 13px; color: var(--ink-2); padding: 4px 0; }
+.ph-done b { font-size: 11px; letter-spacing: .12em; margin-right: 6px; color: var(--good); }
+.ph-done.REJECTED b, .ph-done.FAILED b { color: var(--muted); }
+.ph-foot { margin-top: 24px; font-size: 11px; color: var(--muted); word-break: break-all; }
