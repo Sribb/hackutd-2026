@@ -65,14 +65,23 @@ async function pickSource() {
   return { source: files, info };
 }
 
+// The folder to open: the one in the URL; else a folder added since the last visit (the
+// sponsor adds test/ right before judging, and it should open first); else the last one
+// used; else test/ if there is one; else the first.
 function folderFromUrl(folders) {
   const want = params.get("folder");
   if (want && folders.includes(want)) return want;
+  const testFirst = (list) => list.find((f) => f === "test" || f.endsWith("/test")) || list[0];
+  let known = null, last = null;
   try {
-    const last = localStorage.getItem("freeboard.dataset.folder");
-    if (last && folders.includes(last)) return last;
+    known = JSON.parse(localStorage.getItem("freeboard.dataset.known") || "null");
+    last = localStorage.getItem("freeboard.dataset.folder");
+    localStorage.setItem("freeboard.dataset.known", JSON.stringify(folders));
   } catch {}
-  return folders[0];
+  const added = Array.isArray(known) ? folders.filter((f) => !known.includes(f)) : [];
+  if (added.length) return testFirst(added);
+  if (last && folders.includes(last)) return last;
+  return testFirst(folders);
 }
 
 async function boot() {
