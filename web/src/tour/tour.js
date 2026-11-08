@@ -27,7 +27,7 @@ import { esc } from "../console/stream.js";
 import { usd, clock12, toMin, andList } from "../console/agents.js";
 import { highlight } from "../highlight.js";
 import { readPhone, prettyUsPhone } from "../start/phone.js";
-import { firstPumpFailure, setClock } from "./eog.js";
+import { firstPumpFailure, setClock, fixDataset } from "./eog.js";
 import { visible, drawRings, placeCard } from "./place.js";
 
 const KEY = "gaia.tour";
@@ -129,8 +129,8 @@ let tick = 0;
 function end(how) {
   leave();
   save({ done: true });
-  // Dataset mode: "end tour" pauses the replay clock; skip pauses it only if this tour started it.
-  if (BASE && (how === "end" || (how === "skip" && replay()))) {
+  // Dataset mode: "end tour" and "skip tour" pause the replay clock.
+  if (BASE && (how === "end" || how === "skip")) {
     isDataset().then((on) => { if (on) setClock({ play: false }).catch(() => {}); });
   }
   clearInterval(tick);
@@ -330,8 +330,23 @@ const STEPS = [
       const notify = typeof window.gaiaNotify === "function";
       if (!notified.has(a.id)) {
         notified.add(a.id);
-        window.__tour.notified.push({ id: a.id, via: notify ? "gaiaNotify" : "chat" });
-        if (notify) { try { window.gaiaNotify(a); } catch (e) { console.warn("gaiaNotify", e); } }
+        const rec = { id: a.id, via: "chat", at: Date.now() };
+        window.__tour.notified.push(rec);
+        if (notify) {
+          // #154 shows its own notification for a new alert (once per id). Give it ~6 s; call
+          // window.gaiaNotify only if none appeared, so the judge never sees the alarm twice.
+          const st = () => (typeof C().notify === "function" && C().notify()) || {};
+          const seen0 = new Set(st().seen || []);
+          let came = false;
+          for (let k = 0; k < 24 && ctx.alive(); k++) {
+            const n = st();
+            if ((n.shown && n.id === a.id) || ((n.seen || []).includes(a.id) && !seen0.has(a.id))) { came = true; break; }
+            await sleep(250);
+          }
+          if (!ctx.alive()) return;
+          rec.via = came ? "console" : "gaiaNotify";
+          if (!came) { try { window.gaiaNotify(a); } catch (e) { console.warn("gaiaNotify", e); } }
+        }
         C().open();
         for (let k = 0; k < 20 && !C().threads().some((t) => t.id === a.id); k++) await sleep(250);
         if (!notify && ctx.alive()) C().thread(a.id);
@@ -378,7 +393,7 @@ const STEPS = [
     async enter(ctx) {
       const b = C().brief();
       const plan = (b && b.plans && (b.plans.robust || b.plans.cheapest)) || null;
-      if (await isDataset()) { if (ctx.alive()) fixDataset(ctx, b, plan); return; }
+      if (await isDataset()) { if (ctx.alive()) fixDataset(ctx, b, plan, { body, extra, btns }); return; }
       // Late in the night the best plan can be "do nothing" (nothing saves the tank any more):
       // then the planner's cheapest plan that still has a step, from the same /api/plans list.
       let alt = null;
@@ -459,27 +474,6 @@ const STEPS = [
     },
   },
 ];
-
-// Dataset mode's fix: the recording can't take commands, so the person holds to approve the
-// plan in the console's own plans panel (POST /api/plans/{id}/approve records it for the shift).
-function fixDataset(ctx, b, plan) {
-  body(`${plan ? `<p>the planner's best plan costs ${esc(usd(plan.total_usd))}, against ${esc(usd(b.do_nothing_usd))} if nobody acts: ${esc(lc(plan.summary))}</p>` : "<p>the planner has no plan to make right now.</p>"}
-    <p>gaia never moves equipment. it recommends a plan, and a person holds to approve it. this field is a recording, so approving records the plan for the shift; nothing is sent to equipment.</p>`);
-  // The planner's "all plans" button opens the panel, whichever thread its message is in.
-  const opener = () => [...document.querySelectorAll('#csStream li[data-agent="P"] [data-plans]')].pop() || null;
-  ctx.every(400, () => {
-    const box = $("#plans"), drawer = box && box.closest(".cs-drawer");
-    const shown = !!(box && !box.hidden && drawer && !drawer.hidden);
-    const stamp = $("#plans .approved-stamp");
-    let x;
-    if (stamp) x = `<span class="gt-note">${esc(lc(stamp.textContent))}. the plan is recorded for the shift; nothing was sent to equipment.</span>`;
-    else if (shown) x = `<span class="gt-note">press and hold “hold to approve” on a plan for a second and a half. the first one is the cheapest.</span>`;
-    else if (opener()) x = `${btns([["data-plans-open", "show the plans", "primary"]])}<span class="gt-note">nothing is recorded until a person approves.</span>`;
-    else x = `<span class="gt-note">${plan ? "the plans open from the planner's message in the chat." : "press next."}</span>`;
-    extra(x, (el) => { const o = el.querySelector("[data-plans-open]"); if (o) o.onclick = () => { const p = opener(); if (p) p.click(); }; });
-    ctx.targets(stamp || shown ? ["#csPlan", "#plans"] : ["#csPlan"]);
-  });
-}
 
 function ask(text) {
   const input = $("#csInput"), form = $("#csAsk");

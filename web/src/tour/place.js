@@ -3,8 +3,8 @@
 //   visible(targets)          the targets (selectors or functions) that are on screen
 //   drawRings(rings, els)     one soft ring per element (rings is the tour's pool of divs)
 //   placeCard(card, softEls)  never on the time bar (where it sits when it is up, even while it
-//                             is tucked away, and its on-screen box), the composer or the #154
-//                             alert card; preferably not on softEls. With no room anywhere it
+//                             is tucked away, and its on-screen box), the composer, or #154's
+//                             alert card and monitoring strip; preferably not on softEls. With no room anywhere it
 //                             folds to its title and buttons (.mini).
 
 const $ = (sel) => document.querySelector(sel);
@@ -42,7 +42,12 @@ function hardRects() {
       if (c.right > c.left && c.bottom > c.top) out.push(c);
     }
   }
-  for (const sel of [".cs-dock", "#csAsk", "#gaiaNotify:not([hidden])"]) { const el = $(sel); if (el) { const r = el.getBoundingClientRect(); if (r.width > 0 && r.height > 0) out.push(r); } }
+  for (const sel of [".cs-dock", "#csAsk", "#gaiaNotify:not([hidden])", ".gm-strip"]) {
+    const el = $(sel);
+    if (!el) continue;
+    const r = el.getBoundingClientRect();
+    if (r.width > 0 && r.height > 0 && getComputedStyle(el).display !== "none") out.push(r);
+  }
   return out;
 }
 const hits = (a, b) => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
@@ -67,7 +72,10 @@ function spot(card, softEls, min) {
   const st = $("#stage") && $("#stage").getBoundingClientRect();
   const chat = $("#csJarvis") && $("#csJarvis").getBoundingClientRect();
   const spots = [];
-  if (st && st.width > w * 0.8) spots.push([st.right - w - 14, st.top + 58], [st.left + 14, st.top + 58]);
+  // In the field, under the status line and #154's monitoring strip.
+  const strip = $(".gm-strip"), sb = strip && strip.getBoundingClientRect();
+  const fy = Math.max(st ? st.top + 58 : 0, sb && sb.height > 0 && getComputedStyle(strip).display !== "none" ? sb.bottom + 10 : 0);
+  if (st && st.width > w * 0.8) spots.push([st.right - w - 14, fy], [st.left + 14, fy]);
   if (chat && chat.width > 0) spots.push([chat.left + (chat.width - w) / 2, chat.top + 56], [chat.left + (chat.width - w) / 2, chat.top + 8]);
   spots.push([(vw - w) / 2, 10], [vw - w - 10, 10], [10, 10]);
   let best = null;
