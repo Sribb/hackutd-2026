@@ -88,17 +88,22 @@ _claimed = False
 def _claim_writer() -> None:
     """The module only lets its writer identity change live state (D2). On a database
     published before that rule, the writer list starts empty and the first claim wins,
-    so claim it once per process before pushing. Already-taken is fine if we hold it."""
+    so claim it once per process before pushing. Already-taken is fine if we hold it.
+    When SpacetimeDB doesn't answer at all (down, unreachable), the claim is tried again
+    before the next push, so a database that comes up later still gets claimed."""
     global _claimed
     if _claimed:
         return
     try:
         call_reducer("claim_writer", [])
         _claimed = True
-    except (urllib.error.URLError, OSError, RuntimeError) as e:
-        if "already taken" not in str(e):
-            log.info("SpacetimeDB claim_writer: %s", e)
+    except urllib.error.HTTPError as e:  # the module answered: claimed by us or someone else
+        why = _why(e)
+        if "already taken" not in why:
+            log.info("SpacetimeDB claim_writer: %s", why)
         _claimed = True  # a push that then fails reports the real problem
+    except (urllib.error.URLError, OSError, RuntimeError) as e:  # no answer: try again next push
+        log.info("SpacetimeDB claim_writer: %s", e)
 
 
 def push_state(state: dict) -> bool:

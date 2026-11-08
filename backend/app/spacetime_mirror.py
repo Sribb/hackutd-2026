@@ -21,6 +21,9 @@ A full batch lists every row, and the module deletes the rows it doesn't list. I
 Rows follow the module's rules (backend/spacetime/src/index.ts), so one odd value never
 gets a whole batch refused. Never falsely safe:
   - a status the module doesn't know goes as UNKNOWN;
+  - a stale asset (`stale: true`, no fresh reading) goes as UNKNOWN unless it is in ALARM,
+    with no level (-1) and no position (""), because the module has no column for a last
+    known value and a console would show it as the current one;
   - a tank level that isn't a number from 0 to 100 goes as -1 (no reading), and the tank
     as UNKNOWN unless it is already in ALARM. Noise up to LEVEL_SLACK_PCT past either end
     is clamped;
@@ -69,6 +72,7 @@ LOWER_ID = re.compile(r"[a-z][a-z0-9_]*")  # alert and proposal ids, connector k
 TABLES = ("assets", "alerts", "proposals", "connectors")
 KEY = {"assets": "asset_id", "alerts": "id", "proposals": "id", "connectors": "id"}
 UNUSABLE_LEVEL = "The level reading is not a usable percentage. Treat it as unknown, not safe."
+NO_FRESH_READING = "No fresh reading. Treat it as unknown, not safe."
 
 
 # ---------- rows, as the module's apply_batch takes them ----------
@@ -138,6 +142,10 @@ def asset_row(asset_id, a: dict) -> Optional[dict]:
     status = status if status in STATUSES else "UNKNOWN"
     reason = _text(a.get("reason"))
     lvl = spacetime_sync.NO_LEVEL
+    if a.get("stale") is True:
+        # The last level or position is not the current one: send neither.
+        return {"asset_id": asset_id, "status": status if status == "ALARM" else "UNKNOWN",
+                "level_pct": lvl, "position": "", "reason": reason or NO_FRESH_READING}
     if a.get("level_pct") is not None:
         usable = level(a["level_pct"])
         if usable is not None:
@@ -243,7 +251,11 @@ class Mirror:
                     self._add(snap, "alerts", aid, None)
                     continue
                 alert_ids.add(aid)
-                if a.get("active") is False and aid not in self.resolved_clock:
+                if a.get("active") is not False:
+                    # Active again, or a new alert that reuses the id (a new live field
+                    # counts from alert_1 again): its old resolved clock no longer applies.
+                    self.resolved_clock.pop(aid, None)
+                elif aid not in self.resolved_clock:
                     self.resolved_clock[aid] = str(a.get("resolved_clock") or clock["clock"])
                 self._add(snap, "alerts", aid, alert_row(a, self.resolved_clock.get(aid, "")))
             for p in _proposals(live):

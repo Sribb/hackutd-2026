@@ -677,3 +677,67 @@ def test_push_batch_over_http_sends_the_token_and_never_shows_it(monkeypatch, ca
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
+
+
+# ---------- round 1 review fixes ----------
+
+def test_a_stale_asset_never_shows_its_last_level_or_position(live_app, captured):
+    app, lv = live_app
+    lv.step(1.0)
+    # VALVE_D_6 and TANK_1 stop reporting: the live layer calls them stale (UNKNOWN), and
+    # /api/state still carries the valve's last position.
+    lv.detector.stale_keys.update(k for k in lv.latest if k[0] in ("VALVE_D_6", "TANK_1"))
+    st = now.state(app)
+    assert st["assets"]["VALVE_D_6"]["stale"] is True and st["assets"]["VALVE_D_6"]["position"] in ("OPEN", "CLOSED")
+    assert tick(sm.Mirror(), app) is True
+    rows = {r["asset_id"]: r for r in batches(captured)[0]["assets"]}
+    assert (rows["VALVE_D_6"]["status"], rows["VALVE_D_6"]["position"]) == ("UNKNOWN", "")
+    assert "not safe" in rows["VALVE_D_6"]["reason"]
+    assert (rows["TANK_1"]["status"], rows["TANK_1"]["level_pct"]) == ("UNKNOWN", -1)
+    # Even when a stale entry still says OK and carries numbers, it goes as unknown.
+    row = sm.asset_row("TANK_2", {"status": "OK", "level_pct": 40.0, "position": "OPEN", "stale": True})
+    assert (row["status"], row["level_pct"], row["position"]) == ("UNKNOWN", -1, "")
+    assert sm.asset_row("PUMP_3", {"status": "ALARM", "stale": True})["status"] == "ALARM"
+    assert module_problems({"assets": [row]}) == []
+
+
+def test_a_reused_alert_id_gets_its_own_resolved_clock(fake_app, captured):
+    app, state, live = fake_app
+    live.alert_list.append({**ALERT, "active": False})
+    m = sm.Mirror()
+    assert tick(m, app) is True and batches(captured)[-1]["alerts"][0]["resolved_clock"] == "01:50"
+    # A new live field (blueprint activation) counts from alert_1 again: a new, active alert.
+    state["clock"] = "02:10"
+    live.alert_list[:] = [{**ALERT, "kind": "TANK_HIGH", "asset_id": "TANK_3", "clock": "02:10"}]
+    assert tick(m, app) is True and batches(captured)[-1]["alerts"][0]["active"] is True
+    state["clock"] = "02:20"
+    live.alert_list[0]["active"] = False
+    assert tick(m, app) is True
+    assert batches(captured)[-1]["alerts"][0]["resolved_clock"] == "02:20"
+
+
+def test_a_claim_that_got_no_answer_is_tried_again(captured, monkeypatch):
+    up = {"on": False}
+
+    def call(reducer, args, timeout=3.0):
+        if not up["on"]:
+            raise urllib.error.URLError("SpacetimeDB is down")
+        captured.append((reducer, args))
+
+    monkeypatch.setattr(spacetime_sync, "call_reducer", call)
+    assert spacetime_sync.push_batch({"removed_alerts": ["alert_1"]}) is False
+    up["on"] = True  # SpacetimeDB comes up (a fresh publish: nobody holds the writer role yet)
+    assert spacetime_sync.push_batch({"removed_alerts": ["alert_1"]}) is True
+    assert [r for r, _ in captured] == ["claim_writer", "apply_batch"]
+
+    # The module answering "taken" counts as claimed: the push itself tells the rest.
+    def taken(reducer, args, timeout=3.0):
+        captured.append((reducer, args))
+        if reducer == "claim_writer":
+            raise urllib.error.HTTPError("http://spacetime.test", 530, "x", {}, None)
+
+    monkeypatch.setattr(spacetime_sync, "_claimed", False)
+    monkeypatch.setattr(spacetime_sync, "call_reducer", taken)
+    captured.clear()
+    assert spacetime_sync.push_batch({}) is True and spacetime_sync.push_batch({}) is True
+    assert [r for r, _ in captured] == ["claim_writer", "apply_batch", "apply_batch"]
