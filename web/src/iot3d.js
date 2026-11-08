@@ -2,7 +2,8 @@
 // status lights from #46, and highlights what needs a person.
 //
 //   SENSOR_<asset>_light     that asset's live reading NOW, whatever the time slider shows.
-//                            Stale, missing, or no feed is UNKNOWN, never OK.
+//                            Stale, missing, or no feed is UNKNOWN, never OK. An ALARM
+//                            stays ALARM while the feed is up, as the backend sends it.
 //   RTU_PAD_<n>_light        the pad's connectors: connected, or unavailable (blinks red).
 //   live feed lost           every sensor and RTU light goes UNKNOWN until the feed is back.
 //   active alert             its asset pulses through the highlight API (source "iot-alert").
@@ -101,8 +102,11 @@ export function mountIot3d({ root, field, live, base = "", highlight = hlFrom(fo
     const down = new Set(L.connectors.filter((c) => DOWN.test(String(c.status))).map((c) => c.id));
     for (const [id, meshes] of sensors) {
       const r = live.reading(id);
+      const raw = L.assets[id] || {};
       // No reading, a stale one, or no feed: UNKNOWN. Never the OK look without a fresh reading.
-      const st = lost || !L.available || !r || r.stale ? "UNKNOWN" : r.status || "UNKNOWN";
+      // The backend never hides an ALARM behind a lost link or a quiet sensor (CONTRACT.md), so
+      // neither does the light, as long as the feed itself is up.
+      const st = lost || !L.available || !r ? "UNKNOWN" : raw.status === "ALARM" ? "ALARM" : r.stale ? "UNKNOWN" : r.status || "UNKNOWN";
       status.sensors[id] = st;
       for (const m of meshes) m.userData.iot3d.status = st;
     }
