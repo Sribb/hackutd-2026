@@ -16,6 +16,8 @@ import os
 
 import httpx
 
+from . import auth
+
 log = logging.getLogger("freeboard.notify")
 
 PRIORITY = {"ALARM": "urgent", "WARNING": "high"}
@@ -50,8 +52,12 @@ class Notifier:
                    "Priority": PRIORITY[alert["severity"]], "Tags": TAGS[alert["severity"]]}
         if self.public_url:
             headers["Click"] = self.public_url
-            headers["Actions"] = (f"view, Open console, {self.public_url}; "
-                                  f"http, Acknowledge, {self.public_url}/api/alerts/{alert['id']}/ack, method=POST")
+            headers["Actions"] = f"view, Open console, {self.public_url}"
+            # With control tokens on (#103) an ack needs the token, and a token must never ride
+            # in a notification anyone on the topic can read: acknowledge in /phone instead.
+            if not auth.enabled():
+                headers["Actions"] += (f"; http, Acknowledge, {self.public_url}/api/alerts/{alert['id']}/ack, "
+                                       "method=POST")
         try:
             async with httpx.AsyncClient(timeout=5.0) as client:
                 r = await client.post(f"{self.server}/{self.topic}", content=alert["message"].encode(),

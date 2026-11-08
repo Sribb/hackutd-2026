@@ -12,7 +12,13 @@
     POST /api/actions/{id}/confirm        send it through the asset's connector
     POST /api/actions/{id}/reject
     POST /api/jarvis                      ask Jarvis
+    GET  /api/audit                       who proposed, confirmed, rejected, acked what (CF-10)
     WS   /ws                              state, alert, proposal, ui
+
+Control tokens (#103, auth.py): with FREEBOARD_TOKEN, OPERATOR_PIN, or FREEBOARD_PHONE_TOKEN
+set, every POST here needs X-Freeboard-Token (the webhook readings route keeps its own
+connector token). The phone token may only confirm, reject, and ack. decided_by comes from
+the token's role, never from the body's "by". /ws takes ?token=.
 """
 from __future__ import annotations
 
@@ -23,10 +29,12 @@ import os
 from pathlib import Path
 from typing import Callable, List, Optional, Union
 
-from fastapi import APIRouter, FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
+from . import auth
+from .auth import Caller, require_role
 from .connectors.webhook import WebhookConnector
 from .forecast import forecast
 from .jarvis import Jarvis, JarvisUnavailable
@@ -78,6 +86,10 @@ def _raw(scenario: dict) -> dict:
         return {}
 
 
+OPERATOR = Depends(require_role(auth.OPERATOR))
+PHONE = Depends(require_role(auth.PHONE))   # phone or operator
+
+
 def build_router(live: LiveField, jarvis: Jarvis) -> APIRouter:
     r = APIRouter()
 
@@ -104,7 +116,7 @@ def build_router(live: LiveField, jarvis: Jarvis) -> APIRouter:
         return conn.push(body.readings)
 
     @r.post("/api/live/sim")
-    async def sim_controls(body: SimIn) -> dict:
+    async def sim_controls(body: SimIn, _caller: Caller = OPERATOR) -> dict:
         if body.speed is not None:
             live.speed = body.speed
         if body.paused is not None:
@@ -114,7 +126,7 @@ def build_router(live: LiveField, jarvis: Jarvis) -> APIRouter:
         return {"clock": live.fmap.clock(live.t), "t": round(live.t, 2), "speed": live.speed, "paused": live.paused}
 
     @r.post("/api/live/faults")
-    async def inject_fault(body: FaultIn) -> dict:
+    async def inject_fault(body: FaultIn, _caller: Caller = OPERATOR) -> dict:
         why = live.registry.sim.inject(body.model_dump(exclude_none=True))
         if why:
             raise HTTPException(422, why)
@@ -125,47 +137,62 @@ def build_router(live: LiveField, jarvis: Jarvis) -> APIRouter:
         return {"alerts": live.alerts()}
 
     @r.post("/api/alerts/{alert_id}/ack")
-    def ack_alert(alert_id: str) -> dict:
-        for a in live.detector.alerts:
-            if a["id"] == alert_id:
-                a["acked"] = True
-                return a
-        raise HTTPException(404, f"No alert {alert_id}.")
+    def ack_alert(alert_id: str, body: Optional[DecideIn] = None, caller: Caller = PHONE) -> dict:
+        by = body.by if body else ""
+        a = live.ack(alert_id, by=caller.decided_by(by) or "", role=caller.role, source=caller.source(by))
+        if a is None:
+            raise HTTPException(404, f"No alert {alert_id}.")
+        return a
 
     @r.get("/api/actions")
     def get_actions() -> dict:
         return {"proposals": list(live.proposals.values())}
 
     @r.post("/api/actions")
-    async def post_action(body: ActionIn) -> dict:
+    async def post_action(body: ActionIn, caller: Caller = OPERATOR) -> dict:
         try:
-            return await live.propose(body.model_dump(), reason=body.reason, source="console")
+            return await live.propose(body.model_dump(), reason=body.reason, source="console", role=caller.role)
         except ActionError as e:
             fail(e)
 
     @r.post("/api/actions/{action_id}/confirm")
-    async def confirm_action(action_id: str, body: Optional[DecideIn] = None) -> dict:
+    async def confirm_action(action_id: str, body: Optional[DecideIn] = None, caller: Caller = PHONE) -> dict:
+        by = body.by if body else ""
         try:
-            return await live.confirm(action_id, by=body.by if body else "")
+            return await live.confirm(action_id, by=caller.decided_by(by) or "", role=caller.role,
+                                      source=caller.source(by))
         except ActionError as e:
             fail(e)
 
     @r.post("/api/actions/{action_id}/reject")
-    async def reject_action(action_id: str, body: Optional[DecideIn] = None) -> dict:
+    async def reject_action(action_id: str, body: Optional[DecideIn] = None, caller: Caller = PHONE) -> dict:
+        by = body.by if body else ""
         try:
-            return await live.reject(action_id, by=body.by if body else "")
+            return await live.reject(action_id, by=caller.decided_by(by) or "", role=caller.role,
+                                     source=caller.source(by))
         except ActionError as e:
             fail(e)
 
     @r.post("/api/jarvis")
-    async def ask_jarvis(body: JarvisIn) -> dict:
+    async def ask_jarvis(body: JarvisIn, caller: Caller = OPERATOR) -> dict:
         try:
-            return await jarvis.handle(body.message, body.selected_asset_ids, body.image_png_base64)
+            return await jarvis.handle(body.message, body.selected_asset_ids, body.image_png_base64,
+                                       role=caller.role)
         except JarvisUnavailable as e:
             raise HTTPException(503, e.detail)
 
+    @r.get("/api/audit")
+    def get_audit(since: int = 0) -> dict:
+        return {"entries": live.audit.entries(since)}
+
     @r.websocket("/ws")
-    async def ws(websocket: WebSocket, role: str = "web", name: str = "") -> None:
+    async def ws(websocket: WebSocket, role: str = "web", name: str = "", token: str = "") -> None:
+        ok, caller = auth.ws_caller(token)
+        if not ok:
+            await websocket.accept()
+            await websocket.close(code=1008, reason=auth.DENIED)
+            return
+        steer = auth.may_steer(caller)
         client = await live.hub.connect(websocket, role, name)
         try:
             await live.hub.send(client, "state", {"state": live.state()})
@@ -175,8 +202,8 @@ def build_router(live: LiveField, jarvis: Jarvis) -> APIRouter:
                     continue
                 if msg.get("type") == "ping":
                     await live.hub.send(client, "pong", {})
-                elif msg.get("type") == "ui" and live.fmap.kind_of(str(msg.get("asset_id", ""))):
-                    # A phone can point every console at an asset.
+                elif steer and msg.get("type") == "ui" and live.fmap.kind_of(str(msg.get("asset_id", ""))):
+                    # A phone can point every console at an asset (with tokens on, only with a valid one).
                     await live.focus(msg["asset_id"], str(msg.get("reason", "")), source=client.role)
         except (WebSocketDisconnect, RuntimeError, ValueError):
             pass
@@ -235,4 +262,5 @@ def install(app: FastAPI, scenario: dict) -> LiveField:
                            allow_methods=["*"], allow_headers=["*"])
     app.state.live = live
     app.state.jarvis = jarvis
+    app.state.audit = live.audit   # app.state.audit.append("approved", source=..., role=...) from any lane
     return live

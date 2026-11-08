@@ -12,6 +12,10 @@ the proposal is claimed (SENDING) before anything awaits, so it is sent at most 
 JARVIS_CONFIRM=0 lets Jarvis skip the confirm, but only for commands that go to the
 simulator: a command for real equipment always waits for a person.
 
+Every proposal, decision, send result, and alert ack goes into `audit` (audit.py, CF-10),
+with who did it: `role` (operator or phone, from the control token, see auth.py) and
+`source` (console, phone, jarvis, blueprint).
+
 This layer is additive. GET /api/state and the forecast keep reading the scenario file.
 reload() points it at a newly activated blueprint (live_api installs app.state.live_reload).
 """
@@ -25,6 +29,7 @@ import os
 from collections import defaultdict
 from typing import Optional
 
+from .audit import AuditLog
 from .connectors import Registry
 from .connectors.sim import _fraction, _on
 from .detect import Detector, new_history, now_iso
@@ -90,6 +95,7 @@ class LiveField:
         self.speed = float(os.environ.get("FREEBOARD_SPEED", "0.25"))
         self.paused = False
         self.auto_confirm_sim = os.environ.get("JARVIS_CONFIRM", "1") == "0"
+        self.audit = AuditLog(lambda: (self.fmap.clock(self.t), round(self.t, 2)))
         self._task: Optional[asyncio.Task] = None
         self.loop: Optional[asyncio.AbstractEventLoop] = None   # the loop start() ran on
         self.ingest(self.registry.read())
@@ -176,6 +182,7 @@ class LiveField:
             why = self._invalid_after_reload(p, present) if p["status"] == "PENDING" else None
             if why:
                 p.update(status="REJECTED", decided_t=now_iso(), decided_by="blueprint", result=why)
+                self._log(p, "rejected", source="blueprint", by="blueprint", result=why)
                 closed.append(p)
 
         # A confirmed position only still holds for real equipment; the new simulator starts over.
@@ -339,33 +346,47 @@ class LiveField:
             raise ActionError(422, f"SEND_TRUCK needs a truck ID and a target_id tank it can reach, got {aid} {target!r}.")
         return {"type": typ, "asset_id": aid, "value": None, "target_id": target}
 
-    async def propose(self, action: dict, reason: str = "", source: str = "console") -> dict:
-        """Store a PENDING proposal. Changes nothing in the field."""
+    def _log(self, p: dict, event: str, source: Optional[str], role: Optional[str] = None,
+             by: Optional[str] = None, **extra) -> None:
+        a = p["action"]
+        self.audit.append(event, source=source, role=role, by=by, asset_id=a["asset_id"], proposal_id=p["id"],
+                          status=p["status"], text=p["text"], connector_id=p.get("connector_id"),
+                          **({"target_id": a["target_id"]} if a.get("target_id") else {}), **extra)
+
+    async def propose(self, action: dict, reason: str = "", source: str = "console",
+                      role: Optional[str] = None) -> dict:
+        """Store a PENDING proposal. Changes nothing in the field. `role` is the token role
+        of whoever asked (the operator who typed to Jarvis, say), for the audit log."""
         a = self.clean_action(action)
         conn = self.registry.route(a)
         p = {"id": f"act_{next(self._ids)}", "action": a, "reason": (reason or describe(a)).strip(),
              "status": "PENDING", "created_t": now_iso(), "text": describe(a), "source": source,
              "connector_id": conn.id}
         self.proposals[p["id"]] = p
+        self._log(p, "proposed", source=source, role=role, reason=p["reason"])
         await self.hub.broadcast("proposal", {"proposal": p})
         await self.focus(a["asset_id"], f"Waiting for confirmation: {p['text']}", source=source)
         # The broadcasts above yield, so a person may already have decided it: only
         # auto-confirm while it is still PENDING (checked and claimed with no await between).
         if (self.auto_confirm_sim and source == "jarvis" and conn is self.registry.sim
                 and p["status"] == "PENDING"):
-            return await self.confirm(p["id"], by="JARVIS_CONFIRM=0")
+            return await self.confirm(p["id"], by="jarvis", source="jarvis", auto="JARVIS_CONFIRM=0")
         return p
 
-    async def confirm(self, action_id: str, by: str = "") -> dict:
+    async def confirm(self, action_id: str, by: str = "", role: Optional[str] = None,
+                      source: Optional[str] = None, auto: Optional[str] = None) -> dict:
         """Send a PENDING proposal through its connector, exactly once.
 
         The proposal is claimed (status SENDING) before the first await, so a second
         confirm from another screen, or a reject racing this one, gets 409 instead of
-        sending the command again or after a reject."""
+        sending the command again or after a reject. `by` is stored as `decided_by`; the
+        HTTP route sets it from the caller's token role (auth.py), never from the body."""
         p = self._pending(action_id)
         a = p["action"]
         conn = self.registry.route(a)
         p.update(status="SENDING", decided_t=now_iso(), decided_by=by or None, connector_id=conn.id)
+        source = source or by or None
+        self._log(p, "confirmed", source=source, role=role, by=by or None, **({"auto": auto} if auto else {}))
         # --- no await above this line: the PENDING check and the claim are atomic ---
         try:
             await self.hub.broadcast("proposal", {"proposal": p})
@@ -378,6 +399,7 @@ class LiveField:
             res = {"ok": False, "detail": f"Send failed: {e}"}
         ok = bool(res.get("ok"))
         p.update(status="CONFIRMED" if ok else "FAILED", result=res.get("detail", ""), decided_t=now_iso())
+        self._log(p, "result", source=source, role=role, by=by or None, result=p["result"])
         if ok and a["type"] in ("SET_VALVE", "SET_PUMP"):
             self.commanded[a["asset_id"]] = {"value": a["value"], "t": self.t}
         await self.hub.broadcast("proposal", {"proposal": p})
@@ -385,12 +407,28 @@ class LiveField:
         await self.hub.broadcast("state", {"state": self.state()})
         return p
 
-    async def reject(self, action_id: str, by: str = "") -> dict:
+    async def reject(self, action_id: str, by: str = "", role: Optional[str] = None,
+                     source: Optional[str] = None) -> dict:
         p = self._pending(action_id)
         # Decided before the first await, so a confirm that comes in later gets 409.
         p.update(status="REJECTED", decided_t=now_iso(), decided_by=by or None)
+        self._log(p, "rejected", source=source or by or None, role=role, by=by or None)
         await self.hub.broadcast("proposal", {"proposal": p})
         return p
+
+    def ack(self, alert_id: str, by: str = "", role: Optional[str] = None,
+            source: Optional[str] = None) -> Optional[dict]:
+        """Acknowledge an alert (it stays active until its condition clears). None if unknown.
+        A second ack changes nothing and is not logged again."""
+        for a in self.detector.alerts:
+            if a["id"] == alert_id:
+                if not a.get("acked"):
+                    a.update(acked=True, acked_t=now_iso(), acked_by=by or None)
+                    self.audit.append("acked", source=source or by or None, role=role, by=by or None,
+                                      asset_id=a["asset_id"], alert_id=a["id"], kind=a["kind"],
+                                      severity=a["severity"], message=a["message"])
+                return a
+        return None
 
     def _pending(self, action_id: str) -> dict:
         p = self.proposals.get(action_id)
