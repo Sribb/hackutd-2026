@@ -361,3 +361,9 @@ button { white-space: nowrap; }
 @media (prefers-reduced-motion: reduce) { #twonights .tn-log li { transition: none; } }
 /* The replay owns the stage while it runs; the Sky box (#85) comes back on close. */
 body.two-nights .sky-ctl { display: none; }
+/* Scenery toggle (#88) inside the model note */
+.model-note.has-toggle { pointer-events: auto; z-index: 3; }
+.scenery-btn { font: 11px var(--mono); padding: 1px 7px; background: transparent; color: var(--ink-2); }
+.scenery-btn[aria-pressed="false"] { color: var(--muted); }
+.scenery-why { color: var(--warning); display: block; }
+.scenery-why:empty { display: none; }

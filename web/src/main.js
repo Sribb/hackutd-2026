@@ -14,6 +14,7 @@ import { mountHands } from "./hands.js";
 import { mountJarvis, jarvisSelectionChanged } from "./jarvis.js";
 import * as liveFeed from "./live.js";
 import { mountTwoNights } from "./twonights.js";
+import { mountScenery } from "./scenery.js";
 import { mountInspect } from "./inspect.js";
 import { mountRemote } from "./remote/remote.js"; // #114: also puts the control token on POSTs and /ws
 
@@ -1122,6 +1123,7 @@ async function boot() {
   const note = $("modelNote");
   note.hidden = false;
   note.textContent = model.from === "placeholder" ? "Placeholder geometry until blender/field.glb lands" : `Model: ${model.from}`;
+  mountScenery(model.root, note, renderer); // #88 scenery toggle, plus a 45 fps guard (pixels first, then scenery)
   $("loading").remove();
   frame(model.root);
   buildFuses();

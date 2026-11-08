@@ -156,3 +156,9 @@ If the backend can't start, the console still runs on recorded data and says so.
 - **Every final number** is the backend forecast's own `cost.total_usd`. The running counters follow the forecast's events (wells lost, chokes, first truck), scaled so they land on those totals.
 - **Controls:** playback slows near each event. Click the bar to jump, press Space to pause, press Esc to close. Closing restores your what-ifs and time. The end card can approve the plan with hold-to-approve. With reduced motion, it opens on the end.
 - **Code:** everything lives in `src/twonights.js`. main.js passes hooks to `mountTwoNights()` and adds nothing else.
+
+## Scenery toggle and frame-rate guard (#88)
+
+The desert layer (one `SCENERY` root, about 115k triangles) gets a **Scenery on/off** toggle in the model note. A click is remembered on this browser.
+
+After the field loads, the console measures its own frame rate. Under 45 fps it steps quality down, cheapest visual loss first: pixel density 2x to 1.5x, then 1x, then scenery off. It stops as soon as the field is smooth, and the model note says what changed. A step that doesn't raise the frame rate by 10% is undone and the guard stops, because then the bottleneck is a busy CPU, not pixels or triangles. URL overrides: `?scenery=on|off` and `?quality=full` (skip the guard, for recording video).
