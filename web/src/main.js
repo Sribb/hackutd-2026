@@ -404,6 +404,7 @@ let fc = null;         // the forecast on screen: baseline, or the what-if resul
 let actions = [];      // the what-if action list, contract shape
 let selectedId = null;
 let tMin = 0;
+let renderedKeyFor = -1; // the change count the time bar legend was last drawn for
 let walk = null;       // { plan, steps, radio, i } while walking an approved plan
 let whatifNote = "";
 let lastView = {};
@@ -981,13 +982,41 @@ function renderMarks() {
   }
   // The two times the operator plans around, as ticks on the slider: Last Call (start the
   // cheapest plan by then) and the shutdown if nobody acts.
-  const tick = (m, cls, label) => (m != null && m >= 0 && m <= max ? `<i class="tick ${cls}" style="left:${(100 * m) / max}%" title="${esc(label)}"></i>` : "");
+  // Each tick also gets a plain legend entry in the header; clicking either jumps the slider there.
+  const inRange = (m) => m != null && m >= 0 && m <= max;
+  const tick = (m, cls, label) => (inRange(m) ? `<i class="tick ${cls}" data-t="${m}" style="left:${(100 * m) / max}%" title="${esc(label)}"></i>` : "");
+  const key = [];
+  const keyItem = (m, cls, text, label) => { if (inRange(m)) key.push(`<button type="button" class="key ${cls}" data-t="${m}" title="${esc(label)}"><i></i>${esc(text)}</button>`); };
   const lcBest = data.lc && data.lc.status === "INCIDENT" && data.lc.options && data.lc.options[0];
-  if (lcBest && typeof lcBest.expires_min === "number") marks.push(tick(lcBest.expires_min, "lc", `Last Call ${lcBest.expires_clock}: start the cheapest plan by then`));
+  if (lcBest && typeof lcBest.expires_min === "number") {
+    const label = `Last Call ${clockAt(lcBest.expires_min)}: start the cheapest plan by then. After that it costs more.`;
+    marks.push(tick(lcBest.expires_min, "lc", label));
+    keyItem(lcBest.expires_min, "lc", `start the plan by ${clockAt(lcBest.expires_min)}`, label);
+  }
   const sd = shutdownOf(data.baseline);
-  if (sd) marks.push(tick(sd.t_min, "sd", `${nice(sd.asset_id)} reaches shutdown at ${clockAt(sd.t_min)} if nobody acts`));
+  if (sd) {
+    const label = `${nice(sd.asset_id)} reaches shutdown at ${clockAt(sd.t_min)} if nobody acts`;
+    marks.push(tick(sd.t_min, "sd", label));
+    keyItem(sd.t_min, "sd", `${actions.length ? "if nobody acts, " : ""}${nice(sd.asset_id)} hits shutdown ${clockAt(sd.t_min)}`, label);
+  }
   $("marks").innerHTML = marks.join("");
+  $("timeKey").innerHTML = key.join("");
+  $("timeHint").textContent = `drag the dot to see the next ${dur(max)}`;
 }
+
+// The legend and the ticks jump to their exact minute (viewAt takes any minute); the
+// thumb snaps to its nearest 5 min step, so the clock matches the legend.
+function jumpTo(e) {
+  const el = e.target.closest("[data-t]");
+  if (!el) return;
+  tMin = Number(el.dataset.t);
+  $("time").value = String(tMin);
+  render();
+}
+
+// "45 min", "1 h", "1 h 5 min"
+const dur = (x) => { const m = Math.round(x), h = Math.floor(m / 60), r = m % 60; return [h ? `${h} h` : "", r || !h ? `${r} min` : ""].filter(Boolean).join(" "); };
+const inTime = (m) => `in ${dur(m)}`;
 
 function renderSources() {
   const fakes = Object.entries(api.sources).filter(([, v]) => v === "fake").map(([k]) => k);
@@ -1011,8 +1040,11 @@ function render() {
   const liveLevels = liveFeed.live.available && !liveFeed.live.lostSince;
   $("tankKicker").textContent = tMin === 0 ? (liveLevels ? "Tank levels" : `Tank levels · as of ${clockAt(0)}`) : `Tank levels at ${clockAt(tMin)} (forecast)`;
   $("timeClock").textContent = clockAt(tMin);
-  $("timeRel").textContent = tMin === 0 ? (behind >= 1 ? "forecast start" : "now") : `+${tMin} min`;
-  $("timeLabel").textContent = actions.length ? `Forecast with ${actions.length} change${actions.length > 1 ? "s" : ""}` : "Forecast, no action";
+  $("timeRel").textContent = tMin === 0 ? (behind >= 1 ? `forecast made ${dur(behind)} ago` : "now") : inTime(tMin);
+  $("timeHint").hidden = tMin !== 0;
+  $("timeLabel").textContent = actions.length ? `With your ${actions.length} change${actions.length > 1 ? "s" : ""}` : "If nobody acts";
+  // The legend's "if nobody acts" prefix depends on the changes, so it re-renders with them.
+  if (renderedKeyFor !== actions.length) { renderedKeyFor = actions.length; renderMarks(); }
   renderSelected(view);
   renderTanks(view);
   // Tank fill meshes: scale Y from 0 (empty) to 1 (full).
@@ -1357,6 +1389,8 @@ function hoverAt(clientX, clientY) {
 canvas.addEventListener("pointerleave", () => { $("hoverTag").hidden = true; });
 
 $("time").addEventListener("input", (e) => { tMin = Number(e.target.value); render(); });
+$("marks").addEventListener("click", jumpTo);
+$("timeKey").addEventListener("click", jumpTo);
 addEventListener("keydown", (e) => {
   if (e.target.tagName === "INPUT" && e.target.type !== "range") return;
   if (e.target.tagName === "INPUT") return;

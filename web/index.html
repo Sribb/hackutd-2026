@@ -15,9 +15,13 @@
       <div id="modelNote" class="model-note" hidden></div>
       <div class="timebar">
         <div class="timebar-row">
-          <span class="kicker" id="timeLabel">Forecast, no action</span>
+          <span class="kicker" id="timeLabel">If nobody acts</span>
           <b id="timeClock">1:47 AM</b>
           <span id="timeRel" class="muted">now</span>
+        </div>
+        <div class="timebar-key">
+          <span id="timeKey" class="time-key"></span>
+          <span id="timeHint" class="muted time-hint">drag the dot to see the next 6 h</span>
         </div>
         <div class="slider-wrap">
           <input id="time" type="range" min="0" max="360" step="5" value="0" aria-label="Forecast time">

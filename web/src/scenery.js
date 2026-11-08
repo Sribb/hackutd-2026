@@ -51,7 +51,7 @@ export function mountScenery(root, noteEl, renderer) {
   const set = (on) => {
     if (!layer) return;
     layer.visible = on;
-    btn.textContent = on ? "Scenery on" : "Scenery off";
+    btn.textContent = on ? "Hide scenery" : "Show scenery"; // says what a click does
     btn.setAttribute("aria-pressed", String(on));
   };
 

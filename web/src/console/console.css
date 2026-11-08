@@ -277,6 +277,7 @@ body.fb-console .timebar { left: 12px; right: 12px; bottom: 12px; padding: 8px 1
 body.fb-console.cs-tb-up .timebar { transform: none; }
 body.fb-console .timebar-row { gap: 10px; align-items: center; font-size: 13px; }
 body.fb-console .timebar-row b { font-weight: 500; }
+body.fb-console .timebar-key { font: 12.5px var(--sans); color: #c8c8c8; }
 body.fb-console input[type=range] { accent-color: #e6e6e6; }
 body.fb-console .sky-ctl { display: none; bottom: 84px; border-radius: 14px !important; }
 body.fb-console.cs-tb-up.cs-sky-open .sky-ctl { display: block; }
