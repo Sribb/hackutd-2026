@@ -12,6 +12,7 @@ import { apiSource, fileSource, assetIndex, checkDataset, STEP_S } from "./data.
 import { lineChart, fmtTime } from "./chart.js";
 import { replay, doNothing, inputFor, planFromActions, planToActions, cheapestJoint, money, revenuePerHour } from "./plan.js";
 import { normAlerts, sortAlerts, actionLines, handoffText, durationText, categoryOf, trucksInUse } from "./alerts.js";
+import { screenDataset, screenAt, screenSeries, recentMean, faultRuns, LEAK, WEAR } from "./screen.js";
 
 const $ = (id) => document.getElementById(id);
 // A peak just under the limit must not print as the limit: 91.96% is "91.9%", not "92.0%".
@@ -214,7 +215,12 @@ async function refreshAlerts() {
   renderDetail();
 }
 
-const liveAlerts = () => sortAlerts(state.alerts.filter((a) => a.status !== "resolved"));
+// When the backend's detection is not there (file mode, or its alerts failed), the page
+// screens the readings itself: pump fault signals, leaks and worn pumps (screen.js). Every
+// list below reads from pool(), so the map, cards and detail agree on one set.
+const usesScreen = () => state.detection === "absent" || state.detection === "error";
+const pool = () => (state.detection === "ok" ? state.alerts : usesScreen() ? screenPool() : []);
+const liveAlerts = () => sortAlerts(pool().filter((a) => a.status !== "resolved"));
 const alertsFor = (facilityId) => liveAlerts().filter((a) => a.facility === facilityId);
 // Readings at the moment on screen. Well rates are the last hour's mean of producing
 // readings, so one noisy sample does not move a countdown by minutes.
@@ -316,46 +322,122 @@ function fleetHtml(systemId) {
   return `<div class="ds-fleet"><span class="kicker">Fleet size: cheapest total for ${esc(systemId)}'s ${c.tanks.length} failure${c.tanks.length === 1 ? "" : "s"} in progress</span>${rows}</div>`;
 }
 
+// ---------- the page's own screen ----------
+
+let screenMemo = { key: null, events: [] };
+function screenEvents() {
+  const key = `${state.folder}@${state.store?.now}`;
+  if (screenMemo.key !== key) screenMemo = { key, events: state.store && state.network ? screenDataset(state.network, state.store) : [] };
+  return screenMemo.events;
+}
+
+const pct1 = (v) => `${v.toFixed(1)}%`;
+const bpd = (v) => `${Math.round(v).toLocaleString("en-US")} bbl/day`;
+const blank = { confidence: null, estCost: null, doNothingCost: null, hours: null, hoursP10: null, hoursP90: null, levelPct: null,
+  lostRevPerHour: null, tripsAt: null, repairEnd: null, tripped: false, planSummary: null };
+
+// Leaks and worn pumps the screen had seen by `at`, plus pump failures that had already
+// ended, as alert-shaped objects with plain-English evidence. Memoized per moment.
+let poolMemo = { key: null, list: [] };
+function screenPool() {
+  const key = `${state.folder}@${state.at}`;
+  if (poolMemo.key === key) return poolMemo.list;
+  const at = state.at;
+  const list = [];
+  for (const e of screenAt(screenEvents(), at)) {
+    const hit = facilityOf(e.facility);
+    if (!hit) continue;
+    const disp = Number(hit.s.disposal_site?.pressure_psi);
+    const ser = screenSeries(state.store, hit.f, disp);
+    const ongoing = e.status === "ongoing";
+    const ev = [];
+    const pumpOff = ongoing && state.store.latest(hit.f.pump.id, "status", at) !== 1;
+    if (e.category === "pipeline_leak") {
+      const now = ongoing ? recentMean(ser.lost, at) : e.atSeen;
+      const flow = state.store.mean(hit.f.pump.id, "flow_bpd", ongoing ? at : e.seen, 3600, true);
+      if (now !== null) ev.push(`${ongoing ? "Over the last hour of pumping" : "When it was seen"}, ${pct1(now)} of the pump's flow${flow ? ` (about ${bpd((now / 100) * flow)})` : ""} did not arrive at disposal. Healthy is 0, within about 1%.`);
+    } else {
+      const now = ongoing ? recentMean(ser.excess, at) : e.atSeen;
+      if (now !== null) ev.push(`${ongoing ? "Over the last hour of pumping" : "When it was seen"}, discharge pressure ran ${Math.round(-now)} psi under the healthy ${Math.round(disp + WEAR.healthy)} psi (disposal + 150).`);
+      const before = state.store.mean(hit.f.pump.id, "flow_bpd", e.onset, 6 * 3600, true);
+      const after = state.store.mean(hit.f.pump.id, "flow_bpd", ongoing ? at : e.end ?? e.seen, 6 * 3600, true);
+      if (before && after && after < before) ev.push(`It moves ${pct1(((before - after) / before) * 100)} less water than before it started (${bpd(after)} vs ${bpd(before)}).`);
+    }
+    ev.push(e.afterGap && e.from
+      ? `The pump was off from ${fmtTime(e.from, true)} to ${fmtTime(e.onset, true)} UTC; it started in that window and showed at the first reading after.`
+      : `Started about ${fmtTime(e.onset, true)} UTC, fitted from the readings. First seen ${fmtTime(e.seen, true)} UTC.`);
+    if (pumpOff) ev.push("The pump is not running now, so these are its last running readings.");
+    if (!ongoing) ev.push(e.endedByFault ? `Ended when the pump failed at ${fmtTime(e.end, true)} UTC (a separate pump failure).` : `Back to normal by ${fmtTime(e.end, true)} UTC.`);
+    list.push({ ...blank, id: `screen:${e.category}:${e.asset}:${e.onset}`, screened: true, category: e.category, status: e.status,
+      system: e.system, facility: e.facility, asset: e.asset, onset: e.onset, end: e.end, evidence: ev,
+      actions: [{ type: "field_inspection", asset_id: e.asset }] });
+  }
+  // Pump failures that ended by `at`, from the status signal (ongoing ones are fault rows).
+  for (const sys of state.network.systems) for (const f of sys.facilities) {
+    for (const r of faultRuns(state.store, f.pump.id)) {
+      if (r.onset > at || r.end === null || r.end > at) continue;
+      list.push({ ...blank, id: `fault:${f.id}:${r.onset}`, screened: true, category: "pump_failure", status: "resolved",
+        system: sys.id, facility: f.id, asset: f.pump.id, onset: r.onset, end: r.end, actions: [],
+        evidence: [`${f.pump.id} read status 2 (fault) from ${fmtTime(r.onset, true)} to ${fmtTime(r.last, true)} UTC.`] });
+    }
+  }
+  poolMemo = { key, list };
+  return list;
+}
+
 // A pump fault as an alert-shaped object, so the what-if can plan it. No backend plan.
 const faultAlert = (x) => ({ id: `fault:${x.facility}`, synthetic: true, category: "pump_failure", status: "ongoing",
   system: x.system, facility: x.facility, asset: x.pump, onset: x.onset, end: null, actions: [], evidence: [],
   estCost: null, doNothingCost: null, hours: null, levelPct: null, confidence: null });
 
+// Pumps in fault now, each with the do-nothing replay and the page's own plan, in the
+// SPEC alerts order: soonest shutdown first, ties to the bigger loss of revenue.
+function faultRows() {
+  const h = repairH();
+  return pumpFaults().map((x) => {
+    const horizonMin = h === null ? 0 : Math.round((x.onset + h * 3600 - state.at) / 60);
+    const built = horizonMin > 0 ? inputFor({ network: state.network, ops: state.ops, facilityId: x.facility, ...readers(), horizonMin }) : null;
+    const r = built?.input ? doNothing(built.input) : null;
+    const loss = built?.input ? built.input.wells.reduce((n, w) => n + (w.producing ? w.revPerHour : 0), 0) : 0;
+    const own = ownPlans().get(x.facility);
+    const level = state.store.latest(x.facility && facilityOf(x.facility)?.f.tank.id, "level_pct", state.at);
+    // The same fault as a filled-in alert, for the handoff and the export.
+    const a = { ...faultAlert(x), lostRevPerHour: loss, levelPct: level, tripped: !!r?.tripped,
+      hours: r ? (r.tripped ? 0 : r.safe ? null : r.tripsAtMin / 60) : null,
+      repairEnd: h === null ? null : x.onset + h * 3600,
+      actions: own ? planToActions(own.plan, x.facility) : [], estCost: own ? own.result.cost.total : null,
+      doNothingCost: own ? own.doNothing.cost.total : r ? r.cost.total : null,
+      evidence: [`${x.pump} reads status 2 (fault) since ${fmtTime(x.onset, true)} UTC.`] };
+    return { x, r, loss, own, a };
+  }).sort((p, q) => (p.r?.tripsAtMin ?? Infinity) - (q.r?.tripsAtMin ?? Infinity) || q.loss - p.loss);
+}
+
 function renderAlerts() {
   const box = $("dsAlerts");
   const live = liveAlerts();
-  const resolved = state.alerts.filter((a) => a.status === "resolved");
+  const resolved = pool().filter((a) => a.status === "resolved");
   $("dsAlertCount").textContent = state.detection === "ok" ? `${live.length} in progress` : "";
   if (state.detection === "loading") {
     box.innerHTML = `<p class="ds-hint">Checking for problems…</p>`;
   } else if (state.detection !== "ok") {
-    box.innerHTML = `<div class="ds-unknown"><b>Not checked</b><p>${esc(state.detectionNote)} This is not an all-clear.</p>
-      <p class="ds-hint">The map and trends still read the real files. Use “What if this pump failed now” on any facility to plan by hand.</p></div>`;
-    const faults = pumpFaults();
-    if (faults.length) {
-      const h = repairH();
+    const rows = faultRows();
+    $("dsAlertCount").textContent = `${rows.length + live.length} in progress`;
+    box.innerHTML = `<div class="ds-unknown"><b>Screened by this page</b><p>${esc(state.detectionNote)} gaia screened the readings itself:
+      pump fault signals, leaks (pump flow that never reaches disposal) and worn pumps (discharge pressure sagging).</p>
+      <p class="ds-hint">It is a screen, not the backend's detection. Anything it can't read, it doesn't call safe.</p></div>`;
+    if (rows.length) {
       const wrap = document.createElement("div");
       wrap.className = "ds-faults";
-      wrap.innerHTML = `<span class="kicker">Pumps reporting a fault on their own status signal</span>`;
-      // Same order as the SPEC alerts view: soonest shutdown first, ties to the bigger loss.
-      const rows = faults.map((x) => {
-        const horizonMin = h === null ? 0 : Math.round((x.onset + h * 3600 - state.at) / 60);
-        const built = horizonMin > 0 ? inputFor({ network: state.network, ops: state.ops, facilityId: x.facility,
-          ...readers(), horizonMin }) : null;
-        const r = built?.input ? doNothing(built.input) : null;
-        const loss = built?.input ? built.input.wells.reduce((n, w) => n + (w.producing ? w.revPerHour : 0), 0) : 0;
-        return { x, r, loss };
-      }).sort((p, q) => (p.r?.tripsAtMin ?? Infinity) - (q.r?.tripsAtMin ?? Infinity) || q.loss - p.loss);
-      for (const { x, r } of rows) {
+      wrap.innerHTML = `<span class="kicker">Pump failures: pumps reporting a fault on their own status signal</span>`;
+      for (const { x, r, own, a: full } of rows) {
         const a = faultAlert(x);
         const when = !r ? "" : r.tripped ? "tank at shutdown: its wells are shut in until the repair" : r.safe ? "will not reach shutdown before the repair" : `shuts in at ${fmtTime(state.at + r.tripsAtMin * 60)} UTC (in ${durationText(r.tripsAtMin / 60)}) if nobody acts`;
         const b = document.createElement("button");
         b.type = "button";
         b.className = `ds-fault${state.selected?.id === a.id ? " on" : ""}`;
-        const own = ownPlans().get(x.facility);
         let plan = "";
         if (own) {
-          const lines = actionLines({ ...a, hours: r && !r.safe ? r.tripsAtMin / 60 : null, actions: planToActions(own.plan, x.facility) }, { at: state.at, ops: state.ops });
+          const lines = actionLines(full, { at: state.at, ops: state.ops });
           plan = `<ul class="ds-plan">${lines.map((l) => `<li>${esc(l)}</li>`).join("")}</ul>
             <span class="ds-cost"><b>${money(own.result.cost.total)}</b> vs ${money(own.doNothing.cost.total)} doing nothing${own.shared ? ` · shares ${esc(x.system)}'s trucks` : ""}</span>`;
         }
@@ -365,6 +447,23 @@ function renderAlerts() {
       }
       box.appendChild(wrap);
     }
+    const wrap = document.createElement("div");
+    wrap.className = "ds-faults";
+    wrap.innerHTML = `<span class="kicker">Leaks and worn pumps, from the readings</span>`;
+    if (live.length) live.forEach((a, i) => wrap.appendChild(alertCard(a, rows.length + i + 1)));
+    else {
+      // Only a running pump can be screened: a stopped line carries no flow to compare.
+      const off = [], blind = [];
+      for (const sys of state.network.systems) for (const f of sys.facilities) {
+        const st = state.store.latest(f.pump.id, "status", state.at);
+        if (st === 0) off.push(f.pump.id);
+        else if (st === null) blind.push(f.pump.id);
+      }
+      wrap.insertAdjacentHTML("beforeend", `<p class="ds-hint">None in progress at ${esc(fmtTime(state.at, true))} UTC among the pumps running now.${
+        off.length ? ` ${off.length} pump${off.length === 1 ? " is" : "s are"} stopped, so ${off.length === 1 ? "its line" : "their lines"} can't be checked until ${off.length === 1 ? "it runs" : "they run"}.` : ""}${
+        blind.length ? ` No fresh reading from ${esc(blind.join(", "))}: not checked.` : ""}</p>`);
+    }
+    box.appendChild(wrap);
   } else if (!live.length) {
     box.innerHTML = `<div class="ds-clear"><b>No problems in progress</b><p>Every pump and pipeline reads normal at ${esc(fmtTime(state.at, true))} UTC.</p></div>`;
   } else {
@@ -589,7 +688,7 @@ function render3d() {
   if (!f3d || state.view !== "3d" || !state.network) return;
   const systems = state.network.systems;
   const selFac = state.selected && (facilityOf(state.selected.id) || facilityOf(state.selected.id.replace(/^fault:/, ""))
-    || facilityOf(state.alerts.find((a) => a.id === state.selected.id)?.facility));
+    || facilityOf(pool().find((a) => a.id === state.selected.id)?.facility));
   if (selFac) state.sys3d = selFac.s.id;
   if (!systems.some((s) => s.id === state.sys3d)) state.sys3d = systems[0]?.id;
   const sys = systems.find((s) => s.id === state.sys3d);
@@ -648,7 +747,7 @@ function renderDetail() {
     alert = faultAlert(x);
     facId = x.facility;
   } else if (sel.kind === "alert") {
-    alert = state.alerts.find((a) => a.id === sel.id);
+    alert = pool().find((a) => a.id === sel.id);
     if (!alert) { box.innerHTML = `<p class="ds-hint">That alert is not in progress at this time.</p>`; return; }
     facId = alert.facility;
   }
@@ -670,7 +769,7 @@ function renderDetail() {
   else if (alert && alert.evidence.length) {
     const ev = document.createElement("div");
     ev.className = "ds-evidence";
-    ev.innerHTML = `<span class="kicker">Why the backend flagged it</span><ul>${alert.evidence.map((e) => `<li>${esc(e)}</li>`).join("")}</ul>`;
+    ev.innerHTML = `<span class="kicker">${alert.screened ? "Why gaia's screen flagged it" : "Why the backend flagged it"}</span><ul>${alert.evidence.map((e) => `<li>${esc(e)}</li>`).join("")}</ul>`;
     box.appendChild(ev);
   }
   if (!alert || alert.category !== "pump_failure") {
@@ -927,27 +1026,55 @@ function openDialog(title, text) {
 
 $("dsHandoff").onclick = () => {
   if (!state.store) return;
+  const screened = usesScreen();
+  const alerts = screened ? [...faultRows().map((r) => r.a), ...pool()] : state.alerts;
   openDialog("Shift handoff", handoffText({
-    folder: state.folder, at: state.at, now: state.store.now, alerts: state.alerts,
-    resolved: state.alerts.filter((a) => a.status === "resolved"), detection: state.detection, ops: state.ops,
+    folder: state.folder, at: state.at, now: state.store.now, alerts,
+    resolved: alerts.filter((a) => a.status === "resolved"), detection: screened ? "screen" : state.detection, ops: state.ops,
   }));
 };
 
+// events.json in the SPEC shape, from the page's own screen (file mode). Every event says
+// in its evidence that it came from this page, not the backend.
+function screenEventsJson() {
+  const iso = (t) => (t === null ? null : new Date(t * 1000).toISOString().replace(".000Z", "Z"));
+  const list = [...faultRows().map((r) => r.a), ...pool()].sort((a, b) => a.onset - b.onset);
+  return list.map((a, i) => ({
+    event_id: `GAIA-${String(i + 1).padStart(3, "0")}`,
+    system_id: a.system, facility_id: a.facility, asset_id: a.asset, category: a.category, status: a.status,
+    onset_ts: iso(a.onset), onset_unix: a.onset, end_ts: a.status === "resolved" ? iso(a.end) : null, end_unix: a.status === "resolved" ? a.end : null,
+    confidence: null,
+    evidence: [...a.evidence, "Screened from the readings by gaia's dataset page; the backend's detection did not run."],
+    ...(a.category === "pump_failure" && a.status === "ongoing" ? {
+      level_pct: a.levelPct === null ? null : Math.round(a.levelPct * 10) / 10,
+      hours_to_limit: a.hours === null ? null : { p50: Math.round(a.hours * 100) / 100 },
+      recommended_actions: a.actions.length ? a.actions : [{ type: "none" }],
+      est_cost: a.estCost === null ? null : Math.round(a.estCost),
+    } : { hours_to_limit: null, recommended_actions: a.status === "ongoing" ? a.actions : [] }),
+  }));
+}
+
+function download(name, text) {
+  const blob = new Blob([text], { type: "application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
 $("dsExport").onclick = async () => {
+  if (!state.store) return;
+  if (usesScreen()) { download("events.json", JSON.stringify(screenEventsJson(), null, 2)); return; }
   const url = state.source?.eventsUrl(travelling() ? state.at : null);
   if (!url || state.detection !== "ok") {
-    openDialog("events.json", "No events to export: detection has not run for this dataset.\nThe backend's dataset mode writes events.json.");
+    openDialog("events.json", "No events to export yet: detection is still loading.");
     return;
   }
   try {
     const r = await fetch(url, { cache: "no-store" });
     if (!r.ok) throw new Error(`${r.status}`);
-    const blob = new Blob([await r.text()], { type: "application/json" });
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = "events.json";
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    download("events.json", await r.text());
   } catch (e) {
     openDialog("events.json", `The export did not load (${e.message}).`);
   }

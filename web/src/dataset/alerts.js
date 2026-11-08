@@ -120,13 +120,18 @@ export function handoffText({ folder, at, now, alerts, resolved = [], detection,
   lines.push(`Shift handoff · ${folder}`);
   lines.push(`Dataset time ${fmtTime(at, true)} UTC${travel ? ` (replaying; the data runs to ${fmtTime(now, true)} UTC)` : ""}.`);
   lines.push("");
-  if (detection !== "ok") {
+  if (detection === "screen") {
+    lines.push("The backend's detection did not run. This is gaia's own screen of the readings: pump fault signals, leaks and worn pumps.");
+    lines.push("");
+  } else if (detection !== "ok") {
     lines.push("Detection did not run, so this is NOT an all-clear. Check the alerts on the backend before you leave.");
     return lines.join("\n");
   }
   const live = sortAlerts(alerts.filter((a) => a.status !== "resolved"));
   if (!live.length) {
-    lines.push("No problems in progress. Every pump and pipeline reads normal at this time.");
+    lines.push(detection === "screen"
+      ? "The screen finds no problem in progress among the pumps running now. A stopped pump's line can't be checked until it runs."
+      : "No problems in progress. Every pump and pipeline reads normal at this time.");
   } else {
     const pf = live.filter((a) => a.category === "pump_failure");
     lines.push(`${plural(live.length, "problem")} in progress${pf.length ? `, ${pf.length} with a tank filling` : ""}:`);
