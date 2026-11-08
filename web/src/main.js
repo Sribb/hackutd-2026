@@ -529,7 +529,8 @@ function renderSelected(view) {
   }
   const tank = tankInfo(selectedId);
   if (tank) {
-    add("Level", s.level_pct != null ? `${s.level_pct.toFixed(1)}%` : null);
+    const age = tMin === 0 ? liveFeed.ageText(selectedId) : null;
+    add("Level", s.level_pct != null ? `${s.level_pct.toFixed(1)}%${tMin === 0 ? ` <span class="age">${age || `snapshot${dataAt && dataAt !== "boot" ? ` ${esc(dataAt)}` : ""}`}</span>` : ` <span class="age">forecast</span>`}` : null);
     add("Shutdown at", `${tank.shutdown_pct}%`);
     add("Capacity", `${tank.capacity_bbl.toLocaleString()} bbl`);
     if (s.level_pct != null) {
@@ -709,7 +710,7 @@ function renderTanks(view) {
       <span class="name">${nice(t.id)}</span>
       <div class="bar"><div class="fill ${s.status}" style="width:${pct == null ? 0 : Math.min(100, pct)}%"></div>
         <div class="stop" style="left:${t.shutdown_pct}%"></div></div>
-      <span class="pct">${pct == null ? "no data" : pct.toFixed(1) + "%"}</span></div>`;
+      <span class="pct ${s.status === "UNKNOWN" ? "stale" : ""}">${pct == null ? "no data" : `${s.status === "UNKNOWN" ? "last " : ""}${pct.toFixed(1)}%`}${tMin === 0 && liveFeed.ageText(t.id) ? `<small class="age">${liveFeed.ageText(t.id)}</small>` : ""}</span></div>`;
   }).join("");
   const blind = (field.tanks || []).filter((t) => (view[t.id] || {}).status === "UNKNOWN");
   if (blind.length) {

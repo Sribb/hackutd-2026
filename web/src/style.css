@@ -447,3 +447,9 @@ body.two-nights .sky-ctl { display: none; }
 .trend .k.fc { border-top: 2px dashed var(--ink-2); }
 .trend .k.band { height: 8px; border: 0; background: var(--ink); opacity: .18; }
 .trend .tr-hover[hidden] { display: none; }
+
+/* CF-6: every live number shows its age */
+.age { font: 10px var(--mono); color: var(--muted); margin-left: 6px; letter-spacing: .02em; }
+.tank-row .pct .age { display: block; margin-left: 0; font-size: 9px; line-height: 1.2; }
+.tank-row { grid-template-columns: 56px 1fr 64px; }
+.tank-row .pct.stale { color: var(--muted); text-decoration: line-through; text-decoration-color: var(--warning); }
