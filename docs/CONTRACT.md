@@ -1028,6 +1028,87 @@ Response 200:
 - "Open the crossover" picks: the crossover joining the tanks the text names ("the Tank 3 to 4 crossover", "3 and 4", "between 5 and 6"); else the one on the tank in trouble (an active `PUMP_TRIP`'s tank, then the tank with the earliest forecast shutdown), toward the neighbor with the most room before shutdown; only then the first crossover. Named tanks with no crossover between them get a reply saying so and no proposal. "Close the crossover" prefers one that is open.
 - A question about an asset that also asks for a fix ("Why is Tank 3 rising, and what's my cheapest fix?") answers the question, then adds "The planner ran at 1:52 AM on the live readings. Cheapest plan, $X: ..." and, when it is a different plan, "Cheapest robust plan, $Y: ...". The last `ui` focus is the cheapest plan's first step.
 - With no `ANTHROPIC_API_KEY` and no rules match: **503** `{"detail": "Jarvis needs ANTHROPIC_API_KEY on the server."}`. Other Claude failures are also 503 with a `detail` saying why.
+- The reply also has `offers` (ack and shelve cards, see [Jarvis console](#jarvis-console-track-a)); it is `[]` when there are none. Every `ui` entry is a directive in the schema below (with `id`, `args`, `source`, `reason`).
+
+### Jarvis console (Track A)
+
+Spec: [JARVIS_CONSOLE.md](JARVIS_CONSOLE.md) section 5. Code: `backend/app/jarvis_tools.py` (tools, directives, brief), `backend/app/jarvis_intents.py` (deterministic phrases), `backend/app/parts_catalog.py`.
+
+**Routes, cheapest first.** `POST /api/jarvis` runs the deterministic intents first, then the older rules, and only then Claude. The intents run before the open-ended check, so "why is tank 3 rising" stays `source: "rules"` with a key set, and the pinch's `status of <ID>` answers about that asset. `JARVIS_MODE=llm` skips both. For what's failing, time left, the plans, and one asset's status the intents reuse the rules' own answers (CF-11 wording, with sources and ages). The phrases and their expected results are in `scenario/jarvis_phrases.json`, run by pytest and by the web's Playwright suite.
+
+**Directive** (in the reply's `ui[]`, and broadcast on `/ws` as `type: "ui"` with a `seq`):
+
+```json
+{ "type": "ui", "id": "ui_7f3a1c", "action": "explode", "asset_id": "PUMP_3", "args": {}, "source": "jarvis", "reason": "open pump 3" }
+```
+
+| `action` | `asset_id` | `args` |
+|---|---|---|
+| `focus` | an asset | `{}` |
+| `highlight` | none | `{ids: [≤24 asset IDs or SENSOR_/RTU_/PIPE_ names], seconds: 1-120, default 20}` |
+| `explode`, `isolate` | an asset | `{}` |
+| `collapse`, `reset_view` | none | `{}` |
+| `show_sensors` | an asset or `"ALL"` | `{}` |
+| `trace_pipes` | an asset | `{direction: "downstream" \| "upstream" \| "both"}` |
+| `set_time` | none | `{t_min: 0-360 in steps of 5, clock: "2:47 AM"}` (send `t_min` or `clock`) |
+| `open_panel` | optional | `{panel: alerts \| plans \| walk \| whatif \| asset \| log \| tanks}` |
+| `try_whatif` | first action's asset | `{actions: [{type, asset_id, value, target_id?, at_min}]}`: data only, shown as a what-if, never sent. A missing `at_min` becomes the action's lead time. |
+
+- One whitelist (`jarvis_tools.check_directive`) for Jarvis and for clients: asset IDs must be in the field, node names must match `^(SENSOR|RTU|PIPE)_[A-Z0-9_]+$`. Anything else is dropped.
+- At most 3 directives per answer. The console applies the directives in its own reply at once and skips their `/ws` echo by `id`. A focus that came with a proposal (from `live.focus`) has no `id`; applying it twice is harmless.
+- **Client `ui` over `/ws`:** `{"type": "ui", "action": "explode", "asset_id": "PUMP_3", "id": "optional own id"}`. Only a client that connected with a valid token may send it (with no tokens configured, every client may); it is checked against the same whitelist and broadcast with `source` = the client's role. A message with no `action` is a `focus`, as before. Phones apply only `focus`.
+
+**New tools** (Claude sees all of them; the rules use them too). None of them moves equipment.
+
+| Tool | Args | Returns |
+|---|---|---|
+| `get_state` | | `clock`, `connectors`, `feed_ok`, `lost_feeds`, `status_counts`, `unknown_tanks`, `active_alerts`, `incident` |
+| `list_alerts` | | jarvis.py's (CF-11, see `POST /api/jarvis` above): the root-cause groups. The spec's `active_only`, `priority`, `group` args are not there yet. |
+| `get_countdown` | `tank_id` | `countdown` (`{asset_id, name, minutes, t_min, clock, t_min_low, low_clock, t_min_high, high_clock, wells_lost, consequence_t}` or null), `unknown_tanks`, `text` (unknown tanks first) |
+| `compare_whatif` | `actions` | `before` / `after` (`{shutdown, shutdowns, cost_usd}`), `gained_min`, `unknown_tanks`, `warnings`, `text` |
+| `get_plans` | `robust_only` (new, optional) | as before; `robust_only: true` keeps the robust plans |
+| `get_last_call` | | `{cheapest: {plan_id, summary, total_usd, expires_min, expires_clock, minutes_left, robust}, point_of_no_return, useful_until: {asset: {t_min, clock}}, do_nothing_usd, computed_t, headline}`, or `{error}` when `lastcall/` is missing or fails. Reuses the brief's result while it is under 10 live minutes old (`age_min`, `minutes_left` counted down). |
+| `get_audit` | `since`, `limit` (20), `asset_id` | `entries` (CF-10), `total` |
+| `list_sensors` | `asset_id` (null = all) | `sensors: [{asset_id, status, stale, signals: [{signal, value, age_min, stale, connector_id}], connectors, connector_status, nodes}]`, `stale`, `stale_after_min` |
+| `describe_parts` | `asset_id` | `{kind, parts: [{key, label, what, signal?, value?, planned?}]}` (words copied from web/src/parts.js) |
+| `execute_plan` | `plan_id` | Proposes the plan's next step only (longest lead first), as a normal PENDING proposal with `plan_id`, `plan_step`, `plan_steps` and a `reason` starting "Plan step 1 of 3". While a step is PENDING or SENDING it proposes nothing more. Until #63 lands there is no plan run object. |
+| `offer_ack` | `alert_id` | Adds an ack card to `offers` |
+| `offer_shelve` | `alert_id`, `minutes` (15-240), `reason` (required) | Adds a shelve card to `offers`; bad args return `{error}` |
+| `ui_focus` (= `focus_camera`), `ui_highlight`, `ui_explode`, `ui_collapse`, `ui_isolate`, `ui_show_sensors`, `ui_trace_pipes`, `ui_set_time`, `ui_reset_view`, `ui_open_panel`, `ui_try_whatif` | as the directive table | Adds the directive to the reply and broadcasts it. `{ok, id}` or `{error}` |
+
+Not exposed to Jarvis: sim speed, pause, faults, connector config, blueprint activate, ingest, tokens, `JARVIS_CONFIRM`, confirm, reject.
+
+**Offers** (cards; the person sends them, Jarvis never does):
+
+```json
+{ "type": "shelve", "id": "offer_1a2b3c", "alert_id": "alert_4", "asset_id": "TANK_5", "minutes": 30,
+  "reason": "crew is on it", "press": "hold", "text": "Shelve for 30 min: ...",
+  "request": { "method": "POST", "path": "/api/alerts/alert_4/shelve", "body": { "minutes": 30, "reason": "crew is on it" } } }
+```
+
+`type` is `ack` (`press: "tap"`, `POST /api/alerts/{id}/ack`) or `shelve` (`press: "hold"`). "Shelve ... " with no reason answers "Why? A shelve needs a reason." and offers nothing.
+
+**`GET /api/jarvis/brief`** and **`/ws` `brief`** (`{"type": "brief", "seq": n, "brief": {...}}`), for the console's Watch, Forecast, and Planner agents:
+
+```json
+{ "clock": "01:48", "t": 3.75,
+  "countdown": { "asset_id": "TANK_3", "name": "Tank 3", "minutes": 59, "t_min": 59.2, "clock": "2:47 AM",
+                 "t_min_low": 49.0, "low_clock": "2:37 AM", "t_min_high": 70.5, "high_clock": "2:58 AM",
+                 "wells_lost": ["WELL_9", "WELL_10", "WELL_11", "WELL_12"], "consequence_t": 62.95 },
+  "countdown_text": "The forecast at 1:48 AM says Tank 3 reaches shutdown at 2:47 AM, give or take 10 minutes. 4 wells go down with it. That's 59 min from now.",
+  "unknown_tanks": [],
+  "plans": { "cheapest": { "id": "plan_d272415f", "summary": "...", "actions": [...], "total_usd": 2189, "robust": false, "keeps_running": true, "cannot_save": [] },
+             "robust":   { "id": "plan_0c2dee49", "summary": "...", "actions": [...], "total_usd": 3282, "robust": true, "keeps_running": true, "cannot_save": [] } },
+  "do_nothing_usd": 8650,
+  "last_call": null, "last_call_pending": true,
+  "feed_ok": true }
+```
+
+- `countdown` is null when nothing shuts down in 6 hours; `countdown_text` then says so, naming unknown tanks first ("I have no current reading for Tank 5, so I can't say it's safe. ...", CF-11's sentence). `plans.cheapest` / `plans.robust` are null when no plan with steps is needed. `do_nothing_usd` is the baseline forecast's `cost.total_usd`.
+- Sent on `/ws` after an alert is raised or resolved, after a confirmed proposal, after a blueprint reload, and every 5 live minutes; and once to each new socket right after its first `state` (when one has been computed). Not computed while no socket is connected. The GET is always computed fresh.
+- **Last Call** (seconds of work) is computed only when an incident opens (a new root ALARM) or another lane calls `app.state.live.brief_feed.plan_approved()`. The brief goes out at once with `last_call_pending: true`, then again with `last_call` filled (the `get_last_call` shape). `minutes_left` there is as of `last_call.computed_t`; subtract `state.t - computed_t`.
+
+**`POST /api/jarvis/preview`** `{"action": {type, asset_id, value, target_id?, at_min?}}` → the `compare_whatif` result, for the fix card's effect line. Changes nothing and proposes nothing. 422 for an invalid action. Phone or operator token.
 
 ### Control tokens (#103, CF-15)
 
@@ -1042,7 +1123,7 @@ One mechanism for the console link, the phone QR, and the typed PIN. Code: `back
 - **None set:** every route behaves exactly as before.
 - **Use a PIN of 6 or more digits.** The server logs a warning at startup for a shorter `OPERATOR_PIN`.
 - **Wrong tokens are throttled** (HTTP and `/ws` alike). 5 wrong tokens in 60 s from one client IP lock that IP for 60 s, then 120 s, 240 s, and so on up to 15 min: **429** `{"detail": "Too many wrong PINs. Wait 60 s."}` with a `Retry-After` header (on `/ws`, close 1008 with that reason). While locked, even the right token is refused unchecked. A correct token from another IP keeps working. 30 wrong tokens in 60 s from all IPs together lock, the same way, every IP that hasn't used a correct token in the last day. A missing token is not counted (it is the PIN prompt). Behind a proxy every client shares the proxy's IP. Each counted failure is an `auth_failed` audit entry (`source` the client IP, `path`, `locked_s` when it started a lock), never the value tried.
-- **Any set:** every `POST` in the live layer needs the header `X-Freeboard-Token`: `/api/actions` (create), `/api/actions/{id}/confirm` and `/reject`, `/api/alerts/{id}/ack`, `/shelve`, and `/unshelve`, `/api/live/faults`, `/api/live/sim`, `/api/jarvis`. Missing or wrong → **401** `{"detail": "Enter the operator PIN to send commands."}`. The phone token on an operator-only route → **403**. `POST /api/live/readings/{connector_id}` keeps its own connector token (`token_env`). Reads (`GET`) stay open. Tokens are compared with `hmac.compare_digest` and never logged.
+- **Any set:** every `POST` in the live layer needs the header `X-Freeboard-Token`: `/api/actions` (create), `/api/actions/{id}/confirm` and `/reject`, `/api/alerts/{id}/ack`, `/shelve`, and `/unshelve`, `/api/live/faults`, `/api/live/sim`, `/api/jarvis`, `/api/jarvis/preview` (phone or operator). Missing or wrong → **401** `{"detail": "Enter the operator PIN to send commands."}`. The phone token on an operator-only route → **403**. `POST /api/live/readings/{connector_id}` keeps its own connector token (`token_env`). Reads (`GET`) stay open. Tokens are compared with `hmac.compare_digest` and never logged.
 - `WS /ws`: send the token, best first, as the subprotocol `freeboard.<token>` (`new WebSocket(url, ["freeboard", "freeboard." + token])`; the server picks `freeboard`), or as the first message `{"type": "auth", "token": "<token>"}` within 5 s of connecting (answered `{"type": "auth", "ok": true, "role": "phone"}`; a late or second `auth` gets `"ok": false` and changes nothing), or, as a fallback, `?token=<token>`. The server redacts `token=` and `X-Freeboard-Token` values from uvicorn's access and error logs. A wrong token is closed with code **1008**. No token connects read-only: it gets every message, but its `ui` messages are ignored. Operator and phone tokens may send `ui`.
 - The `require_role` dependency also sets `request.state.role`.
 - **Other lanes** put the same check on their routes (`/api/blueprints/*`, approve, spacetime sync #105; `/api/ingest` #106):
@@ -1110,9 +1191,10 @@ Connect to `ws://127.0.0.1:8000/ws?role=web` (`role` is `web`, `phone`, `device`
 | `state` | `{"type": "state", "seq": 1, "state": <GET /api/live/state body>}` | On connect, every tick, and after each confirm |
 | `alert` | `{"type": "alert", "seq": 2, "event": "raised", "alert": <alert>}` | `event` is `raised`, `resolved`, `updated` (priority, consequence, or root changed), `shelved`, or `unshelved`. Replace the row with the same `alert.id`. |
 | `proposal` | `{"type": "proposal", "seq": 3, "proposal": <proposal>}` | Created, sending, confirmed, rejected, failed, or uncertain |
-| `ui` | `{"type": "ui", "seq": 4, "action": "focus", "asset_id": "PUMP_3", "reason": "...", "source": "jarvis"}` | Jarvis, a new ALARM, a proposal, or a phone wants every screen on an asset |
+| `ui` | `{"type": "ui", "seq": 4, "id": "ui_7f3a1c", "action": "focus", "asset_id": "PUMP_3", "args": {}, "reason": "...", "source": "jarvis"}` | Jarvis, a new ALARM, a proposal, or a phone wants every screen to do something. Any action in the [directive table](#jarvis-console-track-a); `id` is missing on the focus a proposal or a new ALARM sends. |
+| `brief` | `{"type": "brief", "seq": 5, "brief": <GET /api/jarvis/brief body>}` | See [Jarvis console](#jarvis-console-track-a) |
 
-Clients may send `{"type": "ping"}` (answered with `pong`) and `{"type": "ui", "action": "focus", "asset_id": "TANK_3"}` to point every console at an asset (with control tokens on, only a client that connected with a valid token).
+Clients may send `{"type": "ping"}` (answered with `pong`) and `{"type": "ui", "action": "focus", "asset_id": "TANK_3"}` (or any whitelisted directive) to steer every console (with control tokens on, only a client that connected with a valid token).
 
 ### Environment
 

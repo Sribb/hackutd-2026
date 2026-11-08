@@ -415,7 +415,7 @@ def test_jarvis_rules_answer_without_api_key():
 
     r = client.post("/api/jarvis", json={"message": "what am I looking at", "selected_asset_ids": ["TANK_3"]})
     assert r.status_code == 200 and "Tank 3" in r.json()["reply"]
-    assert r.json()["ui"] == [{"type": "ui", "action": "focus", "asset_id": "TANK_3"}]
+    assert [(d["type"], d["action"], d["asset_id"]) for d in r.json()["ui"]] == [("ui", "focus", "TANK_3")]
 
 
 def test_jarvis_llm_path_without_key_is_503():
@@ -589,7 +589,7 @@ def test_show_the_tank_3_to_4_crossover_describes_the_valve():
     live = LiveField(many_crossovers())
     tick(live)
     out = run(jarvis_for(live).handle("show me the Tank 3 to 4 crossover"))
-    assert out["ui"] == [{"type": "ui", "action": "focus", "asset_id": "VALVE_XO_34"}]
+    assert [(d["type"], d["action"], d["asset_id"]) for d in out["ui"]] == [("ui", "focus", "VALVE_XO_34")]
     assert "crossover is closed" in out["reply"], out["reply"]
 
 
