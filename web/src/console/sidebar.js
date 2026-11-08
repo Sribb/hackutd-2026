@@ -26,8 +26,8 @@ export function mountSidebar(app, on) {
       <button type="button" class="cs-icon" id="csClose" title="Hide the chat (J)" aria-label="Hide the chat">${ICON.expand}</button>
     </header>
     <div class="cs-help" id="csHelpCard" hidden>
-      keys: j chat · / ask · esc reset view · t time<br>
-      hands: point to look · pinch to open · open palm to turn · two hands to zoom. hands never confirm a fix.
+      keys: j chat · / ask · hold space to talk · esc reset view · t time<br>
+      hands: point to look · pinch to select · pinch and drag to turn · open palm to stop · two hands to zoom. hands never confirm a fix.
     </div>
     <div class="cs-scroll" id="csScroll">
       <div class="cs-hello" id="csHello"><h1 id="csHelloText">what's happening on the field?</h1></div>
@@ -46,7 +46,7 @@ export function mountSidebar(app, on) {
           <button type="submit" class="cs-send" id="csSend" aria-label="Send">${ICON.up}</button>
         </div>
       </form>
-      <div class="cs-sugg" id="csSugg">${SUGGEST.map(([l, s]) => `<button type="button" class="cs-pill-btn" data-say="${esc(s)}">${esc(l)}</button>`).join("")}</div>
+      <div class="cs-sugg" id="csSugg">${SUGGEST.map(([l, s]) => `<button type="button" class="cs-pill-btn" data-say="${esc(s)}"${s === "show tank 3" ? ` data-k="asset"` : ""}>${esc(l)}</button>`).join("")}</div>
       <p class="cs-disclaimer">gaia proposes; a person confirms every action</p>
     </div>`;
   app.appendChild(side);
@@ -77,6 +77,8 @@ export function mountSidebar(app, on) {
     send: $("csSend"),
     setTitle(t) { if ($("csTitle").textContent !== t) $("csTitle").textContent = t; },
     setHello(t) { if ($("csHelloText").textContent !== t) $("csHelloText").textContent = t; },
+    // The "show tank 3" pill names an asset this field has (dataset mode: its first tank).
+    suggestAsset(say) { const b = $("csSugg").querySelector("[data-k=asset]"); if (b) { b.textContent = say; b.dataset.say = say; } },
     setLive(level, text) {
       const html = `<span class="cs-dot ${level}"></span> <span>${esc(text)}</span>`;
       if ($("csLive")._h !== html) { $("csLive").innerHTML = html; $("csLive")._h = html; }
@@ -92,7 +94,10 @@ export function mountSidebar(app, on) {
       const sel = $("csSel");
       sel.hidden = !id;
       if (id) {
-        sel.innerHTML = `${esc(nice(id))} <button type="button" aria-label="Clear selection">×</button>`;
+        // "about tank 3", "about S4 tank c": what "this" and "it" mean to gaia (IDs keep their case).
+        const words = String(nice(id)).split(" ").map((w) => (/\d/.test(w) ? w : w.toLowerCase())).join(" ");
+        sel.innerHTML = `about ${esc(words)} <button type="button" aria-label="Clear selection">×</button>`;
+        sel.title = `gaia reads "this", "it" and "that" as ${nice(id)}`;
         sel.querySelector("button").onclick = () => on("deselect");
       }
       if (key === chipsKey) return;

@@ -8,6 +8,10 @@
 // fill it in or tick it. When the build is ready the console reopens on /api/field and the
 // new field.glb. Asset IDs only ever come from /api/field.
 
+import "@fontsource/great-vibes/400.css"; // the gaia wordmark
+import "@fontsource/inter/400.css";
+import "@fontsource/inter/500.css";
+import "./upload.css";
 import { BASE } from "./api.js";
 import { authFetch } from "./auth.js";
 import { holdButton } from "./fx.js";
@@ -21,6 +25,8 @@ const KINDS = [
 const NUMERIC = new Set(["capacity_bbl", "shutdown_pct", "warning_pct", "pump_low_pct", "rate_bbl_hr", "water_bbl_hr",
   "lost_usd_hr", "max_bbl_hr", "capacity_bbl", "load_minutes", "minutes_to_disposal"]);
 const ACCEPT = ".png,.jpg,.jpeg,.webp,.gif,.pdf,.csv,.json";
+const NO_SERVER = "start it with <code>npm run demo</code>.";
+const TRAY = `<svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 15V4"/><path d="m7.5 8.5 4.5-4.5 4.5 4.5"/><path d="M4 14.5V18a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3.5"/></svg>`;
 
 let st = null; // { file, t0, res, fixes: Map<reviewIndex, {checked, values}> }
 let timer = 0;
@@ -56,13 +62,20 @@ function close() {
   history.replaceState(null, "", location.pathname + location.search);
 }
 
+// The clock is the time since the file was dropped (the "drop to field" number). Before a drop
+// there is nothing to time, so it shows nothing.
+const clockText = () => (st && st.t0 ? `${((performance.now() - st.t0) / 1000).toFixed(1)} s since the drop` : "");
+
 function shell(step, body) {
-  const steps = ["Drop", "Check", "Build"].map((s, i) => `<span class="${i === step ? "on" : i < step ? "done" : ""}">0${i + 1} ${s}</span>`).join("");
+  const steps = ["drop", "check", "build"].map((s, i) =>
+    `<span class="${i === step ? "on" : i < step ? "done" : ""}"${i === step ? ' aria-current="step"' : ""}><b>0${i + 1}</b> ${s}</span>`).join("");
   return `<header class="up-head">
-      <div class="brand">GAIA</div>
-      <nav class="up-steps">${steps}</nav>
-      <span class="up-clock" id="upClock">${st && st.t0 ? "" : "--.-"}</span>
-      <button id="upClose">Close</button>
+      <div class="up-mark">gaia</div>
+      <nav class="up-steps" aria-label="steps">${steps}</nav>
+      <div class="up-end">
+        <span class="up-clock" id="upClock" title="time since the file was dropped">${clockText()}</span>
+        <button type="button" id="upClose">close</button>
+      </div>
     </header>${body}`;
 }
 
@@ -70,19 +83,27 @@ function tickClock() {
   clearInterval(timer);
   timer = setInterval(() => {
     const el = $("upClock");
-    if (el && st && st.t0) el.textContent = `${((performance.now() - st.t0) / 1000).toFixed(1)} s`;
+    if (el && st && st.t0) el.textContent = clockText();
   }, 100);
 }
 
 // ---------------------------------------------------------------- step 1 ----
 function drawDrop(box, error = "") {
-  box.innerHTML = shell(0, `<section class="up-drop" id="upDrop" tabindex="0">
-      <h1>Bring your own field.</h1>
-      <p>Drop a site plan here. A photo or PDF of the plan, a CSV equipment list, or a blueprint JSON.</p>
-      <p class="muted">Claude reads drawings on the server. It never invents equipment or numbers. Anything it isn't sure of comes back for you to check.</p>
-      <label class="up-pick"><input type="file" id="upFile" accept="${ACCEPT}" hidden><span>Choose a file</span></label>
-      ${BASE ? "" : `<p class="note">No backend set (VITE_API). Only blueprint JSON can be checked here, and nothing can be built.</p>`}
-      ${error ? `<p class="up-err">${esc(error)}</p>` : ""}
+  st = null; // back at the start: no file, so no clock
+  // The whole screen takes a drop; the card is the visible target and opens the file picker.
+  box.innerHTML = shell(0, `<section class="up-drop" id="upDrop">
+      <h1>bring your own field.</h1>
+      <p>drop in a site plan, check what was read from it, and gaia builds your field in 3d.</p>
+      <label class="up-zone" id="upZone">
+        <input type="file" id="upFile" class="up-file" accept="${ACCEPT}">
+        <span class="up-icon">${TRAY}</span>
+        <span class="up-zone-title">drop a site plan here</span>
+        <span class="up-pick">choose a file</span>
+        <span class="up-types">a photo or pdf of the plan, a csv equipment list, or a blueprint json</span>
+      </label>
+      <p class="up-fine">claude reads drawings on the server. it never invents equipment or numbers. anything it isn't sure of comes back for you to check.</p>
+      ${BASE ? "" : `<p class="note" id="upNoServer"><span>the gaia server isn't running here, so only a blueprint file can be checked, and nothing can be built. ${NO_SERVER}</span></p>`}
+      ${error ? `<p class="up-err" role="alert"><span>${esc(error)}</span></p>` : ""}
     </section>`);
   $("upClose").onclick = close;
   const drop = $("upDrop");
@@ -95,8 +116,8 @@ function drawDrop(box, error = "") {
 async function ingest(file) {
   st = { file, t0: performance.now(), res: null, fixes: new Map() };
   const box = $("upload");
-  box.innerHTML = shell(0, `<section class="up-drop reading"><h1>Reading ${esc(file.name)}</h1>
-    <p class="muted">${/\.(png|jpe?g|webp|gif|pdf)$/i.test(file.name) ? "Claude is reading the drawing. Usually 10 to 30 seconds." : "Parsing the file."}</p>
+  box.innerHTML = shell(0, `<section class="up-drop reading" role="status"><h1>reading ${esc(file.name)}</h1>
+    <p class="muted">${/\.(png|jpe?g|webp|gif|pdf)$/i.test(file.name) ? "claude is reading the drawing. this usually takes 10 to 30 seconds." : "reading the file."}</p>
     <div class="up-scan"></div></section>`);
   $("upClose").onclick = close;
   tickClock();
@@ -121,10 +142,10 @@ async function postIngest(file) {
 
 // Without a backend only a blueprint JSON can be shown. It is not checked for gaps.
 async function localIngest(file) {
-  if (!/\.json$/i.test(file.name)) throw new Error("Reading drawings and CSV files needs the backend. Start it and set VITE_API.");
+  if (!/\.json$/i.test(file.name)) throw new Error("reading drawings and csv files needs the gaia server, which isn't running here. start it with npm run demo.");
   const bp = JSON.parse(await file.text());
   const counts = Object.fromEntries(KINDS.map(([k]) => [k, (bp[k] || []).length]));
-  return { ok: true, errors: [], review: [{ id: "", label: "Offline", issue: "No backend, so nothing checked this file for missing numbers." }],
+  return { ok: true, errors: [], review: [{ id: "", label: "no server", issue: "the gaia server isn't running, so nothing checked this file for missing numbers." }],
            counts, source: { file: file.name, read_by: "browser" }, blueprint: bp };
 }
 
@@ -173,7 +194,7 @@ function drawCheck() {
       ? `<label>${k}<select data-i="${i}" data-k="${k}"><option value="">?</option><option value="true" ${f.values[k] === true ? "selected" : ""}>manual (rover)</option><option value="false" ${f.values[k] === false ? "selected" : ""}>remote</option></select></label>`
       : `<label>${k === "minutes_to" ? "minutes to each tank" : k}<input data-i="${i}" data-k="${k}" inputmode="decimal" value="${f.values[k] ?? ""}" placeholder="?"></label>`).join("");
     return `<li class="${fields.length ? "" : "tick"}">
-      <div><b>${esc(item.id || item.label)}</b> <span class="muted">${esc(item.label && item.label !== item.id ? item.label : "")}</span></div>
+      <div><b class="${item.id ? "id" : ""}">${esc(item.id || item.label)}</b> <span class="muted">${esc(item.label && item.label !== item.id ? item.label : "")}</span></div>
       <div class="issue">${esc(item.issue)}</div>
       ${inputs ? `<div class="fills">${inputs}</div>` : `<label class="ok"><input type="checkbox" data-i="${i}" ${f.checked ? "checked" : ""}> I checked this</label>`}
     </li>`;
@@ -214,7 +235,7 @@ function drawCheck() {
           <button id="upAgain">Different file</button>
           <button class="primary hold" id="upBuild" ${blocked || !reviewDone() || !BASE ? "disabled" : ""}><i></i><span>Hold to build</span></button>
         </div>
-        ${!BASE ? `<p class="note">Building needs the backend.</p>` : ""}
+        ${!BASE ? `<p class="note">building needs the gaia server, which isn't running here. ${NO_SERVER}</p>` : ""}
       </aside>
     </section>`);
   $("upClose").onclick = close;
@@ -304,7 +325,8 @@ async function build() {
     clearInterval(timer);
     say("Build failed", e.message, "failed");
     const again = document.createElement("button");
-    again.textContent = "Back to the check";
+    again.type = "button";
+    again.textContent = "back to the check";
     again.onclick = () => { tickClock(); drawCheck(); };
     box.querySelector(".up-drop").appendChild(again);
   }

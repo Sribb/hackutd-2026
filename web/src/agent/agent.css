@@ -1,0 +1,45 @@
+/* gaia as an agent (#171): the step list, the listening orb, the mute toggle. Calm, lowercase,
+   slow easing; still under prefers-reduced-motion. Uses the console's --g-* tokens. */
+
+.cs-b.a-steps { padding: 2px 0 4px; }
+.cs-b.a-steps > .cs-text:empty { display: none; }
+.ag-steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; font-size: 13.5px; color: var(--g-mute); }
+.ag-steps li { display: flex; align-items: center; gap: 10px; opacity: .55; transition: opacity .6s cubic-bezier(.22, .61, .36, 1), color .6s cubic-bezier(.22, .61, .36, 1); }
+.ag-steps li i { position: relative; flex: none; width: 14px; height: 14px; border-radius: 50% !important; border: 1.5px solid var(--g-faint); box-sizing: border-box; }
+.ag-steps li[data-state="now"] { opacity: 1; color: var(--g-ink); }
+.ag-steps li[data-state="now"] i { border-color: var(--g-ink-2); border-top-color: transparent; animation: ag-spin 1s linear infinite; }
+.ag-steps li[data-state="done"] { opacity: .9; color: var(--g-ink-2); }
+.ag-steps li[data-state="done"] i { border-color: var(--g-green); background: var(--g-green); }
+.ag-steps li[data-state="done"] i::after { content: "" !important; position: absolute; left: 3.5px; top: 1px; width: 3px; height: 6px; border: solid var(--g-bg); border-width: 0 1.5px 1.5px 0; transform: rotate(45deg); }
+.ag-steps li[data-state="skip"] { text-decoration: line-through; }
+@keyframes ag-spin { to { transform: rotate(360deg); } }
+
+/* The listening orb, in the dock above the composer. */
+.ag-orb { display: flex; align-items: center; gap: 14px; margin: 0 auto 10px; padding: 12px 18px 12px 14px; max-width: 100%; box-sizing: border-box;
+  border-radius: 22px !important; background: var(--g-raise); border: 1px solid var(--g-line); animation: ag-rise .5s cubic-bezier(.22, .61, .36, 1); }
+.ag-orb[hidden] { display: none; }
+.ag-ball { flex: none; width: 34px; height: 34px; border-radius: 50% !important;
+  background: radial-gradient(circle at 35% 30%, #cfe8ff 0%, #6aa8f7 45%, #2f6fed 100%);
+  box-shadow: 0 0 0 0 rgba(47, 111, 237, .35); animation: ag-breathe 2.4s cubic-bezier(.45, 0, .55, 1) infinite; }
+.ag-orb-words { min-width: 0; }
+.ag-heard { margin: 0; min-height: 1.4em; font-size: 15px; color: var(--g-ink); overflow-wrap: anywhere; }
+.ag-heard:empty::before { content: "…"; color: var(--g-faint); }
+.ag-hint { margin: 0; font-size: 12px; color: var(--g-mute); }
+@keyframes ag-breathe { 0%, 100% { transform: scale(.92); box-shadow: 0 0 0 0 rgba(47, 111, 237, .3); } 50% { transform: scale(1); box-shadow: 0 0 0 10px rgba(47, 111, 237, 0); } }
+@keyframes ag-rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+
+/* The mute toggle (a .cs-mic sibling) and the one-line note where voice can't work. */
+.ag-mute .ag-x { display: none; }
+.ag-mute.off .ag-x { display: inline; }
+.ag-mute.off .ag-wave { display: none; }
+.ag-mute.off { color: var(--g-faint); }
+.ag-mute.talking { color: var(--g-bubble); }
+.ag-mute.talking .ag-wave { animation: ag-talk 1.2s ease-in-out infinite; }
+@keyframes ag-talk { 50% { opacity: .35; } }
+.ag-voice-note { margin: 4px 0 0; font-size: 12px; color: var(--g-mute); text-align: center; }
+.ag-voice-note[hidden] { display: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  .ag-steps li, .ag-orb { transition: none; animation: none; }
+  .ag-ball, .ag-mute.talking .ag-wave, .ag-steps li[data-state="now"] i { animation: none; }
+}

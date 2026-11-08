@@ -7,6 +7,9 @@ Two engines share the same tools:
             no API key. Ported from draft PR #21.
   - claude: Claude picks tools for anything else, and can see a screenshot of the 3D view.
             Needs ANTHROPIC_API_KEY. Model from JARVIS_MODEL (default claude-sonnet-5-5).
+            On screen it is gaia (#171): ui_action lets one answer move the view in several
+            steps from the console's whitelist (focus, trace_pipes, set_time, open_panel, ...),
+            which the console plays one by one. The selected asset is what "this" and "it" mean.
 
 JARVIS_MODE: auto (default: rules first, Claude for the rest), rules, or llm.
 
@@ -41,7 +44,7 @@ NO_KEY = "Jarvis needs ANTHROPIC_API_KEY on the server."
 # Models that take server-side refusal fallback ("default" form, Claude API).
 FALLBACK_MODELS = {"claude-sonnet-5-5", "claude-opus-5-5", "claude-opus-5", "claude-fable-5-1"}
 # Open-ended questions skip the rules fast path when Claude is available.
-COMPLEX = re.compile(r"\b(what if|why|instead|compare|versus|vs\.?|explain|should (we|i)|better|cheaper than|unless|and then)\b")
+COMPLEX = re.compile(r"\b(what if|why|instead|compare|versus|vs\.?|explain|should (we|i)|better|cheaper than|unless|and then|walk (me |us )?through|step by step)\b")
 NUM_WORDS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8,
              "nine": 9, "ten": 10, "eleven": 11, "twelve": 12}
 # A number after one of these words is not a tank ("well 9", "valve d 3", "truck 1").
@@ -88,6 +91,18 @@ class JarvisUnavailable(Exception):
         super().__init__(detail)
         self.detail = detail
 
+
+# The console's whitelist (web/src/console/directives.js), plus "chart": a chart card of an
+# asset's numbers over time that the console draws from its own data (web/src/agent, #159).
+# ui_action can only ask for these.
+UI_ACTIONS = ["focus", "highlight", "explode", "collapse", "isolate", "show_sensors", "trace_pipes",
+              "set_time", "reset_view", "open_panel", "try_whatif", "chart"]
+UI_PANELS = ["plans", "walk", "whatif", "asset", "log", "tanks", "alerts"]
+UI_NEEDS_ID = {"focus", "explode", "isolate", "trace_pipes", "chart"}
+MAX_UI_STEPS = 8
+SAFE_ID = re.compile(r"^[A-Z0-9][A-Z0-9_\-]{0,63}$")
+# "this", "it", "that": the asset selected on screen.
+THIS = re.compile(r"\b(this|it|its|it's|that|this one|that one|the selection|selected)\b")
 
 ACTION_PROPS = {
     "type": {"type": "string", "enum": ["SET_VALVE", "SET_PUMP", "CHOKE_WELL", "SEND_TRUCK"]},
@@ -146,6 +161,42 @@ TOOLS = [
         "input_schema": {"type": "object", "additionalProperties": False, "properties": {}, "required": []},
     },
     {
+        "name": "ui_action",
+        "description": "Move the operator's screen: one step per call. The console plays every call in order "
+                       "with a short pause and ticks each one off in a step list the operator watches, so a "
+                       "walk-through is several calls (focus the failed pump, trace its pipes, set the time to "
+                       "the shutdown clock, open the plans). It moves the view only and never touches "
+                       "equipment. Actions: focus, isolate, explode (show its parts), show_sensors, "
+                       "trace_pipes and collapse take asset_id; highlight takes ids; set_time takes clock "
+                       "(from a tool result, e.g. '2:47 AM') or t_min (minutes from now, 0 = now); "
+                       "open_panel takes panel; try_whatif takes actions (shown on the forecast only); "
+                       "chart takes asset_id and draws its level (or flow) past and forecast as a card; "
+                       "reset_view takes nothing. Unused fields are null.",
+        "strict": True,
+        "input_schema": {"type": "object", "additionalProperties": False,
+                         "required": ["action", "step", "asset_id", "ids", "direction", "clock", "t_min", "panel",
+                                      "actions"],
+                         "properties": {
+                             "action": {"type": "string", "enum": UI_ACTIONS},
+                             "step": {"type": "string",
+                                      "description": "What the operator sees while it runs: 2 to 6 lowercase "
+                                                     "words, e.g. 'flying to pump 3', 'tracing pipes to tank "
+                                                     "3', 'jumping to 2:47 am', 'opening the plans'"},
+                             "asset_id": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+                             "ids": {"anyOf": [{"type": "array", "items": {"type": "string"}}, {"type": "null"}]},
+                             "direction": {"anyOf": [{"type": "string", "enum": ["both", "upstream", "downstream"]},
+                                                     {"type": "null"}]},
+                             "clock": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+                             "t_min": {"anyOf": [{"type": "number"}, {"type": "null"}]},
+                             "panel": {"anyOf": [{"type": "string", "enum": UI_PANELS}, {"type": "null"}]},
+                             "actions": {"anyOf": [{"type": "array", "items": {
+                                 "type": "object", "additionalProperties": False,
+                                 "required": ["type", "asset_id", "value", "target_id", "at_min"],
+                                 "properties": {**ACTION_PROPS, "at_min": {"type": ["number", "null"]}}}},
+                                 {"type": "null"}]},
+                         }},
+    },
+    {
         "name": "propose_action",
         "description": "Propose one equipment command (open or close a valve, turn a pump on or off, choke or "
                        "shut in a well, send a truck to a tank). It is only stored as a proposal: nothing "
@@ -195,7 +246,7 @@ class Jarvis:
         """`role` is the asker's control-token role (auth.py), recorded on Jarvis's proposals
         in the audit log. It never confirms anything."""
         text = (message or "").strip()
-        selected = [s.upper() for s in selected or [] if isinstance(s, str)]
+        selected = list(dict.fromkeys(s.strip().upper() for s in selected or [] if isinstance(s, str) and s.strip()))
         mode = os.environ.get("JARVIS_MODE", "auto").lower()
         key = self.has_key()
         ctx: dict = {"ui": [], "proposals": [], "role": role}
@@ -215,6 +266,7 @@ class Jarvis:
 
     # ---------- tools (both engines) ----------
     async def run_tool(self, tool: str, args: dict, ctx: dict) -> Any:
+        if (g := __import__(f"{__package__}.eog.gaia", fromlist=["TOOLS"])).active() and tool in g.TOOLS: return await g.run_tool(tool, args, ctx)  # noqa: E501,E701 - a dataset on screen answers (eog/gaia.py, #152)
         live = self.live
         if tool == "focus_camera":
             aid = str(args.get("asset_id", "")).upper()
@@ -262,6 +314,8 @@ class Jarvis:
                                "total_usd": p.get("cost", {}).get("total_usd"),
                                "keeps_running": p.get("keeps_running"), "robust": p.get("robust"),
                                "cannot_save": p.get("cannot_save", [])} for p in res.get("plans", [])]}
+        if tool == "ui_action":
+            return await self._ui_action(args, ctx)
         if tool == "propose_action":
             try:
                 p = await live.propose(args, reason=str(args.get("reason") or ""), source="jarvis",
@@ -295,6 +349,61 @@ class Jarvis:
     async def _focus(self, aid: str, ctx: dict) -> None:
         await self.live.focus(aid, source="jarvis")
         self._note_ui(aid, ctx)
+
+    async def _ui_action(self, args: dict, ctx: dict) -> dict:
+        """One on-screen step for the console to play, in order (directives.js whitelist).
+        Changes the view only. Bad input is an error for Claude to fix, never a directive."""
+        act = str(args.get("action") or "").strip().lower()
+        if act not in UI_ACTIONS:
+            return {"error": f"Unknown view action {act!r}. Use one of {', '.join(UI_ACTIONS)}."}
+        if len(ctx["ui"]) >= MAX_UI_STEPS:
+            return {"error": f"That is {MAX_UI_STEPS} steps already. Answer now."}
+        aid = str(args.get("asset_id") or "").strip().upper()
+        if aid and not SAFE_ID.match(aid):
+            return {"error": f"{aid!r} is not an asset ID."}
+        if act in UI_NEEDS_ID and not aid:
+            return {"error": f"{act} needs an asset_id."}
+        d: dict = {"type": "ui", "action": act, "source": "gaia"}
+        if aid:
+            d["asset_id"] = aid
+        a: dict = {}
+        if act == "trace_pipes":
+            a["direction"] = args.get("direction") if args.get("direction") in ("upstream", "downstream") else "both"
+        elif act == "set_time":
+            if args.get("clock"):
+                a["clock"] = str(args["clock"]).strip()[:16]
+            elif isinstance(args.get("t_min"), (int, float)):
+                a["t_min"] = max(0.0, min(360.0, float(args["t_min"])))
+            else:
+                return {"error": "set_time needs a clock from a tool result or t_min."}
+        elif act == "open_panel":
+            if args.get("panel") not in UI_PANELS:
+                return {"error": f"open_panel needs a panel: {', '.join(UI_PANELS)}."}
+            a["panel"] = args["panel"]
+        elif act == "highlight":
+            ids = [str(x).strip().upper() for x in args.get("ids") or [] if isinstance(x, str)]
+            ids = [x for x in ids if SAFE_ID.match(x)][:24] or ([aid] if aid else [])
+            if not ids:
+                return {"error": "highlight needs ids."}
+            a["ids"], a["seconds"] = ids, 20
+        elif act == "try_whatif":
+            acts = [self._forecast_action(x) for x in args.get("actions") or [] if isinstance(x, dict)]
+            if not acts:
+                return {"error": "try_whatif needs actions."}
+            a["actions"] = acts
+        elif act == "show_sensors" and not aid:
+            d["asset_id"] = "ALL"
+        if a:
+            d["args"] = a
+        step = re.sub(r"\s+", " ", str(args.get("step") or "")).strip().lower()[:60]
+        if step:
+            d["step"] = step
+        # Not broadcast on /ws as focus_camera is: an echo would fly the camera before the
+        # console plays the steps in order.
+        known = bool(aid and self.live.fmap.kind_of(aid))
+        ctx["ui"].append(d)
+        return {"ok": True, "step": step or act, "known_asset": known or not aid,
+                "note": "The console plays this step in order. It moves the view only; no equipment changed."}
 
     @staticmethod
     def _forecast_action(a: dict) -> dict:
@@ -470,12 +579,24 @@ class Jarvis:
                "wells": sorted(f.wells), "disposal wells": sorted(f.swds), "trucks": sorted(f.trucks)}
         tanks = {tid: {"capacity_bbl": t["capacity_bbl"], "shutdown_pct": t["shutdown_pct"]} for tid, t in sorted(f.tanks.items())}
         return (
-            "You are Jarvis, the assistant in the side panel of Freeboard, a night-shift console for an oil "
-            "field's produced-water tanks. Wells fill tanks with water; transfer pumps empty them to disposal "
-            "wells; if a tank reaches its shutdown level, its wells shut in and production is lost. The operator "
-            "sees a 3D model of the field and may send a screenshot of it with selected assets.\n\n"
+            "You are gaia (always lowercase), the night-shift operator's assistant on a console for an oil "
+            "field's produced-water tanks. Your name is gaia and nothing else. Wells fill tanks with water; "
+            "transfer pumps empty them to disposal wells; if a tank reaches its shutdown level, its wells shut "
+            "in and production is lost. The operator sees a live 3D model of the field next to you and may send "
+            "a screenshot of it with the selected asset.\n\n"
+            "You act on the screen. Show, don't tell: when someone asks to see, understand or be walked "
+            "through something, move the view with ui_action, one call per step, in the order a person would "
+            "look. The console plays the steps one by one and ticks them off. A walk-through of what's wrong: "
+            "list_alerts; ui_action focus on the failed asset; ui_action trace_pipes from it to the tank it "
+            "feeds; get_forecast; ui_action set_time to the shutdown clock the forecast gave; ui_action "
+            "chart on that tank; get_plans; ui_action open_panel plans; then propose_action for the cheapest "
+            "plan's first step. Give each step a short lowercase label ('flying to pump 3', 'tracing pipes "
+            "to tank 3', 'jumping to 2:47 am', 'drawing the level', 'opening the plans').\n\n"
+            "\"This\", \"it\" and \"that\" mean the asset selected on screen, named in the note before the "
+            "question. If nothing is selected and the question needs one, ask which asset.\n\n"
             "How to answer:\n"
-            "- One to three short, plain sentences. No markdown or lists.\n"
+            "- Your reply is read aloud: at most two short, plain sentences. No markdown or lists. The screen "
+            "carries the detail.\n"
             "- Every number you state (levels, times, rates, dollars) must come from a tool result in this turn, "
             "and must say where it came from and how old it is: a reading with its age from the tool's `reading` "
             "('Tank 3 is at 71% (reading 20 s old).'), a forecast or plan with its `as_of` time ('The forecast at "
@@ -489,8 +610,9 @@ class Jarvis:
             "- Look up an asset with explain_asset before describing it, and call focus_camera on the asset you "
             "are talking about.\n"
             "- For 'what if' use get_forecast; for the cheapest fix use get_plans.\n"
-            "- To fix something, call propose_action. It only creates a proposal; tell the operator it is "
-            "waiting for their confirmation on the console. Never claim equipment has changed.\n"
+            "- You never move equipment. To fix something, call propose_action. It only creates a PENDING "
+            "proposal; say it is waiting for a person to hold to confirm on the fix card. Never claim "
+            "equipment has changed.\n"
             "- Name assets like a person would ('Tank 3', 'the Tank 3 to 4 crossover'), not by ID.\n\n"
             f"Asset IDs: {json.dumps(ids)}\nTanks: {json.dumps(tanks)}"
         )
@@ -514,7 +636,9 @@ class Jarvis:
             media = "image/jpeg" if data.startswith("/9j/") else "image/png"
             content.append({"type": "image", "source": {"type": "base64", "media_type": media, "data": data}})
         live = self.live
-        note = (f"[Live clock {live.fmap.clock(live.t)}. Selected in the 3D view: {', '.join(selected) or 'nothing'}."
+        this = (f"{selected[0]} (what 'this', 'it' and 'that' mean)" if selected else "nothing")
+        more = f"; also {', '.join(selected[1:])}" if len(selected) > 1 else ""
+        note = (f"[Live clock {live.fmap.clock(live.t)}. Selected in the 3D view: {this}{more}."
                 f"{' The image is a screenshot of the 3D view.' if image_b64 else ''}]")
         content.append({"type": "text", "text": f"{note}\n{text or 'What am I looking at?'}"})
         messages: list[dict] = [{"role": "user", "content": content}]
@@ -759,6 +883,13 @@ class Jarvis:
             on, n = ((m.group(1), m.group(2)) if m.group(1) else (m.group(4), m.group(3)) if m.group(3)
                      else ("on" if m.group(5) == "start" else "off", m.group(6)))
             return await self._propose({"type": "SET_PUMP", "asset_id": f"PUMP_{n}", "value": on.upper()}, text, ctx)
+
+        # "What's wrong with this?", "how's it doing?": the asset selected on screen.
+        sel = next((a for a in selected if live.fmap.kind_of(a)), None)
+        if (sel and THIS.search(t) and not self._asset_in(t) and "crossover" not in t
+                and re.search(r"wrong|status|how'?s|how is|doing|explain|tell me|about|happening|going on|okay|\bok\b", t)):
+            await self._focus(sel, ctx)
+            return await self._describe(sel)
 
         # What am I looking at.
         if re.search(r"looking at|what is this|what's this|whats this|this (asset|thing|one)|selected|what is that", t):

@@ -57,7 +57,7 @@ FALLBACK_GLB = REPO_DIR / "blender" / "field.glb"
 VALIDATOR_SCRIPT = REPO_DIR / "scenario" / "validate_blueprint.py"
 SCHEMA_FILE = REPO_DIR / "docs" / "blueprint.schema.json"
 MAC_BLENDER = "/Applications/Blender.app/Contents/MacOS/Blender"
-BUILD_TIMEOUT_S = float(os.environ.get("FREEBOARD_BUILD_TIMEOUT", "180"))
+BUILD_TIMEOUT_S = float(os.environ.get("FREEBOARD_BUILD_TIMEOUT", "90"))
 MAX_BYTES = 5_000_000
 KINDS = ("tanks", "pumps", "valves", "wells", "disposal_wells", "trucks", "yards")
 ID_RE = re.compile(r"^bp_[0-9a-f]{12}$")
@@ -78,6 +78,31 @@ def setup(default: dict, use: Callable[[dict], None]) -> None:
     global _use
     _default["scenario"] = copy.deepcopy(default)
     _use = use
+    _restore_active()
+
+
+def _save_active(bid: str) -> None:
+    """Remember the active blueprint, so a restart comes back on it (active.txt in DATA_DIR)."""
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        (DATA_DIR / "active.txt").write_text(bid, encoding="utf-8")
+    except OSError:
+        log.exception("couldn't save the active blueprint id")
+
+
+def _restore_active() -> None:
+    """On startup, go back to the blueprint that was active before the restart, if it still loads."""
+    try:
+        bid = (DATA_DIR / "active.txt").read_text(encoding="utf-8").strip()
+    except OSError:
+        return
+    if not ID_RE.match(bid) or not (DATA_DIR / bid / "blueprint.json").is_file():
+        return
+    try:
+        _activate({"id": bid})
+        log.info("restored active blueprint %s", bid)
+    except Exception:  # noqa: BLE001 - a bad saved blueprint must not stop the server
+        log.exception("couldn't restore blueprint %s; staying on the default", bid)
 
 
 # ------------------------------------------------------------------ validation ----
@@ -316,6 +341,7 @@ def _activate(rec: dict) -> None:
         if _use:
             _use(scen)
         _active["id"] = rec["id"]
+    _save_active(rec["id"])
 
 
 # ------------------------------------------------------------------ routes ----
@@ -475,6 +501,7 @@ def activate_blueprint(bid: str, request: Request, caller: Caller = Depends(requ
             if _use and "scenario" in _default:
                 _use(copy.deepcopy(_default["scenario"]))
             _active["id"] = DEFAULT_ID
+        _save_active(DEFAULT_ID)
         _audit_activation(request, caller, DEFAULT_ID)
         return {"id": DEFAULT_ID, "active": True, "status": "ready", "note": "Back on the default scenario."}
     rec = _get(bid)

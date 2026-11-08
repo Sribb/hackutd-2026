@@ -1607,6 +1607,8 @@ const ui = layout === "console" ? mountConsole({
   tanks: () => ((field && field.tanks) || []).map((t) => t.id),
   tankOf: (id) => { const p = ((field && field.pumps) || []).find((x) => x.id === id) || ((field && field.wells) || []).find((x) => x.id === id); return p ? p.tank_id : null; },
   blind: () => (data ? blindTanks() : []),
+  // The field as it is now (minute 0, never the slider's forecast), for the monitoring strip (#154).
+  liveView: () => (data && fc ? viewAt(0) : {}),
   selected: () => selectedId,
   select: (id) => select(id),
   focus: (id) => { if (ids.has(id)) { select(id, true); inspect.pointed(id, "jarvis"); } },
@@ -1619,6 +1621,7 @@ const ui = layout === "console" ? mountConsole({
   describe, nice, clockAt, usd,
   logged: () => renderLog(),
 }) : null;
+if (ui) import("./tour/tour.js").then((m) => m.maybeTour()); // #158 the guided judge tour (?tour=1); all of it is in tour/
 if (layout === "classic") {
   const back = document.createElement("button");
   back.className = "upload-open";
@@ -1631,6 +1634,9 @@ if (layout === "classic") {
 mountHands({
   canvas, stage: $("stage"),
   hoverAt,
+  // The gaia console (#171): pinch selects, pinch and drag orbits, open palm stops gaia (agent/index.js).
+  agentic: layout === "console",
+  palm: () => dispatchEvent(new CustomEvent("gaia:palm")),
   clickAt(x, y) {
     const id = pick({ clientX: x, clientY: y });
     if (!id) return null;

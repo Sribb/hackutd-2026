@@ -255,9 +255,13 @@ def _push_plan(out: dict) -> None:
         log.warning("SpacetimeDB set_plan failed: %s", e)
 
 
+# Bumped when a route's shape changes; clients can check it in /api/health.
+API_VERSION = "1.1"
+
+
 @app.get("/api/health")
 def health() -> dict:
-    return {"ok": True, "scenario": SCENARIO.get("_source"), "spacetime": spacetime_sync.status,
+    return {"ok": True, "api_version": API_VERSION, "scenario": SCENARIO.get("_source"), "spacetime": spacetime_sync.status,
             "clock_source": "live" if now.live_of(app) is not None else "static",
             "lastcall": LASTCALL, "ingest": INGEST}
 
@@ -345,6 +349,14 @@ try:
     _eog_legacy.install(app)
 except ImportError as e:
     log.warning("Dataset mode legacy routes not mounted: %s", e)
+
+# /api/dataset/* (the /dataset page, its 3D) and GET /api/eog/blueprint (#152).
+try:
+    from .eog.dataset_api import router as dataset_router
+
+    app.include_router(dataset_router)
+except ImportError as e:
+    log.warning("Dataset page API not mounted: %s", e)
 
 
 # ---------- Ingest (ingest/, owned by @teameuphoriainv-dot) ----------
