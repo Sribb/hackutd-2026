@@ -277,8 +277,33 @@ function ownPlans() {
       map.set(p.id, { ...p, doNothing: doNothing(tk.input), shared: tanks.length > 1 ? tanks.map((t) => t.id) : null });
     }
   }
-  jointMemo = { key, map };
+  jointMemo = { key, map, bySystem };
   return map;
+}
+
+// README "How big should the trucking fleet be?": the cheapest total for this system's
+// failures in progress with 0 to fleet + 2 trucks. Same search, only the fleet changes.
+function fleetCurve(systemId) {
+  ownPlans();
+  const tanks = jointMemo.bySystem?.get(systemId);
+  if (!tanks?.length) return null;
+  const fleet = state.ops.systems?.[systemId]?.emergency_fleet_size ?? 0;
+  const out = [];
+  for (let n = 0; n <= fleet + 2; n++) out.push({ n, total: cheapestJoint(tanks, n)?.total ?? null, current: n === fleet });
+  return { tanks: tanks.map((t) => t.id), fleet, rows: out };
+}
+
+function fleetHtml(systemId) {
+  const c = fleetCurve(systemId);
+  if (!c || c.rows.some((r) => r.total === null)) return "";
+  const max = Math.max(...c.rows.map((r) => r.total), 1);
+  const cur = c.rows.find((r) => r.current)?.total ?? null;
+  const rows = c.rows.map((r) => {
+    const save = cur !== null && r.n > c.fleet && cur - r.total > 0.5 ? ` · saves ${money(cur - r.total)}` : "";
+    return `<div class="ds-fleet-row${r.current ? " on" : ""}"><span>${r.n} truck${r.n === 1 ? "" : "s"}${r.current ? " (today)" : ""}</span>
+      <i style="width:${Math.max(1, (r.total / max) * 100).toFixed(1)}%"></i><b>${money(r.total)}</b><em>${save}</em></div>`;
+  }).join("");
+  return `<div class="ds-fleet"><span class="kicker">Fleet size: cheapest total for ${esc(systemId)}'s ${c.tanks.length} failure${c.tanks.length === 1 ? "" : "s"} in progress</span>${rows}</div>`;
 }
 
 // A pump fault as an alert-shaped object, so the what-if can plan it. No backend plan.
@@ -755,6 +780,7 @@ function whatIf(f, s, alert) {
         </tbody></table>
         ${r.problems.length ? `<ul class="ds-problems">${r.problems.map((p) => `<li>${esc(p)}</li>`).join("")}</ul>` : ""}
         <div class="ds-wi-chart"></div>
+        ${alert ? fleetHtml(s.id) : ""}
       </div>
     </div>`;
 
