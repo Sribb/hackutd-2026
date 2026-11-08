@@ -154,3 +154,28 @@ try:
     LASTCALL = "mounted"
 except ImportError:
     LASTCALL = "not installed (lastcall/ is not on this branch yet)"
+
+
+# ---------- Blueprints (#41): upload, validate, build, serve, activate ----------
+try:
+    from . import blueprints
+
+    def _use_scenario(scenario: dict) -> None:
+        """Swaps the scenario every endpoint reads (POST /api/blueprints/{id}/activate)."""
+        global SCENARIO, _PLANT
+        SCENARIO = scenario
+        _plans.clear()
+        if LASTCALL == "mounted":
+            _PLANT = build_plant(scenario)
+        threading.Thread(target=spacetime_sync.push_state, args=(state_payload(scenario),), daemon=True).start()
+
+    blueprints.setup(default=SCENARIO, use=_use_scenario)
+    app.include_router(blueprints.router)
+except ImportError as e:  # e.g. a checkout without backend/app/blueprints.py
+    log.warning("Blueprints API not mounted: %s", e)
+
+try:  # POST /api/ingest (ingest/, #28): the upload screen's first step
+    from ingest.router import router as ingest_router
+    app.include_router(ingest_router)
+except ImportError as e:  # e.g. anthropic isn't installed
+    log.warning("Ingest API not mounted: %s", e)

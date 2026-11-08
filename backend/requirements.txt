@@ -2,3 +2,5 @@ fastapi==0.115.6
 uvicorn==0.34.0
 httpx==0.28.1
 pytest==8.3.4
+jsonschema==4.25.1
+python-multipart==0.0.20
