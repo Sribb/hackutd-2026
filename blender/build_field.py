@@ -5,6 +5,9 @@ Run from the repo root:
       --python blender/build_field.py -- [--blueprint PATH.json] [--out DIR] \
       [--detail full|lite|bare] [--render-dir DIR] [--render-assets ID,ID]
 
+The blueprint follows docs/BLUEPRINT.md (format v1); ingest drafts with missing numbers
+build too, since the generator only needs IDs and links.
+
 With no --blueprint it builds scenario/field.json into blender/, the field the team uses
 today. With --blueprint and no --out it writes to blender/out/<blueprint name>/. Every run
 writes build_report.json. A blueprint with errors exits with code 1 and writes no glb. A
@@ -245,6 +248,10 @@ def run(opts, src, out_dir, report):
     if report["errors"]:
         return 1
     report["name"] = bp["name"]
+    if bp["site"]:
+        report["site"] = bp["site"]
+    if bp["connectors"]:
+        report["connectors"] = [c["id"] for c in bp["connectors"]]
     report["counts"] = blueprint.counts(bp)
 
     order = list(LEVELS)
