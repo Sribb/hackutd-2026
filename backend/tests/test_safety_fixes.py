@@ -32,6 +32,8 @@ def clean_env(monkeypatch):
     for var in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "JARVIS_MODE", "JARVIS_CONFIRM", "NTFY_TOPIC",
                 "FREEBOARD_TOKEN", "OPERATOR_PIN", "FREEBOARD_PHONE_TOKEN", "FREEBOARD_AUDIT_FILE"):
         monkeypatch.delenv(var, raising=False)
+    # #126: a webhook url must be on a host an operator allows
+    monkeypatch.setenv("FREEBOARD_CONN_ALLOWED_HOSTS", "127.0.0.1,localhost,gateway.local,other-gateway.local")
 
 
 @pytest.fixture

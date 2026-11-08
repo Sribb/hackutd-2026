@@ -12,6 +12,16 @@ python -m venv .venv
 .venv/Scripts/python -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8000
 ```
 
+Field connectors (#126: OPC UA, Sparkplug B) need their protocol libraries. Without them the
+backend still runs, and those connectors show `unavailable` with the pip hint:
+
+```bash
+.venv/Scripts/python -m pip install -r backend/requirements-connectors.txt
+```
+
+To try them without equipment, `python -m backend.fakes` starts local fakes and prints the
+`FREEBOARD_CONN_*` variables to export; then activate `backend/data/samples/connectors_demo.json`.
+
 | Endpoint | What it does |
 |---|---|
 | `GET /api/field` | Field definition, plus `lead_min`, `costs`, and `yards` when the scenario has them |

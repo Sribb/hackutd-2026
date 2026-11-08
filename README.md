@@ -1,8 +1,26 @@
-# Freeboard (working name)
+# Gaia
 
 A 3D night-shift console for salt water operations in an oil field. Built for HackUTD 2026.
 
-Freeboard is the room left at the top of a tank. It is the margin an operator is running out of.
+Its working name was Freeboard, the room left at the top of a tank: the margin an operator is running out of. That name still appears in code, such as `FREEBOARD_TOKEN`. How the gaia AI works: [AGENTS.md section 7](AGENTS.md#7-gaia-the-product-and-its-ai).
+
+## Run it
+
+You need Python 3.11 or newer and Node 18 or newer.
+
+```bash
+python3 -m venv .venv && .venv/bin/pip install -r backend/requirements.txt
+cd web && npm ci
+FREEBOARD_EOG_DIR=/path/to/HackUTD-ZeroDay npm run demo          # on this laptop
+FREEBOARD_EOG_DIR=/path/to/HackUTD-ZeroDay npm run demo:tunnel   # plus a public https link
+```
+
+`FREEBOARD_EOG_DIR` is a checkout of EOG's sponsor repo. Every folder in it with `network.json`, `ops.json` and `telemetry.csv` shows up, including `test/`. Open the printed link:
+- `/start` is the judge flow.
+- `/` is the gaia console.
+- `/dataset` is any EOG folder.
+
+Put this laptop's settings in a `.env` at the repo root, copying `.env.example`. The file is gitignored, and `npm run demo` loads it into the backend. Settings include `ANTHROPIC_API_KEY` for gaia's Claude engine and `FREEBOARD_EOG_DIR`. Text and voice alerts need `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN` and `TWILIO_FROM` there too. Without them, the phone pager stands in.
 
 **Start here, then go to your area:**
 - Backend: [docs/BACKEND.md](docs/BACKEND.md)

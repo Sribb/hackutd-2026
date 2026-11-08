@@ -127,6 +127,7 @@ class ActionIn(BaseModel):
 class JarvisIn(BaseModel):
     message: str = Field("", max_length=4000)
     selected_asset_ids: List[str] = []
+    selected: Optional[str] = Field(None, max_length=64)  # the asset on screen: what "this" and "it" mean
     image_png_base64: Optional[str] = Field(None, max_length=15_000_000)
 
 
@@ -289,7 +290,8 @@ def build_router(live: LiveField, jarvis: Jarvis, runs: Optional[RunManager] = N
     @r.post("/api/jarvis")
     async def ask_jarvis(body: JarvisIn, caller: Caller = OPERATOR) -> dict:
         try:
-            return await jarvis.handle(body.message, body.selected_asset_ids, body.image_png_base64,
+            sel = ([body.selected] if body.selected else []) + list(body.selected_asset_ids)
+            return await jarvis.handle(body.message, sel, body.image_png_base64,
                                        role=caller.role)
         except JarvisUnavailable as e:
             raise HTTPException(503, e.detail)

@@ -61,6 +61,7 @@ from .notify import Notifier
 log = logging.getLogger("freeboard.live")
 
 TICK_S = 1.0
+HOLD = None   # dataset mode (#153): eog/legacy_api.py sets a callable; while it returns True the field stands still
 REPRIORITIZE_MIN = 1.0       # rerun the baseline forecast for priorities at least this often (live min)
 PRIORITY_HORIZON_MIN = 360   # the forecast's own horizon: past it, an alarm is P3
 MOVED_MIN = 2.0              # a consequence that moves this much is broadcast again
@@ -149,7 +150,7 @@ class LiveField:
     async def _loop(self) -> None:
         while True:
             await asyncio.sleep(TICK_S)
-            if self.paused:
+            if self.paused or (HOLD is not None and HOLD()):
                 continue
             try:
                 await self.tick(self.speed * TICK_S)

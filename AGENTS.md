@@ -87,3 +87,25 @@ Each row in the table above is a lane. The lane's name is its first folder: `web
 - `tools/lane` lists lanes and owners. `tools/lane owner <path>` says who owns a file. `tools/lane check` lists your changes that fall outside the lane.
 
 A checkout with no lane set isn't fenced, so the team lead's checkout works as before.
+
+## 7. gaia: the product and its AI
+
+**The name is Gaia.** On screen it is always lowercase `gaia`, and the console has no uppercase text. Freeboard and Jarvis were working names, and they stay in code: `/api/jarvis`, `backend/app/jarvis.py`, `JARVIS_*`, `FREEBOARD_TOKEN`. Don't rename routes, env vars or IDs; other code reads them.
+
+**What we're judged on:** EOG's sponsor repo `nihaal419/HackUTD-ZeroDay`. At judging they add an unseen `test/` folder (S6 to S11), and it must work with no code change.
+
+**The default screen** is the gaia console (`web/src/console/`, `web/src/gaia/`, on `67-demo-start`): chat on the left, the live 3D field on the right. The old panels are at `?layout=classic`. `cd web && npm run demo` starts the backend and the console together.
+
+**Four agents post in one stream:**
+- `watch`, `forecast` and `planner` are templates over deterministic data, never an LLM.
+- `gaia` answers questions, trying three engines in order:
+  1. browser intents (`web/src/console/intents.js`): view only, no network;
+  2. backend rules (`backend/app/jarvis.py`): instant, no API key;
+  3. Claude for everything else. It picks tools and can see a screenshot of the 3D view. It needs `ANTHROPIC_API_KEY` on the server, and the model comes from `JARVIS_MODEL` (default `claude-sonnet-5-5`). `JARVIS_MODE` is `auto` (default), `rules` or `llm`.
+
+**Rules for anything gaia says or does:**
+- Every number comes from a tool result in that turn and says where it came from and how old it is.
+- A missing or stale reading is never "safe".
+- gaia never moves equipment. A fix becomes a PENDING proposal, and a person holds to confirm it on the fix card (`POST /api/actions/{id}/confirm`).
+- The shutdown clock and the plan dollars come from one source, so the status line and gaia never disagree.
+- The API key lives only in the server's gitignored `.env`. Never put it in a `VITE_` variable, because those ship to the browser.
