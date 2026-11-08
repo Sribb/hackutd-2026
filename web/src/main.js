@@ -985,7 +985,7 @@ function handoffText() {
   const cons = (a) => {
     const m = alarms.minutesLeft(a);
     return a.consequence_clock && a.consequence_asset_id
-      ? ` ${nice(a.consequence_asset_id)} reaches shutdown at ${a.consequence_clock}${m != null ? (m > 0 ? ` (${m} min)` : " (now)") : ""}.`
+      ? ` ${nice(a.consequence_asset_id)} reaches shutdown at ${a.consequence_clock}${m != null ? (m > 0 ? ` (${m} min)` : " (now)") : ""} if nothing changes.`
       : a.consequence ? ` ${a.consequence}` : "";
   };
 

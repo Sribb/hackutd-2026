@@ -289,7 +289,7 @@ function consequenceLine(a) {
   const m = minutesLeft(a);
   const who = a.consequence_asset_id ? hooks.nice(a.consequence_asset_id) : "";
   const text = a.consequence_clock && who
-    ? `${who} reaches shutdown at ${a.consequence_clock}${m != null ? (m > 0 ? ` (${label(m)})` : " (now)") : ""}`
+    ? `${who} reaches shutdown at ${a.consequence_clock}${m != null ? (m > 0 ? ` (${label(m)})` : " (now)") : ""} if nothing changes`
     : a.consequence;
   const usd = a.usd_at_risk ? ` · ${hooks.usd(a.usd_at_risk)} at risk` : "";
   return `<div class="al-cons">${esc(text)}<span class="muted">${esc(usd)}</span></div>`;
