@@ -11,7 +11,7 @@ import "@fontsource/azeret-mono/600.css";
 import "./dataset.css";
 import { apiSource, fileSource, assetIndex, checkDataset, STEP_S } from "./data.js";
 import { lineChart, fmtTime } from "./chart.js";
-import { replay, doNothing, inputFor, planFromActions, planToActions, cheapestJoint, walkCurve, money, revenuePerHour } from "./plan.js";
+import { replay, doNothing, tankRow, inputFor, planFromActions, planToActions, cheapestJoint, walkCurve, money, revenuePerHour } from "./plan.js";
 import { normAlerts, sortAlerts, actionLines, handoffText, durationText, categoryOf, trucksInUse } from "./alerts.js";
 import { screenDataset, screenAt, screenSeries, recentMean, faultRuns, noiseSd, confidenceAt, WEAR } from "./screen.js";
 
@@ -104,6 +104,8 @@ async function loadFolder(folder) {
   state.folder = folder;
   state.selected = null;
   state.plans.clear();
+  state.picked?.clear(); // picks name this folder's sensors
+  state.outageH = null; // a new folder can have a different repair time
   state.alerts = [];
   state.detection = "loading";
   try { localStorage.setItem("freeboard.dataset.folder", folder); } catch {}
@@ -267,8 +269,8 @@ function pumpFaults(at = state.at) {
 // checks the backend's. Keyed by facility. Memoized per folder and moment.
 let jointMemo = { key: null, map: new Map() };
 function ownPlans() {
-  const key = `${state.folder}@${state.at}@${state.detection}@${state.alerts.length}`;
-  if (jointMemo.key === key) return jointMemo.map;
+  const key = `${state.at}@${state.detection}@${state.alerts.length}`;
+  if (jointMemo.store === state.store && jointMemo.key === key) return jointMemo.map;
   const map = new Map();
   const h = repairH();
   const failures = state.detection === "ok"
@@ -297,7 +299,7 @@ function ownPlans() {
       map.set(p.id, { ...p, doNothing: doNothing(tk.input), shared: tanks.length > 1 ? tanks.map((t) => t.id) : null });
     }
   }
-  jointMemo = { key, map, bySystem };
+  jointMemo = { store: state.store, key, map, bySystem };
   return map;
 }
 
@@ -826,44 +828,73 @@ function lostSeries(f, from, to) {
 // together for the outage, and prices the same outage with 0 to fleet + 3 trucks.
 // Assumes the trucks haul to another site on the same cycle times as ops.json.
 const outageMemo = new Map(); // `${at}@${system}@${hours}` -> Promise of the result, per loaded store
-let outageStore = null, outageSeq = 0;
-const outageWorkers = [], outagePending = new Map();
-// One tank per worker, a small pool sized to the machine.
-function outageTank(tank, maxK) {
-  const size = Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 2) - 1));
-  if (!outageWorkers.length) for (let i = 0; i < size; i++) {
-    const w = new Worker(new URL("./outage.worker.js", import.meta.url), { type: "module" });
-    w.onmessage = (e) => { const p = outagePending.get(e.data.id); outagePending.delete(e.data.id); p?.(e.data); };
-    outageWorkers.push(w);
+const OUTAGE_KEEP = 4; // results hold every replay's points: keep only the last few
+let outageStore = null, outageSeq = 0, outageKey = null;
+let outageWorkers = [];
+const outagePending = new Map(); // job id -> { key, resolve }
+// Stops every worker and settles its jobs, so nothing waits forever and a stale plan never
+// queues ahead of the one on screen. The pool is rebuilt on the next job.
+function outageReset(why) {
+  for (const w of outageWorkers) w.terminate();
+  outageWorkers = [];
+  for (const [, p] of outagePending) p.resolve({ error: why });
+  outagePending.clear();
+}
+// One tank per worker, a small pool sized to the machine. Without workers (blocked, or
+// an old browser) the tank is planned on the page itself: slower, still right.
+function outageTank(tank, maxK, key) {
+  if (!outageWorkers.length) {
+    const size = Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 2) - 1));
+    try {
+      for (let i = 0; i < size; i++) {
+        const w = new Worker(new URL("./outage.worker.js", import.meta.url), { type: "module" });
+        w.onmessage = (e) => { const p = outagePending.get(e.data.id); outagePending.delete(e.data.id); p?.resolve(e.data); };
+        w.onerror = w.onmessageerror = (e) => { e.preventDefault?.(); outageReset("the planning worker stopped"); };
+        outageWorkers.push(w);
+      }
+    } catch {
+      outageReset("no workers");
+      return new Promise((resolve) => setTimeout(() => {
+        try { resolve({ row: tankRow(tank, maxK), nothing: doNothing(tank.input) }); } catch (err) { resolve({ error: String(err?.message || err) }); }
+      }));
+    }
   }
   const id = ++outageSeq;
-  return new Promise((resolve) => { outagePending.set(id, resolve); outageWorkers[id % outageWorkers.length].postMessage({ id, tank, maxK }); });
+  return new Promise((resolve) => { outagePending.set(id, { key, resolve }); outageWorkers[id % outageWorkers.length].postMessage({ id, tank, maxK }); });
 }
-function outageRun(tanks, maxFleet) {
-  return Promise.all(tanks.map((t) => outageTank(t, maxFleet))).then((rows) => {
+function outageRun(tanks, maxFleet, key) {
+  return Promise.all(tanks.map((t) => outageTank(t, t.truckSpec ? maxFleet : 0, key))).then((rows) => {
     const bad = rows.find((r) => r.error);
     if (bad) return { error: bad.error };
-    return { curve: walkCurve(tanks, rows.map((r) => r.row), maxFleet), nothing: rows.map((r, i) => ({ id: tanks[i].id, r: r.nothing })) };
+    const table = rows.map((r) => [...r.row, ...Array(maxFleet + 1 - r.row.length).fill(null)]);
+    return { curve: walkCurve(tanks, table, maxFleet), nothing: rows.map((r, i) => ({ id: tanks[i].id, r: r.nothing })) };
   });
 }
 function outagePlan(sys, hours) {
   if (outageStore !== state.store) { outageMemo.clear(); outageStore = state.store; }
   const key = `${state.at}@${sys.id}@${hours}`;
   if (outageMemo.has(key)) return outageMemo.get(key);
+  // A new question: drop the jobs still planning an old one.
+  if (outageKey !== key && [...outagePending.values()].some((p) => p.key !== key)) outageReset("superseded");
+  outageKey = key;
   const horizonMin = Math.round(hours * 60);
   const tanks = [], skipped = [];
   for (const f of sys.facilities) {
     const built = inputFor({ network: state.network, ops: state.ops, facilityId: f.id, ...readers(), horizonMin });
-    if (!built.input || !built.opsFacility) { skipped.push(`${f.id}: ${built.error || "no truck times in ops.json"}`); continue; }
+    if (!built.input) { skipped.push(`${f.id} is left out: ${built.error || "no readings"}.`); continue; }
+    // No truck times in ops.json: the tank still fills and still costs; it gets no trucks.
+    if (!built.opsFacility) { skipped.push(`${f.id} has no truck times in ops.json, so it is planned with shut-ins only.`); tanks.push({ id: f.id, input: built.input, truckSpec: null }); continue; }
     tanks.push({ id: f.id, input: built.input, truckSpec: {
       responseMin: built.opsFacility.response_min, cycleMin: built.opsFacility.cycle_min,
       capacityBbl: state.ops.emergency_trucking.truck_capacity_bbl, costPerTrip: state.ops.emergency_trucking.cost_per_trip } });
   }
   const fleet = state.ops.systems?.[sys.id]?.emergency_fleet_size ?? 0;
-  const p = (tanks.length ? outageRun(tanks, fleet + 3) : Promise.resolve({ curve: [], nothing: [] })).then((r) => ({
-    hours, fleet, tanks, skipped, error: r.error || null, curve: r.curve || [], today: r.curve?.[fleet]?.best ?? null, nothing: r.nothing || [],
-  }));
+  const p = (tanks.length ? outageRun(tanks, fleet + 3, key) : Promise.resolve({ curve: [], nothing: [] })).then((r) => {
+    if (r.error && outageMemo.get(key) === p) outageMemo.delete(key); // a failed or dropped run is asked again next time
+    return { hours, fleet, tanks, skipped, error: r.error || null, curve: r.curve || [], today: r.curve?.[fleet]?.best ?? null, nothing: r.nothing || [] };
+  });
   outageMemo.set(key, p);
+  while (outageMemo.size > OUTAGE_KEEP) outageMemo.delete(outageMemo.keys().next().value);
   return p;
 }
 
@@ -885,7 +916,7 @@ function outagePanel(sys) {
   const want = { at: state.at, h: state.outageH, sys: sys.id };
   outagePlan(sys, state.outageH).then((o) => {
     // The operator may have moved on while it planned: draw only for what is still asked.
-    if (!el.isConnected || state.at !== want.at || state.outageH !== want.h) return;
+    if (!el.isConnected || state.at !== want.at || state.outageH !== want.h || o.error === "superseded") return;
     const end = state.at + o.hours * 3600;
     if (!o.today) { el.innerHTML = `${head}<p class="ds-hint">No plan possible: ${esc(o.error || o.skipped.join("; ") || "no tanks with readings")}.</p>`; wire(); return; }
     const nothingTotal = o.nothing.reduce((n, x) => n + x.r.cost.total, 0);

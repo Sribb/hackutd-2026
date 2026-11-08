@@ -312,7 +312,8 @@ export function cheapestJoint(tanks, fleet) {
 // and independent per tank, so it can run in parallel.
 export function tankRow(tank, maxK) {
   const row = [];
-  for (let k = 0; k <= maxK; k++) row.push(bestForTrucks(tank.input, tank.truckSpec, k));
+  // A tank with no truck times in ops.json can only be planned with no trucks (shut-ins).
+  for (let k = 0; k <= maxK; k++) row.push(k > 0 && !tank.truckSpec ? null : bestForTrucks(tank.input, tank.truckSpec, k));
   return row;
 }
 

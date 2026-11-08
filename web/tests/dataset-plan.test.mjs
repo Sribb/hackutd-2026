@@ -94,6 +94,19 @@ assert.deepEqual(planToActions({ trucks: 0, trips: 0, shutIns: [] }, "X"), [{ ty
   for (const { n, best } of curve) assert.ok(Math.abs(best.total - cheapestJoint(tanks, n).total) < 1e-6, `curve at ${n}`);
   for (let n = 1; n < curve.length; n++) assert.ok(curve[n].best.total <= curve[n - 1].best.total + 1e-6);
 }
+// A tank with no truck times still counts: it is planned with no trucks, and every truck
+// goes to the tank that can use one.
+{
+  const { jointCurve, tankRow } = await import("../src/dataset/plan.js");
+  const noTrucks = { id: "T0", input: { ...base.input }, truckSpec: null };
+  assert.deepEqual(tankRow(noTrucks, 2).slice(1), [null, null]);
+  const curve = jointCurve([noTrucks, { id: "T1", input: base.input, truckSpec: spec }], 2);
+  for (const { best } of curve) {
+    assert.equal(best.picks.find((p) => p.id === "T0").trucks, 0);
+    const t0 = best.picks.find((p) => p.id === "T0").result.cost.total;
+    assert.ok(t0 > 0 && Math.abs(best.total - best.picks.reduce((n, p) => n + p.result.cost.total, 0)) < 1e-6, "the untrucked tank's cost is in the total");
+  }
+}
 console.log("dataset-plan optimizer: all pass");
 
 // Review fixes.
