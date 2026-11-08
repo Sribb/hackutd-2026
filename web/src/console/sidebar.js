@@ -26,8 +26,8 @@ export function mountSidebar(app, on) {
       <button type="button" class="cs-icon" id="csClose" title="Hide the chat (J)" aria-label="Hide the chat">${ICON.expand}</button>
     </header>
     <div class="cs-help" id="csHelpCard" hidden>
-      keys: j chat · / ask · esc reset view · t time<br>
-      hands: point to look · pinch to open · open palm to turn · two hands to zoom. hands never confirm a fix.
+      keys: j chat · / ask · hold space to talk · esc reset view · t time<br>
+      hands: point to look · pinch to select · pinch and drag to turn · open palm to stop · two hands to zoom. hands never confirm a fix.
     </div>
     <div class="cs-scroll" id="csScroll">
       <div class="cs-hello" id="csHello"><h1 id="csHelloText">what's happening on the field?</h1></div>
@@ -92,7 +92,10 @@ export function mountSidebar(app, on) {
       const sel = $("csSel");
       sel.hidden = !id;
       if (id) {
-        sel.innerHTML = `${esc(nice(id))} <button type="button" aria-label="Clear selection">×</button>`;
+        // "about tank 3", "about S4 tank c": what "this" and "it" mean to gaia (IDs keep their case).
+        const words = String(nice(id)).split(" ").map((w) => (/\d/.test(w) ? w : w.toLowerCase())).join(" ");
+        sel.innerHTML = `about ${esc(words)} <button type="button" aria-label="Clear selection">×</button>`;
+        sel.title = `gaia reads "this", "it" and "that" as ${nice(id)}`;
         sel.querySelector("button").onclick = () => on("deselect");
       }
       if (key === chipsKey) return;

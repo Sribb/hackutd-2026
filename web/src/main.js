@@ -1631,6 +1631,9 @@ if (layout === "classic") {
 mountHands({
   canvas, stage: $("stage"),
   hoverAt,
+  // The gaia console (#171): pinch selects, pinch and drag orbits, open palm stops gaia (agent/index.js).
+  agentic: layout === "console",
+  palm: () => dispatchEvent(new CustomEvent("gaia:palm")),
   clickAt(x, y) {
     const id = pick({ clientX: x, clientY: y });
     if (!id) return null;
