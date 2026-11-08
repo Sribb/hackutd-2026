@@ -53,6 +53,36 @@ def test_calm_field_reports_calm():
     assert core.last_call(calm)["status"] == "CALM"
 
 
+def test_no_readings_is_unknown_never_calm():
+    blind = copy.deepcopy(SCENARIO)
+    for t in blind["tanks"]:
+        t["level_pct"] = None
+    out = core.last_call(blind)
+    assert out["status"] == "UNKNOWN"
+    assert out["unknown_tanks"] == sorted(t["id"] for t in blind["tanks"])
+    assert "can't vouch" in out["text"]
+
+
+def test_calm_field_with_one_blind_tank_is_unknown():
+    calm = copy.deepcopy(SCENARIO)
+    for p in calm["pumps"]:
+        p["status"] = "OK"
+    calm["tanks"][0]["level_pct"] = None
+    out = core.last_call(calm)
+    assert out["status"] == "UNKNOWN"
+    assert out["unknown_tanks"] == [calm["tanks"][0]["id"]]
+
+
+def test_incident_names_the_blind_tank():
+    inc = copy.deepcopy(SCENARIO)
+    blind = next(t for t in inc["tanks"] if t["id"] == "TANK_1")
+    blind["level_pct"] = None
+    out = core.last_call(inc)
+    assert out["status"] == "INCIDENT"
+    assert out["unknown_tanks"] == ["TANK_1"]
+    assert "Tank 1" in out["headline"] and "can't vouch" in out["warnings"][0]
+
+
 def test_crossover_cannot_drown_the_neighbor():
     # A plan that keeps Tank 3 alive by overfilling Tank 4 must not count as working.
     tight = copy.deepcopy(SCENARIO)

@@ -58,6 +58,22 @@ def _subset(scenario: dict, tank_ids: set) -> dict:
     return out
 
 
+def _known(scenario: dict, unknown: set) -> dict:
+    """Drop tanks with no level reading, plus their pumps, wells and crossovers.
+    The reference sim can't move a level it doesn't have."""
+    out = dict(scenario)
+    out["tanks"] = [t for t in scenario["tanks"] if t["id"] not in unknown]
+    out["pumps"] = [p for p in scenario["pumps"] if p["tank_id"] not in unknown]
+    out["wells"] = [w for w in scenario["wells"] if w["tank_id"] not in unknown]
+    out["valves"] = [v for v in scenario["valves"] if not (set(v.get("connects", [])) & unknown)]
+    return out
+
+
+def _unknown_text(unknown: List[str]) -> str:
+    return (f"No level reading for {_sentence([_name(t) for t in unknown])[:-1]}, "
+            "so Last Call can't vouch for them. Check them in person.")
+
+
 def candidate_plans(scenario: dict, at_risk: List[str]) -> List[dict]:
     """Build plan templates. Each action carries lead_min instead of at_min.
 
@@ -153,13 +169,31 @@ def last_call(scenario: dict, forecast_fn: Optional[ForecastFn] = None,
               horizon_minutes: int = 360, step_minutes: int = 5, top_n: int = 3) -> dict:
     t_start = time.perf_counter()
 
+    # A tank with no reading is never counted as safe. The reference sim drops it;
+    # a backend forecast handles it itself. Either way it is named in the answer.
+    unknown = sorted(t["id"] for t in scenario["tanks"] if t.get("level_pct") is None)
+    if unknown and forecast_fn is None:
+        scenario = _known(scenario, set(unknown))
+    if unknown and not scenario["tanks"]:
+        return {"status": "UNKNOWN", "clock": scenario.get("clock"), "text": _unknown_text(unknown),
+                "unknown_tanks": unknown, "options": [], "curve": [], "cliffs": [], "assets": {},
+                "do_nothing": None, "warnings": [_unknown_text(unknown)]}
+
     full_fc = (lambda acts, scale=1.0: sim.forecast(scenario, acts, horizon_minutes, step_minutes, scale))
     baseline = (forecast_fn or full_fc)([], 1.0)
-    shutdowns = [e for e in baseline["events"] if e["type"] == "SHUTDOWN_LEVEL"]
+    shutdowns = [e for e in baseline["events"] if e["type"] == "SHUTDOWN_LEVEL"
+                 and e.get("asset_id") not in unknown]
     if not shutdowns:
+        hours = horizon_minutes // 60
+        if unknown:
+            return {"status": "UNKNOWN", "clock": scenario.get("clock"),
+                    "text": f"No tank with a reading reaches shutdown in the next {hours} hours with no action. "
+                            + _unknown_text(unknown),
+                    "unknown_tanks": unknown, "options": [], "curve": [], "cliffs": [], "assets": {},
+                    "do_nothing": _plan_out_cost(baseline), "warnings": [_unknown_text(unknown)]}
         return {"status": "CALM", "text": "No tank reaches shutdown in the next "
-                f"{horizon_minutes // 60} hours with no action.", "options": [], "curve": [], "cliffs": [],
-                "assets": {}, "do_nothing": _plan_out_cost(baseline)}
+                f"{hours} hours with no action.", "options": [], "curve": [], "cliffs": [],
+                "assets": {}, "unknown_tanks": [], "do_nothing": _plan_out_cost(baseline)}
 
     at_risk = sorted({e["asset_id"] for e in shutdowns})
     first_hit = min(e["t_min"] for e in shutdowns)
@@ -292,6 +326,11 @@ def last_call(scenario: dict, forecast_fn: Optional[ForecastFn] = None,
     else:
         headline = "No plan keeps every well online. Pick the least damage."
 
+    warnings = ["Costs and lead times are placeholders until the mentors confirm them."]
+    if unknown:
+        headline += " " + _unknown_text(unknown)
+        warnings.insert(0, _unknown_text(unknown))
+
     return {
         "status": "INCIDENT",
         "clock": scenario.get("clock"),
@@ -309,7 +348,8 @@ def last_call(scenario: dict, forecast_fn: Optional[ForecastFn] = None,
         "assets": assets,
         "plans_tested": len(plans),
         "compute_ms": round(1000 * (time.perf_counter() - t_start)),
-        "warnings": ["Costs and lead times are placeholders until the mentors confirm them."],
+        "unknown_tanks": unknown,
+        "warnings": warnings,
     }
 
 
