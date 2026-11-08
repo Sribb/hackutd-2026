@@ -8,6 +8,7 @@ import { mountSky } from "./sky.js";
 import * as api from "./api.js";
 import { buildPlaceholder } from "./placeholder.js";
 import { decode, holdButton } from "./fx.js";
+import { mountIot3d } from "./iot3d.js";
 import * as shiftlog from "./shiftlog.js";
 import { mountUpload } from "./upload.js";
 import { mountHands } from "./hands.js";
@@ -1096,6 +1097,7 @@ async function boot() {
   scene.add(model.root);
   sky.attach(model.root); // before indexModel darkens the site, so the sky knows its daytime colors
   indexModel(model.root);
+  mountIot3d({ root: model.root, field, live: liveFeed, base: api.BASE }); // #80: sensor and RTU lights, alert and run highlights
 
   const missing = [...ids].filter((id) => !assets.has(id));
   const notes = [...(baseline.warnings || [])];
