@@ -406,3 +406,33 @@ def test_install_twice_is_one_log():
     assert security_log.install(app) is seclog
     TestClient(app).post("/api/op")
     assert [e["count"] for e in seclog.events()] == [1]
+
+
+def find_middleware(app):
+    node = app.middleware_stack
+    while node is not None and not isinstance(node, security_log.SecurityLogMiddleware):
+        node = getattr(node, "app", None)
+    return node
+
+
+def test_a_stuck_screen_cannot_pile_up_broadcasts(monkeypatch):
+    class Stuck:   # a console that stopped reading: its send never finishes
+        async def broadcast(self, *args, **kwargs):
+            await asyncio.sleep(30)
+
+    monkeypatch.setattr(security_log, "BROADCAST_TIMEOUT_S", 0.2)
+    app, seclog = make_app(live=SimpleNamespace(hub=Stuck()))
+    with TestClient(app) as c:
+        c.post("/api/op/1")
+        mw = find_middleware(app)
+        assert mw is not None and len(mw._broadcasts) == 1
+        assert wait_for(lambda: not mw._broadcasts, timeout=3)   # given up on, not kept
+
+    monkeypatch.setattr(security_log, "BROADCAST_TIMEOUT_S", 30)
+    monkeypatch.setattr(security_log, "MAX_BROADCASTS", 2)
+    app, seclog = make_app(live=SimpleNamespace(hub=Stuck()))
+    with TestClient(app) as c:
+        for n in range(5):
+            assert c.post(f"/api/op/{n}").status_code == 401
+        assert len(find_middleware(app)._broadcasts) == 2
+    assert len(seclog.events()) == 5 and len(security_audit(app)) == 5

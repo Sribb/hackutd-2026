@@ -34,8 +34,10 @@ of an event's first_t adds to its count and last_t instead of adding an event. O
 first occurrence is an alert: an audit entry (app.state.audit.append("security", ...))
 and a {"type": "security", "event": {...}} message to every screen on /ws. At most
 ALERTS_PER_MIN alerts go out in any minute, so a flood of distinct paths can't fill the
-audit log or bury the screens; those events are still kept here. The log keeps the
-last CAP (500) events, in memory.
+audit log or bury the screens; those events are still kept here. A /ws message that a
+stuck screen hasn't taken within BROADCAST_TIMEOUT_S is given up on, and at most
+MAX_BROADCASTS are in flight, so a screen that stops reading can't make memory grow. The
+log keeps the last CAP (500) events, in memory.
 
     GET /api/security/events?since=<id>   {"events": [...]}, oldest first. Open, like every read.
 
@@ -69,6 +71,8 @@ DEDUPE_S = 60.0        # FREEBOARD_SECURITY_DEDUPE_S when unset or not a number
 ALERTS_PER_MIN = 30    # audit entries and /ws messages, at most, in any 60 s
 PATH_MAX = 200         # characters of a path kept
 SNIFF_BYTES = 1024     # of a 403 body, searched for origin_guard's refusal, then dropped
+BROADCAST_TIMEOUT_S = 5.0   # a /ws message not delivered by then is given up on
+MAX_BROADCASTS = 64    # /ws messages in flight, at most; more are skipped
 EVENTS_PATH = "/api/security/events"
 
 REFUSED = origin_guard.REFUSED.encode()
@@ -290,10 +294,14 @@ class SecurityLogMiddleware:
             loop = asyncio.get_running_loop()
         except RuntimeError:  # not on an event loop: nothing could carry the message
             return
+        if len(self._broadcasts) >= MAX_BROADCASTS:
+            log.warning("Security event not broadcast: %d earlier messages are still waiting on "
+                        "the screens.", len(self._broadcasts))
+            return
         try:
             pending = hub.broadcast("security", {"event": event})
             if inspect.isawaitable(pending):
-                task = asyncio.ensure_future(pending, loop=loop)
+                task = asyncio.ensure_future(asyncio.wait_for(pending, BROADCAST_TIMEOUT_S), loop=loop)
                 self._broadcasts.add(task)
                 task.add_done_callback(self._broadcast_done)
         except Exception:  # noqa: BLE001 - nor may the hub
@@ -301,8 +309,14 @@ class SecurityLogMiddleware:
 
     def _broadcast_done(self, task: asyncio.Future) -> None:
         self._broadcasts.discard(task)
-        if not task.cancelled() and task.exception() is not None:
-            log.warning("Security event broadcast failed: %s", task.exception())
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if isinstance(exc, asyncio.TimeoutError):
+            log.warning("Security event broadcast gave up after %.1f s: a screen isn't reading.",
+                        BROADCAST_TIMEOUT_S)
+        elif exc is not None:
+            log.warning("Security event broadcast failed: %s", exc)
 
 
 router = APIRouter()
