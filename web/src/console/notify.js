@@ -215,7 +215,22 @@ export function makeNotifier(H) {
     const sound = opts.sound === false ? false : tone(levelOf(a) === "red");
     startFlash(headOf(a).toLowerCase(), levelOf(a) === "red");
     if (H.log) H.log("alert", `Notified: ${a.message || a.id}`);
+    phoneLater(a.id);
     return { shown: true, id: a.id, sound };
+  }
+
+  // The judge's phone (#163): the same words as the card, as one text and one voice call,
+  // once per alert id (the backend keeps track). Waits for the plan line so the text carries
+  // the cheapest fix and its cost. A no-op without a provider or a signed-up number.
+  function phoneLater(id) {
+    if (!window.gaiaPhone || !window.gaiaPhone.subscription()) return;
+    setTimeout(() => {
+      if (!cur || cur.a.id !== id) return;
+      const t = (sel) => (card.querySelector(sel)?.textContent || "").replace(/\s+/g, " ").trim();
+      const fix = t(".gn-fix").replace(/^cheapest fix/, "cheapest fix:").replace(/checking the plans.*$/, "");
+      const text = [t(".gn-head"), t(".gn-sd"), fix, "hold to confirm in the console."].filter(Boolean).join(" ");
+      window.gaiaPhone.send(id, text);
+    }, 2500);
   }
   function dismiss(why = "dismissed") {
     if (!cur) return;
