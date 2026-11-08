@@ -112,7 +112,8 @@ Positions are plan meters. The lease road runs along x on y = 0, and y points no
   "placed": { "given": [], "auto": ["PUMP_1", "..."] },
   "layout": { "rows": 1, "road_m": 450.0, "crossovers": { "VALVE_XO_34": "straight" } },
   "detail": { "level": "full", "dropped": [] },
-  "triangles": 144230, "glb_mb": 6.0, "nodes": 776, "seconds": 1.9
+  "iot": { "sensors": 12, "rtus": 6 },
+  "triangles": 148435, "glb_mb": 6.2, "nodes": 860, "seconds": 3.7
 }
 ```
 
@@ -143,8 +144,13 @@ Assets on the south side of the road are turned 180 degrees about Y. Their parts
 - `<pump>_light` and `<well>_light` are the status lights on each pump panel and well controller.
 - `<truck>_beacon` is the amber beacon for a truck on a job, and `<truck>_headlights` are its head and tail lights.
 - `PAD_n_lamps` and `<swd>_lamps` are the light tower heads.
+- `SENSOR_<asset>_light` is the LED on each IoT sensor node, and `RTU_PAD_n_light` is the status light on each pad's RTU (#46). Light them for a live, stale, or lost feed.
 
 **Sensors:** `<tank>_lt` (radar level) and `<tank>_lshh` (high-level switch) are separate meshes, so the console can highlight the sensor behind an alarm. Clicking them selects the tank.
+
+**IoT sensor nodes (#46):** `SENSOR_<asset>` is a wireless sensor node (an enclosure, a stub antenna, and the `SENSOR_<asset>_light` LED) mounted on an asset and parented to it, so clicking it selects that asset. The assets named in the blueprint's `connectors[].signals` get one each, and with no connectors every tank and pump does. Its `userData` has `kind` `sensor`, `for_asset` (the asset ID), `signals`, and `connectors`, the last two as comma-separated text like `"running,flow_bbl_hr"` and `"CONN_SIM"` (empty with no connectors). Today's field has `SENSOR_TANK_1` to `SENSOR_TANK_6` and `SENSOR_PUMP_1` to `SENSOR_PUMP_6`.
+
+**RTUs (#46):** `RTU_PAD_n` is the remote terminal unit on each tank pad: a cabinet on a stand with a solar panel and battery box, the `RTU_PAD_n_light` status light, and `RTU_PAD_n_antenna`, the radio mast with an omni whip and a Yagi toward the road. It is parented to `PAD_n`, and its `userData` has `kind` `rtu` and `pad`. It is not a clickable asset. Today's field has `RTU_PAD_1` to `RTU_PAD_6`.
 
 **Pipes:** Every pipe is its own mesh named for what it connects, with `userData.pipe_id`:
 
@@ -165,13 +171,13 @@ Assets on the south side of the road are turned 180 degrees about Y. Their parts
 - A route is the start stop, its junction, along the road, the target's junction, then the target stop.
 
 **Other names:** None of these are clickable assets:
-- `PAD_n` holds each tank pad's gravel, steel containment, liner, step-over, sign, and light tower.
+- `PAD_n` holds each tank pad's gravel, steel containment, liner, step-over, sign, light tower, and `RTU_PAD_n`.
 - `LOADOUT_n` is the truck hookup stand.
 - `SITE_*` is the ground, roads, pipe supports, and the power line.
 - `CAM_OVERVIEW` is a camera framing the whole field.
 - Names ending in `_label`, `_sign`, or `_tag` are painted numbers and signs.
 
-**Size:** Today's field is about 144,000 triangles and 6 MB, and the 12-tank sample is about 279,000 triangles and 11.5 MB, inside the 300,000 triangle and 30 MB budget. The generator estimates the size before it builds. If a field has more than 12 tanks, or full detail would pass the budget, it drops small detail: bolts, small labels, tags, signs, and containment and fence posts, then wellhead trim if that is still too much. `detail` in the report says what was dropped. Asset nodes, tank numbers (`<tank>_label`), lights, sensors, moving parts, pipes, and waypoints are never dropped.
+**Size:** Today's field is about 148,000 triangles and 6.2 MB, and the 12-tank sample is about 288,000 triangles and 12 MB, inside the 300,000 triangle and 30 MB budget. The generator estimates the size before it builds. If a field has more than 12 tanks, or full detail would pass the budget, it drops small detail: bolts, small labels, tags, signs, and containment and fence posts, then wellhead trim if that is still too much. `detail` in the report says what was dropped. Asset nodes, tank numbers (`<tank>_label`), lights, sensors, moving parts, pipes, and waypoints are never dropped.
 
 **Scale and axes:** Today's field runs 450 m along X, and the report gives `layout.road_m` for any field. In three.js, Y is up and the lease road runs along X near Z = 0, with the first row of tank pads toward negative Z and a second row, if any, toward positive Z.
 

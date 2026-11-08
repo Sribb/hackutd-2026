@@ -1,9 +1,12 @@
-"""Tests for equipment types (#47) and the generated parts. test_generator.py runs these;
-they need its ok() and its Blender runner, so they take them as arguments.
+"""Tests for equipment types (#47), IoT sensors and RTUs (#46), and the generated parts.
+test_generator.py runs these; they need its ok() and its Blender runner, so they take them
+as arguments.
 
 - Validation (no Blender): the equipment list, type names and aliases, placeholders, references.
 - A blueprint with one of each equipment type, an unknown type, and an item with no type
   builds with every name, in its footprint, off the pads and the road.
+- Every build has a SENSOR_<asset> under each monitored asset and an RTU_PAD_n on each pad,
+  with M_LAMP lights. A blueprint whose connectors name every kind of asset mounts on each.
 - parts_preview.py builds every equipment model and scenery part inside its triangle limit.
 """
 import copy
@@ -12,6 +15,7 @@ import math
 import os
 
 import blueprint
+import names
 import siting
 from glb_read import Glb, read_glb, touch
 
@@ -38,6 +42,76 @@ def equipment_blueprint(small):
     return data
 
 
+IOT_SIGNALS = [("TANK_2", "level_pct"), ("PUMP_1", "running"), ("PUMP_1", "motor_amps"), ("VALVE_D_2", "position"),
+               ("WELL_1", "running"), ("SWD_1", "pressure_psi"), ("TRUCK_1", "running"), ("YARD_1", "running"),
+               ("SEP_1", "pressure_psi"), ("TANK_99", "level_pct")]
+
+
+def iot_blueprint(small):
+    """Connectors that name every kind of asset, plus one signal on an asset that doesn't exist."""
+    data = equipment_blueprint(small)
+    data["name"] = "Variant: IoT"
+    data["connectors"] = [
+        {"id": "CONN_SCADA", "kind": "mqtt", "config": {"host": "10.0.0.5"},
+         "signals": [{"asset_id": a, "signal": s} for a, s in IOT_SIGNALS[:5]]},
+        {"id": "CONN_RADIO", "kind": "modbus", "signals": [{"asset_id": a, "signal": s} for a, s in IOT_SIGNALS[4:]]},
+    ]
+    return data
+
+
+def check_iot(ok, label, glb, bp):
+    """Every build: a sensor under each monitored asset, an RTU on each pad, lights on M_LAMP."""
+    def material(name):
+        nd = glb.nodes[glb.idx(name)]
+        prim = glb.g["meshes"][nd["mesh"]]["primitives"][0] if "mesh" in nd else {}
+        return glb.g["materials"][prim["material"]]["name"] if "material" in prim else None
+
+    def ancestors(name):
+        i, out = glb.idx(name), []
+        while i in glb.parent:
+            i = glb.parent[i]
+            out.append(glb.nodes[i].get("name"))
+        return out
+
+    want = names.sensors(bp)
+    built = sorted(n for n in glb.by_name if glb.nodes[glb.idx(n)].get("extras", {}).get("kind") == "sensor")
+    ok(built == sorted(f"SENSOR_{a}" for a, _, _ in want), f"{label}: {len(want)} sensor nodes, one per monitored asset")
+    bad = []
+    for aid, signals, conns in want:
+        s = f"SENSOR_{aid}"
+        ex = glb.nodes[glb.idx(s)].get("extras", {}) if s in glb.by_name else {}
+        if (aid not in ancestors(s) if s in glb.by_name else True) or ex.get("for_asset") != aid \
+                or ex.get("signals") != ",".join(signals) or ex.get("connectors") != ",".join(conns) \
+                or material(f"{s}_light") != "M_LAMP" or math.dist(glb.plan_xy(s), glb.plan_xy(aid)) > 16:
+            bad.append(aid)
+    ok(not bad, f"{label}: each sensor sits on its asset, under it, with signals and an M_LAMP light {bad[:4]}")
+    rtus = []
+    for t in bp["tanks"]:
+        n = names.suffix(t["id"])
+        pad, r = f"PAD_{n}", f"RTU_PAD_{n}"
+        good = r in glb.by_name and pad in ancestors(r) and material(f"{r}_light") == "M_LAMP"
+        if good:
+            (x, y), g = glb.plan_xy(r), glb.box(f"PAD_{n}_gravel")
+            good = glb.box(f"{r}_antenna")[5] > 7 and g[0] < x < g[1] and g[2] < y < g[3]
+        rtus.append(good)
+    ok(all(rtus), f"{label}: an RTU with a light and an antenna on each of {len(rtus)} pads, inside the pad")
+
+
+def check_iot_variant(ok, rep, glb, data):
+    bp = blueprint.check(data)[0]
+    mounted = {a for a, _, _ in names.sensors(bp)}
+    kinds = {names.asset_kinds(bp)[a] for a in mounted}
+    ok(mounted == {a for a, _ in IOT_SIGNALS[:-1]} and len(kinds) == 8,
+       f"iot: signals on 8 kinds of asset get sensors, the unknown asset is skipped {sorted(kinds)}")
+    ok(any("TANK_99" in w for w in rep["warnings"]), "iot: a signal on an unknown asset is a warning")
+    ex = glb.nodes[glb.idx("SENSOR_PUMP_1")].get("extras", {})
+    ok(ex.get("signals") == "running,motor_amps" and ex.get("connectors") == "CONN_SCADA",
+       f"iot: a sensor lists every signal and connector on its asset {ex}")
+    ex = glb.nodes[glb.idx("SENSOR_WELL_1")].get("extras", {})
+    ok(ex.get("connectors") == "CONN_SCADA,CONN_RADIO", "iot: an asset on two connectors gets one sensor")
+    ok(rep["iot"] == {"sensors": len(mounted), "rtus": len(bp["tanks"])}, f"iot: the report counts {rep['iot']}")
+
+
 def test_validation(ok, small):
     bp, errs, warns = blueprint.check(equipment_blueprint(small))
     types = {e["id"]: (e["type"], e["model"]) for e in bp["equipment"]} if bp else {}
@@ -60,6 +134,12 @@ def test_validation(ok, small):
     data = equipment_blueprint(small)
     data["connections"] = [["COMP_1", "SWD_1"]]
     ok(not blueprint.check(data)[1], "equipment: a connection may end at equipment")
+    bp = blueprint.check(small)[0]
+    ok([a for a, _, _ in names.sensors(bp)] == [t["id"] for t in bp["tanks"]] + [p["id"] for p in bp["pumps"]],
+       "iot: with no connectors, every tank and pump gets a sensor")
+    data = copy.deepcopy(small)
+    data["connectors"] = [{"id": "CONN_EMPTY", "kind": "sim", "signals": []}]
+    ok(names.sensors(blueprint.check(data)[0]) == [], "iot: connectors with no signals mount no sensors")
 
 
 def check_build(ok, rep, glb, data, label="equipment"):

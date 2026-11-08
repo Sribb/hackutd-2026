@@ -12,7 +12,8 @@
     "wells": 24,
     "disposal_wells": 2,
     "trucks": 2,
-    "yards": 1
+    "yards": 1,
+    "equipment": 0
   },
   "outputs": {
     "glb": "blender/field.glb",
@@ -105,18 +106,22 @@
     "passes": [
       {
         "detail": "full",
-        "estimated": 147378,
-        "triangles": 144230
+        "estimated": 151698,
+        "triangles": 148435
       }
     ]
   },
-  "triangles": 144230,
-  "glb_mb": 5.97,
-  "nodes": 776,
-  "objects": 777,
+  "iot": {
+    "sensors": 12,
+    "rtus": 6
+  },
+  "triangles": 148435,
+  "glb_mb": 6.24,
+  "nodes": 860,
+  "objects": 861,
   "budget": {
     "triangles": 300000,
     "mb": 30.0
   },
-  "seconds": 1.9
+  "seconds": 4.1
 }
