@@ -774,7 +774,11 @@ _ACTION = {
 
 def _tool(name_: str, description: str, props: Optional[dict] = None) -> dict:
     props = props or {}
-    return {"name": name_, "description": description, "strict": True,
+    # Not strict. The API caps strict tools at 20 per request and limits union-typed parameters
+    # across strict schemas (these 21 tools brought 24); over either limit EVERY Claude answer is a
+    # 400 (seen live on 2026-11-08). jarvis.py's own tools stay strict; these handlers validate
+    # their inputs (check_directive() is the whitelist for the ui_* ones).
+    return {"name": name_, "description": description, "strict": False,
             "input_schema": {"type": "object", "additionalProperties": False, "required": list(props),
                              "properties": props}}
 
@@ -810,7 +814,9 @@ TOOLS = [
     _tool("ui_isolate", "Hide everything but one asset, its pad, and its pipes.", _ASSET),
     _tool("ui_show_sensors", "Show the sensor nodes of one asset, or every one with asset_id 'ALL'.", _ASSET),
     _tool("ui_trace_pipes", "Light the pipes from or to one asset.",
-          {"asset_id": {"type": "string"}, "direction": {"type": ["string", "null"], "enum": [*DIRECTIONS, None]}}),
+          # anyOf, not type ["string", "null"] with None in the enum: the API rejects that schema with a
+          # 400 for the whole request, so every Claude answer failed (seen live on 2026-11-08).
+          {"asset_id": {"type": "string"}, "direction": {"anyOf": [{"type": "string", "enum": list(DIRECTIONS)}, {"type": "null"}]}}),
     _tool("ui_set_time", "Move the time slider: t_min 0 to 360 minutes ahead, or a clock like '3:00 AM'.",
           {"t_min": {"type": ["number", "null"]}, "clock": _NULL_STR}),
     _tool("ui_reset_view", "Back to the overview: collapse, show everything, time to now."),

@@ -367,13 +367,17 @@ def test_at_most_three_directives_per_answer_and_each_is_broadcast():
     assert run(j.run_tool("ui_focus", {"asset_id": "NOPE"}, {}))["error"].startswith("Unknown asset")
 
 
-def test_every_tool_schema_is_strict_and_complete():
+def test_every_tool_schema_is_complete_and_strict_fits_the_api():
     names = [t["name"] for t in TOOLS]
     assert len(names) == len(set(names))
     for t in TOOLS:
         s = t["input_schema"]
-        assert t.get("strict") is True and s["additionalProperties"] is False, t["name"]
+        assert s["additionalProperties"] is False, t["name"]
         assert sorted(s["required"]) == sorted(s["properties"]), t["name"]
+    # jarvis.py's own tools are strict; the jarvis_tools additions are not. All 28 strict was a
+    # 400 on every request: the API caps strict tools at 20 and union types across strict schemas.
+    strict = [t["name"] for t in TOOLS if t.get("strict")]
+    assert 0 < len(strict) <= 20 and not any(n in strict for n in (x["name"] for x in T.TOOLS)), strict
     for n in ("get_state", "list_alerts", "get_countdown", "compare_whatif", "get_last_call", "get_audit",
               "list_sensors", "describe_parts", "execute_plan", "offer_ack", "offer_shelve", *T.UI_TOOLS):
         assert n in names, n
