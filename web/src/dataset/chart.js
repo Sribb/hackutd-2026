@@ -107,15 +107,25 @@ export function lineChart(host, opts) {
   // Close reference lines (warning 85, shutdown 92) would print on top of each other, so
   // the higher label sits above its line and the lower one below.
   const refs = (opts.refs || []).filter((r) => r.y >= lo && r.y <= hi).sort((a, b) => b.y - a.y);
+  const taken = []; // label boxes [x0, x1, yBaseline], so mark labels can step around them
   refs.forEach((r, i) => {
     el("line", { x1: m.l, x2: W - m.r, y1: y(r.y), y2: y(r.y), class: `ref ${r.tone || ""}` }, svg);
     const below = i > 0 && Math.abs(y(r.y) - y(refs[i - 1].y)) < 12;
-    el("text", { x: W - m.r - 2, y: y(r.y) + (below ? 10 : -3), "text-anchor": "end", class: `ref-label ${r.tone || ""}` }, svg).textContent = r.label;
+    const ty = y(r.y) + (below ? 10 : -3);
+    el("text", { x: W - m.r - 2, y: ty, "text-anchor": "end", class: `ref-label ${r.tone || ""}` }, svg).textContent = r.label;
+    taken.push([W - m.r - 2 - String(r.label).length * 5.6, W - m.r, ty]);
   });
+  const hits = (x0, x1, ty) => taken.some(([a, b, c]) => x0 < b && x1 > a && Math.abs(ty - c) < 11);
   for (const k of opts.marks || []) {
     if (k.t < opts.from || k.t > opts.to) continue;
     el("line", { x1: x(k.t), x2: x(k.t), y1: m.t, y2: H - m.b, class: `mark ${k.tone || ""}` }, svg);
-    if (k.label) el("text", { x: x(k.t) + 3, y: m.t + 9, class: `mark-label ${k.tone || ""}` }, svg).textContent = k.label;
+    if (!k.label) continue;
+    const w = String(k.label).length * 5.6;
+    // Right of the line at the top; if a reference label is there, the left side; then the bottom.
+    const spots = [[x(k.t) + 3, m.t + 9, "start"], [x(k.t) - 3, m.t + 9, "end"], [x(k.t) + 3, H - m.b - 4, "start"]];
+    const [lx, ly, anchor] = spots.find(([sx, sy, a]) => !hits(a === "end" ? sx - w : sx, a === "end" ? sx : sx + w, sy)) || spots[0];
+    el("text", { x: lx, y: ly, "text-anchor": anchor, class: `mark-label ${k.tone || ""}` }, svg).textContent = k.label;
+    taken.push([anchor === "end" ? lx - w : lx, anchor === "end" ? lx : lx + w, ly]);
   }
 
   opts.series.forEach((s, i) => {
