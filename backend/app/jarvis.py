@@ -215,6 +215,7 @@ class Jarvis:
 
     # ---------- tools (both engines) ----------
     async def run_tool(self, tool: str, args: dict, ctx: dict) -> Any:
+        if (g := __import__(f"{__package__}.eog.gaia", fromlist=["TOOLS"])).active() and tool in g.TOOLS: return await g.run_tool(tool, args, ctx)  # noqa: E501,E701 - a dataset on screen answers (eog/gaia.py, #152)
         live = self.live
         if tool == "focus_camera":
             aid = str(args.get("asset_id", "")).upper()
