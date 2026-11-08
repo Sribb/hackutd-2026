@@ -29,7 +29,7 @@
 ## Before going on stage
 
 - [ ] `tools/check` PASS on the demo laptop
-- [ ] Every `{LIVE: ...}` above filled from today's backend
+- [ ] Every `{LIVE: ...}` above filled from today's backend: `python scenario/rehearse.py --api http://127.0.0.1:8000 --fill` runs every beat, prints PASS/FAIL/SKIP and each number, and writes `scenario/DEMO.filled.md`. Restart the backend after it, because it trips Pump 3 and runs the live clock.
 - [ ] Run the upload with sample 3 twice; time it under 30 s
 - [ ] Hand tracking tested under the expo lighting
 - [ ] Phone alerts on, volume up
