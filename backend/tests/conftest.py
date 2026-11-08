@@ -4,3 +4,6 @@ import os
 from pathlib import Path
 
 os.environ["FREEBOARD_SCENARIO"] = str(Path(__file__).resolve().parents[1] / "data" / "scenario.json")
+# The legacy API tests check the forecast and planner math against that fixed scenario, so
+# they run on the static clock. test_one_clock.py turns the live clock on (#42).
+os.environ.setdefault("FREEBOARD_ONE_CLOCK", "0")

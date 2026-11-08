@@ -223,19 +223,28 @@ def simulate(plant: Plant, actions: list[dict], horizon: int, inflow_scale: floa
                 dirty = True
             elif typ == "SEND_TRUCK":
                 truck = plant.trucks[aid]
+                if "busy_min" in a:
+                    # A trip already under way that's past loading (one clock, #42): the truck
+                    # is hauling to disposal, so it takes no more water and is busy until then.
+                    truck_free[aid] = max(truck_free[aid], t + float(a["busy_min"]))
+                    continue
                 dispatch = max(float(t), truck_free[aid])
                 if dispatch > t:
                     warnings.append(f"{nice(aid)} is busy until {clock_at(plant.start_clock, dispatch)}, "
                                     "so that trip starts late.")
                 target = a["target_id"]
-                arrive = dispatch + truck["minutes_to"][target]
-                load_min = float(truck.get("load_min", 20))
-                trip = truck["minutes_to"][target] + load_min + float(truck.get("haul_to_swd_min", 30))
+                # A trip already under way (one clock, #42) carries what's left of it: minutes
+                # to the tank, minutes of loading, barrels it can still take, minutes of haul.
+                to_tank = float(a.get("arrive_in", truck["minutes_to"][target]))
+                load_min = float(a.get("load_min", truck.get("load_min", 20)))
+                haul_min = float(a.get("haul_min", truck.get("haul_to_swd_min", 30)))
+                truck_cap = float(a.get("capacity_bbl", truck["capacity_bbl"]))
+                arrive = dispatch + to_tank
+                trip = to_tank + load_min + haul_min
                 truck_free[aid] = dispatch + trip
                 trucking_usd += truck.get("usd_hr", costs["truck_usd_hr"]) * trip / 60.0
                 loading.append({"truck": aid, "tank": target, "start": arrive, "end": arrive + load_min,
-                                "rate": truck["capacity_bbl"] / max(load_min, 1.0), "loaded": 0.0,
-                                "cap": float(truck["capacity_bbl"])})
+                                "rate": truck_cap / max(load_min, 1.0), "loaded": 0.0, "cap": truck_cap})
                 events.append({"type": "TRUCK_ARRIVES", "asset_id": aid, "target_id": target,
                                "t_min": round(arrive, 1),
                                "text": f"{nice(aid)} reaches {nice(target)} at "

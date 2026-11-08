@@ -203,6 +203,28 @@ The backend sends the status. The web console picks the color.
 
 The default server address is `http://127.0.0.1:8000`. All numbers below are examples. Times are minutes from now.
 
+### One clock (#42)
+
+Every backend endpoint starts from the same moment (`backend/app/now.py`):
+
+- **With the live layer** (#38): that moment is the live field. `GET /api/state` has the live `clock` and the live
+  statuses (the same as `/api/live/state`, including `UNKNOWN`), in this contract's shape. A stale reading shows
+  `"stale": true`, `"level_pct": null`, and `"last_level_pct"`, never a number as if it were current.
+  `POST /api/forecast`, `/api/plans`, and `/api/lastcall` start from the live clock and readings, and count what's
+  already under way: confirmed chokes (wells at their live flow), pumps that read off, and trucks on the road on
+  their real timetable. A plan never sends a truck that's already out.
+- **Without it** (or `FREEBOARD_ONE_CLOCK=0`): the active scenario, plus the plans approved on it.
+- `GET /api/state`, `POST /api/forecast`, and `POST /api/plans` add `"clock_source": "live" | "static"`. Forecast and
+  plans also add `"clock"`, the moment they start from. `GET /api/health` has `clock_source` too.
+- `POST /api/plans/{id}/approve` (operator) still returns `plan_id`, `steps`, `radio_script`, and then:
+  - live: `"proposals": ["act_7", ...]`, one PENDING proposal per step in step order (`source: "plan"`). Nothing
+    moves until a person confirms each (`POST /api/actions/{id}/confirm`, phone or console). Approving the same plan
+    again returns the proposals still pending instead of new ones. `proposal_errors` lists any step it couldn't propose.
+  - static: `"recorded_actions": N`. `/api/state` shows them (`applied_actions`), and later forecasts and plans count them.
+- Activating a blueprint moves the live layer to it (`app.state.live_reload`), so the clock never follows the old field.
+- SpacetimeDB follows the live field: every change in status, level (0.1 %), position, or reason is pushed within
+  `SPACETIME_MIRROR_S` (1 s). `asset_state.status` may be `UNKNOWN`.
+
 ### Control token (#105, #103, CF-15)
 
 Reads (GET) are always open. One mechanism, `backend/app/auth.py`, checked per route:

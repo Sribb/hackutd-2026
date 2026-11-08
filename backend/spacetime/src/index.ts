@@ -12,7 +12,8 @@
 
 import { schema, table, t, SenderError } from 'spacetimedb/server';
 
-const STATUSES = ['OK', 'WARNING', 'ALARM', 'OFFLINE'];
+// UNKNOWN: no fresh reading (#38's live layer). Never shown as safe.
+const STATUSES = ['OK', 'WARNING', 'ALARM', 'OFFLINE', 'UNKNOWN'];
 const ACTION_TYPES = ['SET_VALVE', 'SET_PUMP', 'CHOKE_WELL', 'SEND_TRUCK'];
 const ID = /^[A-Z][A-Z0-9_]*$/;
 
