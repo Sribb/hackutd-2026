@@ -107,7 +107,7 @@
       {
         "detail": "full",
         "estimated": 151698,
-        "triangles": 148435
+        "triangles": 152943
       }
     ]
   },
@@ -120,33 +120,35 @@
     "seed": "Avon field - night shift",
     "textures": [
       "ground_dry_soil",
-      "dirt_road_tracks"
+      "ground_caliche"
     ],
     "fence_m": 1216.0,
     "cattle_guards": 2,
+    "terrain_m": 5400.0,
+    "mesas": 24,
+    "other_leases": 10,
     "items": {
-      "boulder": 6,
-      "branch": 6,
-      "creosote": 2,
-      "grass": 110,
+      "boulder": 5,
+      "branch": 5,
+      "creosote": 1,
+      "grass": 97,
       "lease_sign": 1,
-      "mesquite": 1,
-      "prickly_pear": 28,
-      "rock": 15,
-      "yucca": 65
+      "prickly_pear": 24,
+      "rock": 13,
+      "yucca": 57
     },
     "dropped": [],
-    "triangles": 114650,
-    "field_triangles": 148435,
-    "images_mb": 9.43
+    "triangles": 99755,
+    "field_triangles": 152943,
+    "images_mb": 4.36
   },
-  "triangles": 263085,
-  "glb_mb": 19.02,
-  "nodes": 1013,
-  "objects": 1014,
+  "triangles": 252698,
+  "glb_mb": 13.97,
+  "nodes": 1011,
+  "objects": 1012,
   "budget": {
     "triangles": 300000,
     "mb": 30.0
   },
-  "seconds": 8.73
+  "seconds": 34.01
 }

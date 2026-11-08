@@ -2,6 +2,9 @@
 
 Moving or lightable parts made here: PAD_n_lamps, SWD_n_lamps, SWD_n_gate, TRUCK_n_beacon,
 TRUCK_n_headlights, and the TRUCK_n_axle_1..3 empties that carry the wheels.
+
+Tank battery containment (#98) is corrugated steel walls with a black liner on the floor, up
+the inside of the walls, and over their top rail.
 """
 import math
 
@@ -14,6 +17,58 @@ from field_parts import PI, Kit, ball, box, cyl, line, ring, tube
 
 POLE_Y = -6.5
 ARM_Z = 11.4
+WALL = 6.2           # containment walls stand this far from the tank's center
+WALL_H = 0.8
+
+# Surfaces added for the site and the land around it (#98). Added only if the palette lacks
+# them, so lookdev's own values for the shared names (M_HDPE, M_LINER) win.
+for _name, _look in {
+    "M_HDPE": ((0.035, 0.035, 0.038), 0.0, 0.42),     # black polyethylene flowlines
+    "M_LINER": ((0.03, 0.03, 0.033), 0.0, 0.6),       # containment liner
+    "M_MESA": ((1.0, 1.0, 1.0), 0.0, 1.0),            # distant mesas: their vertex colors carry the rock
+    "M_SIGN": ((0.86, 0.86, 0.83), 0.0, 0.5),         # white sign faces
+    "M_HAZARD": ((0.82, 0.62, 0.05), 0.0, 0.55),      # safety yellow: H2S signs, pipeline markers
+}.items():
+    fp.PALETTE.setdefault(_name, _look)
+
+
+def corrugated(bm, p, q, z0, h, pitch=0.65, depth=0.07):
+    """A corrugated steel sheet standing on the plan line p to q, from z0 to z0 + h, with a top rail."""
+    (px, py), (qx, qy) = p, q
+    length = math.hypot(qx - px, qy - py)
+    ux, uy = (qx - px) / length, (qy - py) / length
+    n = max(2, 2 * round(length / pitch))
+    cols = []
+    for i in range(n + 1):
+        t = length * i / n
+        o = depth / 2 * (1 if i % 2 else -1) if 0 < i < n else 0.0
+        x, y = px + ux * t - uy * o, py + uy * t + ux * o
+        cols.append((bm.verts.new((x, y, z0)), bm.verts.new((x, y, z0 + h))))
+    for (a0, a1), (b0, b1) in zip(cols, cols[1:]):
+        bm.faces.new((a0, b0, b1, a1))
+    box(bm, (length + 0.06, 0.09, 0.07), ((px + qx) / 2, (py + qy) / 2, z0 + h),
+        Matrix.Rotation(math.atan2(uy, ux), 4, "Z"))
+
+
+def containment(bm, tank_y, top):
+    """Four corrugated steel walls around the tank, pad-local."""
+    c = [(-WALL, tank_y - WALL), (WALL, tank_y - WALL), (WALL, tank_y + WALL), (-WALL, tank_y + WALL)]
+    for i in range(4):
+        corrugated(bm, c[i], c[(i + 1) % 4], top, WALL_H)
+
+
+def liner(bm, tank_y, top):
+    """The liner: the floor inside the walls, up their inside face, and draped over the top rail."""
+    a, z0, z1 = WALL - 0.05, top + 0.01, top + WALL_H + 0.06
+    c = [(-1, -1), (1, -1), (1, 1), (-1, 1)]
+    floor = [bm.verts.new((sx * a, tank_y + sy * a, z0)) for sx, sy in c]
+    up = [bm.verts.new((sx * a, tank_y + sy * a, z1)) for sx, sy in c]
+    lip = [bm.verts.new((sx * (WALL + 0.1), tank_y + sy * (WALL + 0.1), z1 - 0.12)) for sx, sy in c]
+    bm.faces.new(floor)
+    for i in range(4):
+        j = (i + 1) % 4
+        bm.faces.new((floor[i], floor[j], up[j], up[i]))
+        bm.faces.new((up[i], up[j], lip[j], lip[i]))
 
 
 def wire(bm, a, b, sag, r=0.015, segs=8):
@@ -70,13 +125,13 @@ def light_tower(site, name, loc, aim_deg):
 
 
 def pad_extras(site, n, pad, tank_y, top):
-    """Steel containment posts, liner, step-over, driveway sign."""
+    """Containment posts and liner, step-over, driveway sign."""
     k = Kit(site, f"PAD_{n}_detail", pad)
     for i in range(9 if fp.LOD["posts"] else 0):
         off = -6.0 + 1.5 * i
         for x, y in ((off, tank_y - 6.55), (off, tank_y + 6.55), (-6.55, tank_y + off), (6.55, tank_y + off)):
             box(k["M_STEEL_DARK"], (0.1, 0.1, 0.95), (x, y, top + 0.47))
-    box(k["M_RUBBER"], (11.8, 11.8, 0.012), (0, tank_y, top + 0.006))
+    liner(k["M_LINER"], tank_y, top)
     for i, z in enumerate((0.25, 0.5, 0.75)):
         for side in (-1, 1):
             box(k["M_STEEL"], (0.9, 0.28, 0.05), (-4.0, tank_y - 6.2 + side * (0.95 - 0.28 * i), top + z))
