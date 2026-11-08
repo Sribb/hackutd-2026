@@ -1621,6 +1621,7 @@ const ui = layout === "console" ? mountConsole({
   describe, nice, clockAt, usd,
   logged: () => renderLog(),
 }) : null;
+if (ui) import("./tour/tour.js").then((m) => m.maybeTour()); // #158 the guided judge tour (?tour=1); all of it is in tour/
 if (layout === "classic") {
   const back = document.createElement("button");
   back.className = "upload-open";
