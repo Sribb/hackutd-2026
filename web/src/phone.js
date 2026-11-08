@@ -15,17 +15,17 @@ const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<
 const nice = (id) => String(id || "").replace(/_/g, " ").replace(/\b([A-Z])([A-Z]*)\b/g, (_, a, b) => a + b.toLowerCase()).replace(/\bXo\b/, "XO").replace(/\bSwd\b/, "SWD");
 
 // Which backend to talk to. A phone can't reach the laptop's 127.0.0.1, so:
-//   ?api=http://192.168.1.20:8000   wins and is remembered on this phone;
+//   ?api=http://192.168.1.20:8000   wins, for this page load only (never remembered: one
+//                                   crafted link must not point this phone elsewhere for good);
 //   else VITE_API, with a loopback host swapped for the host this page came from;
 //   else this page's host on port 8000.
 function apiBase() {
   const q = new URLSearchParams(location.search).get("api");
-  try { if (q) localStorage.setItem("freeboard.phone.api", q); } catch { /* private mode */ }
-  let saved = null;
-  try { saved = localStorage.getItem("freeboard.phone.api"); } catch { /* ignore */ }
+  // Older builds saved ?api= here. Drop it so a link opened once can't stick.
+  try { localStorage.removeItem("freeboard.phone.api"); } catch { /* private mode */ }
   const env = import.meta.env.VITE_API === "same-origin" ? location.origin : import.meta.env.VITE_API;
-  const pick = q || saved || env || `${location.protocol}//${location.hostname}:8000`;
-  const u = new URL(pick);
+  let u;
+  try { u = new URL(q || env || `${location.protocol}//${location.hostname}:8000`); } catch { u = new URL(location.origin); }
   if (/^(127\.0\.0\.1|localhost|\[::1\])$/.test(u.hostname) && !/^(127\.0\.0\.1|localhost)$/.test(location.hostname)) u.hostname = location.hostname;
   return u.origin;
 }
@@ -34,6 +34,14 @@ const BASE = apiBase();
 const alerts = new Map();
 const proposals = new Map();
 const fresh = new Set(); // alert ids that arrived while the page was open
+let loadError = "";      // why the last GET failed, or "" once one worked
+
+// True when this page can't be sure it is hearing alerts: the last fetch failed and the
+// socket isn't open, or the live feed was lost. Then the page must never look calm.
+function deaf() {
+  const L = liveFeed.live;
+  return !!L.lostSince || (!!loadError && !L.connected);
+}
 
 async function call(path, body) {
   const r = await authFetch(`${BASE}${path}`, body === undefined ? undefined
@@ -48,8 +56,9 @@ async function load() {
     const [a, p] = await Promise.all([call("/api/alerts"), call("/api/actions")]);
     for (const x of a.alerts || []) alerts.set(x.id, x);
     for (const x of p.proposals || []) proposals.set(x.id, x);
+    loadError = "";
   } catch (e) {
-    $("phFoot").textContent = `Can't reach ${BASE}: ${e.message}`;
+    loadError = e.message || "no answer";
   }
   draw();
 }
@@ -74,8 +83,17 @@ liveFeed.on("proposal", (msg) => {
   if (isNew && msg.proposal.status === "PENDING") buzz();
   draw();
 });
-liveFeed.on("feed", drawFeed);
+// The feed going down or coming back changes whether the alert list may look calm.
+// Coming back, re-read the lists: alerts raised while we were deaf never reached the socket.
+let wasDeaf = false;
+liveFeed.on("feed", () => {
+  drawFeed();
+  const d = deaf();
+  if (wasDeaf && !d) load(); else draw();
+  wasDeaf = d;
+});
 liveFeed.on("state", drawFeed);
+setInterval(() => { if (loadError) load(); }, 15000);
 
 function drawFeed() {
   const L = liveFeed.live, el = $("phFeed");
@@ -105,7 +123,10 @@ function draw() {
   // Active alerts first, newest first; resolved ones (active: false) sink and dim.
   const list = [...alerts.values()].sort((a, b) => (a.active === false) - (b.active === false)
     || (String(b.t) > String(a.t) ? 1 : String(b.t) < String(a.t) ? -1 : 0)).slice(0, 12);
-  $("phAlerts").innerHTML = list.length
+  const down = deaf()
+    ? `<p class="ph-down" role="alert">Can't reach the backend. Alerts are NOT being received.${loadError ? ` <span>(${esc(loadError)})</span>` : ""}</p>`
+    : "";
+  $("phAlerts").innerHTML = down + (list.length
     ? list.map((a) => `<article class="ph-alert ${esc(a.severity)} ${fresh.has(a.id) ? "new" : ""} ${a.active === false ? "resolved" : ""}">
         <div class="ph-meta"><span class="sev">${a.active === false ? "RESOLVED" : esc(a.severity)}</span><span>${esc(String(a.kind || "").replace(/_/g, " "))}</span><time>${esc(clockOf(a))}</time></div>
         <h2>${esc(a.message)}</h2>
@@ -113,7 +134,7 @@ function draw() {
           ${a.asset_id ? `<button class="ph-show" data-show="${esc(a.asset_id)}">Show</button>` : ""}
           ${a.active !== false && !a.acked ? `<button class="ph-ack" data-ack="${esc(a.id)}">Ack</button>` : a.acked ? `<span class="ph-asset">acked</span>` : ""}</div>
       </article>`).join("")
-    : `<p class="ph-empty">No alerts. This page buzzes when one comes in.</p>`;
+    : down ? "" : `<p class="ph-empty">No alerts. This page buzzes when one comes in.</p>`);
 
   const pend = [...proposals.values()].filter((p) => p.status === "PENDING");
   const done = [...proposals.values()].filter((p) => p.status !== "PENDING").slice(-3).reverse();
