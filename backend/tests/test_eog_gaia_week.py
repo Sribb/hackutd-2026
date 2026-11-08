@@ -118,7 +118,9 @@ def test_sponsor_costliest_failure_by_rules(monkeypatch):
     r = out["reply"]
     assert "S2_PUMP_A at S2_FACILITY_A" in r and "$3,384" in r and "Oct 08 10:00 UTC" in r and WEEK in r
     assert "13 pump failures came to $15,327" in r and not MINUS_ZERO.search(r)
-    assert out["ui"] == [{"type": "ui", "action": "focus", "asset_id": "S2_PUMP_A"}]
+    # #190 adds id/source/reason to every directive; compare what matters
+    assert [{k: d.get(k) for k in ("type", "action", "asset_id")} for d in out["ui"]] == [
+        {"type": "ui", "action": "focus", "asset_id": "S2_PUMP_A"}]
 
 
 def test_sponsor_week_and_list_by_rules(monkeypatch):
