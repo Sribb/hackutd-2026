@@ -3,10 +3,14 @@
 Run from the repo root:
   /Applications/Blender.app/Contents/MacOS/Blender --background --factory-startup \
       --python blender/build_field.py -- [--blueprint PATH.json] [--out DIR] \
-      [--detail full|lite|bare] [--render-dir DIR] [--render-assets ID,ID]
+      [--detail full|lite|bare] [--render-dir DIR] [--render-assets ID,ID] [--no-scenery]
 
 The blueprint follows docs/BLUEPRINT.md (format v1); ingest drafts with missing numbers
 build too, since the generator only needs IDs and links.
+
+After the field, scenery.py dresses it as desert under one hideable SCENERY root, with
+whatever triangle budget is left. --no-scenery builds the plain field: no SCENERY layer,
+and flat ground and road colors instead of the kit's textures.
 
 With no --blueprint it builds scenario/field.json into blender/, the field the team uses
 today. With --blueprint and no --out it writes to blender/out/<blueprint name>/. Every run
@@ -44,13 +48,17 @@ import siting  # noqa: E402
 import equipment_parts  # noqa: E402
 import iot_parts  # noqa: E402
 import field_build  # noqa: E402
+import scenery_parts  # noqa: E402
+import scenery  # noqa: E402
 
-for _mod in (blueprint, layout, siting, names, fp, de, ds, piping, equipment_parts, iot_parts, field_build):
+for _mod in (blueprint, layout, siting, names, fp, de, ds, piping, equipment_parts, iot_parts, field_build,
+             scenery_parts, scenery):
     importlib.reload(_mod)
 
 ROOT = os.path.dirname(HERE)
 DEFAULT_BLUEPRINT = os.path.join(ROOT, "scenario", "field.json")
 BUDGET_TRIS, BUDGET_MB = 300_000, 30.0
+SCENERY_SHARE = 0.95        # scenery fills the triangle budget up to 95%, leaving headroom
 FULL_DETAIL_MAX_TANKS = 12
 LEVELS = {
     "full": {"bolts": True, "small_labels": True, "posts": True, "trim": True},
@@ -82,14 +90,19 @@ class UsageError(Exception):
 
 
 def parse_args(argv):
-    opts = {"blueprint": None, "out": None, "detail": None, "render_dir": None, "render_assets": None}
+    opts = {"blueprint": None, "out": None, "detail": None, "render_dir": None, "render_assets": None,
+            "scenery": True}
     flags = {"--blueprint": "blueprint", "--out": "out", "--detail": "detail",
              "--render-dir": "render_dir", "--render-assets": "render_assets"}
     i = 0
     while i < len(argv):
+        if argv[i] == "--no-scenery":
+            opts["scenery"] = False
+            i += 1
+            continue
         key = flags.get(argv[i])
         if key is None or i + 1 >= len(argv):
-            raise UsageError(f"unknown or incomplete option {argv[i]!r}; options: {', '.join(flags)}")
+            raise UsageError(f"unknown or incomplete option {argv[i]!r}; options: {', '.join(flags)}, --no-scenery")
         opts[key] = argv[i + 1]
         i += 2
     if opts["detail"] not in (None, *LEVELS):
@@ -173,13 +186,24 @@ def export_glb(path):
         bpy.ops.export_scene.gltf(**kwargs)
 
 
-def glb_nodes(path):
+def glb_json(path):
     with open(path, "rb") as f:
         raw = f.read()
     n, kind = struct.unpack_from("<II", raw, 12)
     if raw[:4] != b"glTF" or kind != 0x4E4F534A:
         raise ValueError(f"{path} is not a glb with a JSON chunk")
-    return json.loads(raw[20:20 + n]).get("nodes", [])
+    return json.loads(raw[20:20 + n])
+
+
+def glb_nodes(path):
+    return glb_json(path).get("nodes", [])
+
+
+def glb_images_mb(path):
+    """MB of embedded images. The plain field has none, so these are the scenery's textures."""
+    g = glb_json(path)
+    views = g.get("bufferViews", [])
+    return round(sum(views[i["bufferView"]]["byteLength"] for i in g.get("images", []) if "bufferView" in i) / 1e6, 2)
 
 
 RENDER_VIEWS = {   # camera and target offsets in the asset's own frame
@@ -278,12 +302,20 @@ def run(opts, src, out_dir, report):
             break
         level = order[order.index(level) + 1]
 
+    field_tris, want = tris, set(names.expected(bp))
+    view = {"on": False}
+    if opts["scenery"]:
+        view = scenery.dress(scene.collection, bp, L, int(BUDGET_TRIS * SCENERY_SHARE) - tris)
+        tris = triangles(scene)
+        view.update({"triangles": tris - field_tris, "field_triangles": field_tris})
+        want.add("SCENERY")
+
     objs = list(scene.objects)
     dotted = sorted(o.name for o in objs if "." in o.name)
     if dotted:
         report["errors"].append("names clash with each other (Blender added suffixes): " + ", ".join(dotted[:12]))
     built = {o.name for o in objs}
-    missing = sorted(set(names.expected(bp)) - built)
+    missing = sorted(want - built)
     if missing:
         report["errors"].append("the build is missing contract names: " + ", ".join(missing[:20]))
     if report["errors"]:
@@ -293,7 +325,7 @@ def run(opts, src, out_dir, report):
     export_glb(glb)
     bpy.ops.wm.save_as_mainfile(filepath=blend, compress=True)
     nodes = glb_nodes(glb)
-    gone = sorted(set(names.expected(bp)) - {n.get("name") for n in nodes})
+    gone = sorted(want - {n.get("name") for n in nodes})
     if gone:
         report["errors"].append("field.glb is missing names after export: " + ", ".join(gone[:20]))
         return 2
@@ -309,6 +341,7 @@ def run(opts, src, out_dir, report):
                    "crossovers": {x["id"]: x["style"] for x in L["crossovers"]}},
         "detail": {"level": level, "dropped": DROPPED[level], "passes": passes},
         "iot": {"sensors": len(names.sensors(bp)), "rtus": len(bp["tanks"])},
+        "scenery": dict(view, **({"images_mb": glb_images_mb(glb)} if view["on"] else {})),
         "triangles": tris, "glb_mb": round(mb, 2), "nodes": len(nodes), "objects": len(objs),
         "budget": {"triangles": BUDGET_TRIS, "mb": BUDGET_MB},
     })
