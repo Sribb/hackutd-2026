@@ -14,16 +14,22 @@ crossover and runs a plan, confirming every step as "phone" or "iot_e2e". Use a 
 one on stage. `--speed` sets live minutes per real second for the run and puts the old speed back.
 Standard library only. The /ws checks need `websockets` (it's in backend/requirements.txt), so run it
 with the backend's venv; without it they SKIP.
+
+Control tokens (#103): if the backend runs with FREEBOARD_TOKEN and FREEBOARD_PHONE_TOKEN, export the
+same two variables here. Every POST sends X-Freeboard-Token (the phone token for the phone confirm,
+the operator token for the rest) and /ws gets ?token=. The values are never printed.
 """
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 results: list[tuple[str, str, str, float]] = []  # (PASS|FAIL|SKIP, name, detail, seconds)
@@ -38,13 +44,17 @@ class Skip(Exception):
 
 
 class Api:
-    def __init__(self, base: str) -> None:
+    def __init__(self, base: str, token: str = "", phone_token: str = "") -> None:
         self.base = base.rstrip("/")
+        self.token, self.phone_token = token, phone_token
 
-    def call(self, method: str, path: str, body=None, ok=(200,)):
+    def call(self, method: str, path: str, body=None, ok=(200,), as_phone: bool = False):
         data = None if body is None else json.dumps(body).encode()
-        req = urllib.request.Request(self.base + path, data=data, method=method,
-                                     headers={"Content-Type": "application/json"})
+        headers = {"Content-Type": "application/json"}
+        tok = (self.phone_token or self.token) if as_phone else self.token
+        if tok and method != "GET":
+            headers["X-Freeboard-Token"] = tok
+        req = urllib.request.Request(self.base + path, data=data, method=method, headers=headers)
         try:
             with urllib.request.urlopen(req, timeout=15) as r:
                 status, raw = r.status, r.read()
@@ -63,8 +73,8 @@ class Api:
     def get(self, path):
         return self.call("GET", path)
 
-    def post(self, path, body=None, ok=(200,)):
-        return self.call("POST", path, {} if body is None else body, ok)
+    def post(self, path, body=None, ok=(200,), as_phone: bool = False):
+        return self.call("POST", path, {} if body is None else body, ok, as_phone)
 
     def state(self) -> dict:
         return self.get("/api/live/state")
@@ -76,7 +86,7 @@ class Api:
 class Ws:
     """Collects every /ws message in a thread. Disabled (ok False) without the websockets package."""
 
-    def __init__(self, base: str) -> None:
+    def __init__(self, base: str, token: str = "") -> None:
         self.msgs: list[tuple[float, dict]] = []
         self.ok, self.why = False, ""
         try:
@@ -84,11 +94,12 @@ class Ws:
         except ImportError:
             self.why = "the websockets package isn't installed (use the backend's venv)"
             return
-        url = base.replace("http", "ws", 1).rstrip("/") + "/ws?role=other&name=iot_e2e"
+        shown = base.replace("http", "ws", 1).rstrip("/") + "/ws?role=other&name=iot_e2e"
+        url = shown + (f"&token={urllib.parse.quote(token)}" if token else "")
         try:
             self.conn = connect(url, open_timeout=5)
-        except Exception as e:  # noqa: BLE001
-            self.why = f"can't open {url}: {e}"
+        except Exception as e:  # noqa: BLE001  never print the URL with the token in it
+            self.why = f"can't open {shown}{' (with token)' if token else ''}: {str(e).replace(token, '***') if token else e}"
             return
         self.ok = True
         threading.Thread(target=self._read, daemon=True).start()
@@ -158,9 +169,14 @@ def main() -> int:
     ap.add_argument("--force", action="store_true", help="cancel a plan run that is already RUNNING")
     ap.add_argument("--run-timeout", type=float, default=180)
     args = ap.parse_args()
-    api = Api(args.api)
+    token, phone_token = os.environ.get("FREEBOARD_TOKEN", ""), os.environ.get("FREEBOARD_PHONE_TOKEN", "")
+    api = Api(args.api, token, phone_token)
     ctx: dict = {}
-    print(f"iot_e2e against {api.base}")
+    # With tokens, decided_by comes from the token's role (#103), not from the body's "by".
+    phone_by = "phone" if phone_token or not token else "console"
+    script_by = "console" if token else "iot_e2e"
+    print(f"iot_e2e against {api.base} (operator token {'set' if token else 'not set'}, "
+          f"phone token {'set' if phone_token else 'not set'})")
 
     # 1. The live layer answers.
     def reach():
@@ -182,7 +198,7 @@ def main() -> int:
     speed = ctx["speed"]
     tick_s = lambda live_min: live_min / speed + 3  # noqa: E731  real seconds for live_min, plus slack
 
-    ws = Ws(api.base)
+    ws = Ws(api.base, token)
 
     def ws_open():
         if not ws.ok:
@@ -332,11 +348,11 @@ def main() -> int:
         if not p:
             raise Skip("no proposal to confirm")
         mono0 = time.monotonic()
-        out = api.post(f"/api/actions/{p['id']}/confirm", {"by": "phone"})
+        out = api.post(f"/api/actions/{p['id']}/confirm", {"by": "phone"}, as_phone=True)
         if out["status"] != "CONFIRMED":
             raise Fail(f"{p['id']} is {out['status']} after confirm: {out.get('result')}")
-        if out.get("decided_by") != "phone":
-            raise Fail(f"decided_by is {out.get('decided_by')!r}, not 'phone'")
+        if out.get("decided_by") != phone_by:
+            raise Fail(f"decided_by is {out.get('decided_by')!r}, not {phone_by!r}")
         ctx["confirm_mono"] = mono0
         extra = ""
         if ws.ok:
@@ -345,7 +361,7 @@ def main() -> int:
             if not got:
                 raise Fail(f"confirmed, but /ws never broadcast {p['id']} CONFIRMED to the other screens")
             extra = f", /ws broadcast it in {got[0] - mono0:.2f}s"
-        return f"{p['id']} CONFIRMED by phone{extra}"
+        return f"{p['id']} CONFIRMED by {out.get('decided_by')}{extra}"
     step("confirm it the way the phone does", confirm)
 
     def reflects():
@@ -394,7 +410,7 @@ def main() -> int:
             time.sleep(0.2)
         props = {p["id"]: p for p in api.get("/api/actions")["proposals"]}
         robot = [pid for pid in (s.get("proposal_id") for s in run["steps"]) if pid and pid in props
-                 and props[pid]["status"] == "CONFIRMED" and props[pid].get("decided_by") != "iot_e2e"]
+                 and props[pid]["status"] == "CONFIRMED" and props[pid].get("decided_by") != script_by]
         if robot:
             raise Fail(f"{', '.join(robot)} confirmed without this script (decided_by "
                        f"{props[robot[0]].get('decided_by')!r}); a run must never confirm by itself")
