@@ -44,17 +44,43 @@ CHEAP = {"id": "plan_a", "robust": False, "keeps_running": True, "cannot_save": 
          "cost": {"total_usd": 664}}
 
 
+def flood_alerts(mode: str) -> list[dict]:
+    """The alarms the Pump 3 trip sets off once Tank 3 has shut in, CF-7 shaped.
+    cf7: grouped correctly (the high-high points at the high, a chain). ungrouped: Tank 3
+    high has no root_id. two_p1: Tank 3 high-high is its own P1 root. thin: only the trip
+    and the stale meter, as PR #57's detector rings today."""
+    def a(n, asset, kind, prio, root):
+        return {"id": f"alert_{n}", "asset_id": asset, "kind": kind, "severity": "ALARM", "active": True,
+                "priority": prio, "root_id": root, "message": f"{asset} {kind}"}
+    out = [a(2, "WELL_22", "SENSOR_STALE", "P3", None)]
+    if mode == "thin":
+        return out
+    out += [a(3, "TANK_3", "TANK_HIGH", "P2", None) if mode == "ungrouped" else
+            a(3, "TANK_3", "TANK_HIGH", "P1", "alert_1"),
+            a(4, "TANK_3", "TANK_HIGH_HIGH", "P1", None if mode == "two_p1" else "alert_3")]
+    out += [a(5 + i, f"WELL_{9 + i}", "WELL_SHUT_IN", "P2", "alert_1") for i in range(4)]
+    return out
+
+
 def make_app(live=True, jarvis="good", lastcall=True, ingest=True, blueprints=True,
-             robust=True, live_follows=False) -> FastAPI:
+             robust=True, live_follows=False, flood=None) -> FastAPI:
+    """flood None: /api/alerts as PR #57 has it, with no priority or root_id (before CF-7).
+    Otherwise one of flood_alerts' modes, rung once the fake's live clock passes 60 min."""
     app = FastAPI()
+    trip = {"id": "alert_1", "asset_id": "PUMP_3", "kind": "PUMP_TRIP", "active": True,
+            "message": "Pump 3 tripped: it reports stopped."}
+    if flood:
+        trip.update(priority="P1", root_id=None, minutes_to_consequence=60, usd_at_risk=7250)
     st = {"active": "default", "xo": "CLOSED", "tripped": True, "proposals": {}, "n": 0, "ws": [],
-          "alerts": [{"id": "alert_1", "asset_id": "PUMP_3", "kind": "PUMP_TRIP", "active": True,
-                      "message": "Pump 3 tripped: it reports stopped."}]}
+          "t": 6.0, "advances": 0, "alerts": [trip]}
     app.state.fake = st
 
     def tanks():
         n = 8 if st["active"] != "default" else 6
-        return [{"id": f"TANK_{i}", "capacity_bbl": 500} for i in range(1, n + 1)]
+        return [{"id": f"TANK_{i}", "capacity_bbl": 500, "shutdown_pct": 90} for i in range(1, n + 1)]
+
+    def tank3_pct() -> float:
+        return min(90.0, 71.2 + 0.3 * st["t"])
 
     @app.get("/api/state")
     def state():
@@ -77,8 +103,9 @@ def make_app(live=True, jarvis="good", lastcall=True, ingest=True, blueprints=Tr
         if st["active"] != "default":
             return {"events": [TANK6_EVENT], "cost": {"total_usd": 3000}, "warnings": []}
         xo = any(a.get("asset_id") == "VALVE_XO_34" for a in body.get("actions", []))
+        timeline = [{"t_min": 0, "wells_online": 24}, {"t_min": 360, "wells_online": 24 if xo else 20}]
         return {"events": [XO_EVENT if xo else BASE_EVENT], "cost": {"total_usd": 4520 if xo else 7250},
-                "warnings": []}
+                "timeline": timeline, "warnings": []}
 
     @app.post("/api/plans")
     def plans():
@@ -102,6 +129,7 @@ def make_app(live=True, jarvis="good", lastcall=True, ingest=True, blueprints=Tr
         def live_state():
             ids = [t["id"] for t in tanks()] if live_follows else [f"TANK_{i}" for i in range(1, 7)]
             assets = {i: {"status": "OK", "level_pct": 50} for i in ids}
+            assets["TANK_3"] = {"status": "ALARM", "level_pct": tank3_pct()}
             assets["VALVE_XO_34"] = {"status": "OK", "position": st["xo"]}
             return {"clock": "01:50", "t": 6, "paused": False, "assets": assets}
 
@@ -110,8 +138,15 @@ def make_app(live=True, jarvis="good", lastcall=True, ingest=True, blueprints=Tr
             return {"alerts": st["alerts"]}
 
         @app.post("/api/live/sim")
-        def sim():
-            return {"clock": "02:02"}
+        async def sim(request: Request):
+            body = await request.json()
+            if body.get("advance_min"):
+                st["t"] += float(body["advance_min"])
+                st["advances"] += 1
+                if flood and st["t"] >= 60 and len(st["alerts"]) == 1:
+                    st["alerts"] += flood_alerts(flood)
+            h, m = divmod(int(107 + st["t"]), 60)
+            return {"clock": f"{h:02d}:{m:02d}"}
 
         async def broadcast(msg: dict) -> None:
             for ws in list(st["ws"]):
@@ -246,7 +281,7 @@ def by_beat(out: dict, prefix: str) -> dict:
 
 
 def test_everything_passes_and_fills_every_live_value():
-    app = make_app(live_follows=True)
+    app = make_app(live_follows=True, flood="cf7")
     out = run(app)
     bad = [r for r in out["results"] if r["result"] != "PASS"]
     assert not bad, bad
@@ -257,7 +292,14 @@ def test_everything_passes_and_fills_every_live_value():
         rehearse.LIVE_ROBUST: "Open the Tank 3 to 4 crossover and shut in Well 11, for $1,798",
         rehearse.LIVE_NOTHING: "$7,250",
         rehearse.LIVE_EXPIRY: "2:30 AM (2:23 AM if inflow runs 15% high)",
+        rehearse.LIVE_TWO_NIGHTS: "$2,730 and 4 wells apart",
+        rehearse.LIVE_FLOOD: "8",
     }
+    flood = by_beat(out, "Beat 2b The flood")["detail"]
+    assert "P1 root alert_1 PUMP_3 PUMP_TRIP P1, 6 grouped under it" in flood
+    assert "stale sensor on its own: WELL_22" in flood
+    assert any("whole flood rang" in c for c in out["server_changes"])
+    assert "60 min to consequence" in out["extra"]["P1 before the flood"]
     assert out["unfilled"] == []
     st = app.state.fake
     assert st["active"] == "default"            # the blueprint was put back
@@ -315,6 +357,30 @@ def test_no_robust_plan_fails_and_live_layer_not_following_the_upload_fails():
     assert follow["result"] == "FAIL" and "TANK_7" in follow["detail"]
 
 
+def test_flood_skips_before_cf7_and_leaves_the_clock_alone():
+    app = make_app()                                # PR #57 alerts: no priority, no root_id
+    out = run(app)
+    row = by_beat(out, "Beat 2b The flood")
+    assert row["result"] == "SKIP" and "CF-7" in row["detail"]
+    assert not any("whole flood" in c for c in out["server_changes"])
+    assert app.state.fake["t"] < 60                 # only the trip timing's 12-minute advance
+    assert rehearse.LIVE_FLOOD in out["unfilled"]
+    assert any("cut that beat" in n for n in out["notes"])
+
+
+@pytest.mark.parametrize("mode, want", [
+    ("ungrouped", "don't point at alert_1 by root_id: alert_3 TANK_3 TANK_HIGH"),
+    ("two_p1", "2 P1 root causes, expected exactly one"),
+    ("thin", "only 2 active alarms; the beat needs 8 or more"),
+])
+def test_flood_that_does_not_collapse_to_one_cause_fails(mode, want):
+    out = run(make_app(flood=mode))
+    row = by_beat(out, "Beat 2b The flood")
+    assert row["result"] == "FAIL", row
+    assert want in row["detail"], row["detail"]
+    assert not out["ok"]
+
+
 def test_fill_replaces_only_known_placeholders():
     text = "Say {LIVE: do-nothing cost}. Keep {LIVE: /api/lastcall expiry}. Prose: fill each `{LIVE: ...}`."
     assert rehearse.placeholders(text) == ["do-nothing cost", "/api/lastcall expiry"]
@@ -325,7 +391,7 @@ def test_fill_replaces_only_known_placeholders():
 def test_every_placeholder_in_demo_md_is_one_rehearse_fills():
     keys = rehearse.placeholders(rehearse.DEMO.read_text(encoding="utf-8"))
     known = {rehearse.LIVE_EVENT, rehearse.LIVE_BEFORE_AFTER, rehearse.LIVE_ROBUST, rehearse.LIVE_NOTHING,
-             rehearse.LIVE_EXPIRY}
+             rehearse.LIVE_EXPIRY, rehearse.LIVE_FLOOD, rehearse.LIVE_TWO_NIGHTS}
     assert set(keys) <= known, set(keys) - known
 
 
