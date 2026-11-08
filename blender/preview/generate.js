@@ -4,6 +4,7 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+import { createLook } from "./look.js";
 
 const $ = (s) => document.querySelector(s);
 const params = new URLSearchParams(location.search);
@@ -27,20 +28,15 @@ const KIND_BY_PREFIX = { TANK: "tank", PUMP: "pump", VALVE: "valve", WELL: "well
 const view = $("#view");
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
-renderer.outputColorSpace = THREE.SRGBColorSpace;
-renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.localClippingEnabled = true;
 view.prepend(renderer.domElement);
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x20252b);
 const camera = new THREE.PerspectiveCamera(42, 1, 0.5, 5000);
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
 controls.maxPolarAngle = Math.PI * 0.47;
-scene.add(new THREE.HemisphereLight(0xc9d8ea, 0x40372b, 1.2));
-const sun = new THREE.DirectionalLight(0xffe2b8, 2.2);
-sun.position.set(-160, 220, 120);
-scene.add(sun);
+// Sky, IBL, sun shadows, fog, and the Day / Dusk / Night toggle (?look=day|dusk|night), shared with index.html.
+const look = createLook({ renderer, scene, camera, container: view, initial: params.get("look") });
 const markers = new THREE.Group();
 scene.add(markers);
 const pipePlane = new THREE.Plane(new THREE.Vector3(-1, 0, 0), 0);
@@ -96,12 +92,9 @@ function prepare(gltf) {
     });
   }
   const box = new THREE.Box3().setFromObject(gltf.scene);
-  const parts = { rotors: [], beams: [], cranks: [], levels: [] };
+  const parts = { levels: [] };  // rotors, beams, and cranks are animated by look.js
   gltf.scene.traverse((o) => {
-    if (/^PUMP_\w+_rotor$/.test(o.name)) parts.rotors.push(o);
-    else if (/^WELL_\w+_beam$/.test(o.name)) parts.beams.push({ o, phase: Math.random() * 6.28 });
-    else if (/^WELL_\w+_crank$/.test(o.name)) parts.cranks.push({ o, phase: Math.random() * 6.28 });
-    else if (/^(TANK_\w+)_LEVEL$/.test(o.name)) parts.levels.push({ o, tank: o.name.replace(/_LEVEL$/, ""), y0: o.scale.y });
+    if (/^(TANK_\w+)_LEVEL$/.test(o.name)) parts.levels.push({ o, tank: o.name.replace(/_LEVEL$/, ""), y0: o.scale.y });
   });
   return { groups, box, parts };
 }
@@ -292,13 +285,9 @@ renderer.setAnimationLoop(() => {
   simT += dt * 1000 * speed;
   tweens = tweens.filter((t) => { const p = Math.min((simT - t.t0) / t.ms, 1); t.fn(t.ease(Math.max(p, 0))); return p < 1; });
   waiters = waiters.filter((w) => (simT >= w.at ? (w.r(), false) : true));
-  if (state.done && state.parts) {
-    const t = simT / 1000;
-    for (const o of state.parts.rotors) o.rotation.x += dt * 9;
-    for (const { o, phase } of state.parts.beams) o.rotation.x = 0.25 * Math.sin(t * 1.7 + phase);
-    for (const { o, phase } of state.parts.cranks) o.rotation.x = t * 1.7 + phase;
-  }
+  if (state.done) look.animate(simT / 1000, dt);  // pumps spin and pumpjacks rock once the field is built
   controls.update();
+  look.update();
   renderer.render(scene, camera);
 });
 
@@ -314,6 +303,7 @@ async function load(tpl) {
   if (state.gltf) scene.remove(state.gltf.scene);
   Object.assign(state, { tpl, ingest, report, blueprint, gltf }, prepare(gltf));
   scene.add(gltf.scene);
+  look.attach(gltf.scene);
   const size = state.box.getSize(new THREE.Vector3()), center = state.box.getCenter(new THREE.Vector3());
   const d = Math.max(size.x, size.z) * 0.95;
   camera.position.set(center.x - d * 0.55, d * 0.55, center.z + d * 0.75);
