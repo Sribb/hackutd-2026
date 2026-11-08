@@ -12,11 +12,11 @@ from mathutils import Matrix, Vector
 import field_parts as fp
 from field_parts import Kit, ball, box, circle_pts, cyl, fine, hull, line, prism, rbox, ring, tube
 
-HPUMPS_X = (-7.0, -8.6)        # skid centerlines (times fx): beside the filters, across from the inlet
-HP_Y0 = -1.9                   # discharge end; each pump runs south from here toward its motor
+HPUMPS_X = (9.6, 11.2)         # skid centerlines (times fx): the inlet side, between meter run and light tower
+HP_Y0 = 7.4                    # discharge end; each pump runs south from here toward its motor
 HP_X0, HP_X1 = 0.0, 7.4        # pump-local: discharge end to motor end along +X
 SUCTION_X = HP_X1 - 0.85 - 1.5 - 0.55
-SUCTION_Z, DISCHARGE_Z = 2.3, 1.55   # headers: suction clears the open gate
+SUCTION_Z, DISCHARGE_Z = 2.3, 1.55   # header heights: suction passes over the walkway
 
 
 def placed_pump(k, matrix):
@@ -108,18 +108,17 @@ def build(site, sid, loc, fx=1, rot_z=0.0):
     box(dk, (0.55, 0.55, 0.45), (0, 6, 1.1))
     tube(dk, (0, 6, 1.9), (0.7 * fx, 6, 1.9), 0.09, 10)
     ring(st, 0.25, 0.025, (0.42 * fx, 6, 1.1), axis="X", segs=14, rsegs=4)
-    # H-pumps beside the filters, running south from their discharge ends; the suction header
-    # comes out of the pump house's west wall, the injection header runs north to the wellhead
+    # H-pumps on the inlet side, north of the meter run, running south from their discharge ends;
+    # the suction header leaves the pump house's north wall, the injection header runs west to
+    # the wellhead. The other side holds detail_site's skim tank and truck offload header.
     turn = Matrix.Rotation(-math.pi / 2, 4, "Z")
     for px in HPUMPS_X:
         placed_pump(k, Matrix.Translation((px * fx, HP_Y0, 0)) @ turn)
     sy = HP_Y0 - SUCTION_X
-    line(pp, [(-2.05 * fx, -5.3, SUCTION_Z), (-5.6 * fx, -5.3, SUCTION_Z), (-5.6 * fx, sy, SUCTION_Z),
-              (HPUMPS_X[-1] * fx, sy, SUCTION_Z)], 0.1)
+    line(pp, [(7.5 * fx, 0.05, SUCTION_Z), (7.5 * fx, sy, SUCTION_Z), (HPUMPS_X[-1] * fx, sy, SUCTION_Z)], 0.1)
     dy = HP_Y0 - 0.22
-    line(pp, [(HPUMPS_X[-1] * fx, dy, DISCHARGE_Z), (-6.0 * fx, dy, DISCHARGE_Z), (-6.0 * fx, 0.8, DISCHARGE_Z),
-              (0.3 * fx, 0.8, DISCHARGE_Z), (0.3 * fx, 5.3, DISCHARGE_Z), (0.3 * fx, 5.3, 0.6),
-              (0.3 * fx, 6, 0.6)], 0.08)
+    line(pp, [(HPUMPS_X[-1] * fx, dy, DISCHARGE_Z), (0.3 * fx, dy, DISCHARGE_Z), (0.3 * fx, 6.5, DISCHARGE_Z),
+              (0.3 * fx, 6.5, 0.6), (0.3 * fx, 6, 0.6)], 0.08)
     tube(pp, (8.0 * fx, -2, 0.6), (9.5 * fx, -2, 0.6), 0.16, 12)                            # trunk inlet
     # fence
     x0, x1, y0, y1 = -12.5, 12.5, -10.5, 10.5

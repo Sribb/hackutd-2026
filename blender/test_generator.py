@@ -465,6 +465,7 @@ def main():
     test_validation()
     test_parts.test_validation(ok, load(os.path.join(HERE, "samples", "small.json")))
     test_scenery.test_plan(ok, ROOT)
+    test_scenery.test_terrain(ok, ROOT)
     test_layout()
     if "--quick" not in sys.argv:
         with tempfile.TemporaryDirectory() as tmp:

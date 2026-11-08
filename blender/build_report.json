@@ -24,34 +24,33 @@
       "M_CONTAINMENT": 12,
       "M_GALV": 98,
       "M_GLASS": 53,
-      "M_GRAVEL": 33,
       "M_HDPE": 24,
-      "M_LINER": 6,
+      "M_LINER": 8,
       "M_MOTOR": 44,
       "M_PIPE": 75,
       "M_PJ_DARK": 48,
       "M_PJ_PAINT": 96,
       "M_PUMP_PAINT": 6,
       "M_RUBBER": 14,
-      "M_STEEL": 12,
-      "M_STEEL_DARK": 106,
+      "M_STEEL": 14,
+      "M_STEEL_DARK": 108,
       "M_STENCIL": 64,
-      "M_TANK": 9,
+      "M_TANK": 10,
       "M_TRUCK_CAB": 2,
       "M_TRUCK_TANK": 2,
-      "M_WOOD": 2
+      "M_WOOD": 5
     },
-    "styled": 778,
-    "looks": 276,
-    "theirs": 7,
+    "styled": 755,
+    "looks": 285,
+    "theirs": 46,
     "gaps_filled": 0,
     "ao_uv_meshes": 0,
     "seconds": {
-      "roles": 0.13,
-      "uvs": 0.59,
-      "weather": 0.1,
-      "ao": 3.03,
-      "total": 3.84
+      "roles": 0.06,
+      "uvs": 0.24,
+      "weather": 0.05,
+      "ao": 7.92,
+      "total": 8.26
     }
   },
   "outputs": {
@@ -146,7 +145,7 @@
       {
         "detail": "full",
         "estimated": 230958,
-        "triangles": 231635
+        "triangles": 237283
       }
     ]
   },
@@ -159,31 +158,36 @@
     "seed": "Avon field - night shift",
     "textures": [
       "ground_dry_soil",
-      "dirt_road_tracks"
+      "ground_caliche"
     ],
     "fence_m": 1216.0,
     "cattle_guards": 2,
+    "terrain_m": 5400.0,
+    "mesas": 24,
+    "other_leases": 10,
+    "power_spans": 18,
+    "brush_past_fence": 0,
     "items": {
-      "boulder": 2,
-      "branch": 2,
-      "grass": 37,
+      "grass": 9,
       "lease_sign": 1,
-      "prickly_pear": 9,
-      "rock": 5,
-      "yucca": 22
+      "prickly_pear": 2,
+      "rock": 1,
+      "yucca": 5
     },
-    "dropped": [],
-    "triangles": 36082,
-    "field_triangles": 231635,
-    "images_mb": 8.09
+    "dropped": [
+      "brush past the fence"
+    ],
+    "triangles": 36791,
+    "field_triangles": 237283,
+    "images_mb": 3.59
   },
-  "triangles": 267717,
-  "glb_mb": 25.35,
-  "nodes": 1020,
-  "objects": 1021,
+  "triangles": 274074,
+  "glb_mb": 21.85,
+  "nodes": 1006,
+  "objects": 1007,
   "budget": {
     "triangles": 300000,
     "mb": 30.0
   },
-  "seconds": 26.87
+  "seconds": 15.98
 }

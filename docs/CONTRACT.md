@@ -59,13 +59,14 @@ A generator builds the field from a blueprint, so anyone can rebuild it, and a c
 Change the model in the scripts, not by hand in the `.blend`, or the next rebuild will overwrite your edits:
 - `blender/blueprint.py` reads and checks the blueprint.
 - `blender/layout.py` decides where every asset goes.
-- `blender/field_build.py` and `blender/piping.py` build the field and its pipes.
+- `blender/field_build.py` and `blender/piping.py` build the field and its pipes. The civil works are a caliche lease road with a crown, two lanes of darker wheel tracks and sloped shoulders, driveways with their own tracks, caliche pads with soft edges and a low berm along their sides and back, and black HDPE flowlines on timber sleepers (#98).
 - `blender/field_parts.py` builds each core asset; `blender/well_parts.py` (pumpjack and wellhead), `blender/truck_parts.py` (vacuum truck) and `blender/swd_parts.py` (disposal facility with its H-pumps) hold the bigger ones. At `--detail full` they build the hero detail; `lite` costs about what full did before #100.
 - `blender/detail_equipment.py` adds gauges, sensors, panels, wellhead trees, labels, and load-outs.
-- `blender/detail_site.py` adds power, light towers, containment, disposal well and yard equipment, and truck detail.
+- `blender/detail_site.py` adds power, light towers, corrugated steel containment walls with a black liner, disposal well equipment (a skim tank in lined containment and a truck offload header), yard equipment, and truck detail.
 - `blender/siting.py` finds free spots for anything added after the core layout, and `blender/equipment_parts.py` builds the blueprint's `equipment`.
-- `blender/scenery_parts.py` generates the scenery the CC0 kit lacks: barbed wire fence, yucca, prickly pear, and a cattle guard. `blender/parts_preview.py` builds every generated model in a row to look at.
-- `blender/scenery.py` dresses the built field as desert with the kit in `blender/assets/` and those parts, and `siting.plan_scenery()` decides where each piece goes.
+- `blender/scenery_parts.py` generates the scenery the CC0 kit lacks: barbed wire fence, yucca, prickly pear, a cattle guard, the lease sign, H2S warning plates, and pipeline markers. `blender/parts_preview.py` builds every generated model in a row to look at.
+- `blender/terrain.py` plans the land around the lease: the terrain out to the horizon, its color, and the mesas on it (#98). Plain Python, so the tests check it without Blender.
+- `blender/scenery.py` dresses the built field as desert with the kit in `blender/assets/` and those parts, and `siting.plan_scenery()` and `siting.plan_outside()` decide where each piece goes. `blender/beyond.py` builds what stands past the lease on the terrain: the road and power line out, other operators' pads, and the mesas.
 - `blender/names.py` lists the names every build must contain. Each build checks itself against it before it exports.
 
 ### The blueprint
@@ -114,15 +115,16 @@ Positions are plan meters. The lease road runs along x on y = 0, and y points no
   "layout": { "rows": 1, "road_m": 450.0, "crossovers": { "VALVE_XO_34": "straight" } },
   "detail": { "level": "full", "dropped": [] },
   "iot": { "sensors": 12, "rtus": 6 },
-  "scenery": { "on": true, "textures": ["ground_dry_soil", "dirt_road_tracks"], "fence_m": 1216.0, "cattle_guards": 2,
-               "items": { "boulder": 6, "branch": 6, "creosote": 2, "grass": 110, "lease_sign": 1, "mesquite": 1,
-                          "prickly_pear": 28, "rock": 15, "yucca": 65 },
-               "dropped": [], "triangles": 114650, "field_triangles": 148435, "images_mb": 9.43 },
-  "triangles": 263085, "glb_mb": 19.0, "nodes": 1013, "seconds": 7.8
+  "scenery": { "on": true, "textures": ["ground_dry_soil", "ground_caliche"], "fence_m": 1216.0, "cattle_guards": 2,
+               "terrain_m": 5400.0, "mesas": 24, "other_leases": 10, "power_spans": 18, "brush_past_fence": 50,
+               "items": { "boulder": 4, "branch": 4, "creosote": 1, "grass": 102, "lease_sign": 1,
+                          "prickly_pear": 23, "rock": 11, "yucca": 65 },
+               "dropped": [], "triangles": 103782, "field_triangles": 154587, "images_mb": 4.36 },
+  "triangles": 258369, "glb_mb": 14.4, "nodes": 1017, "seconds": 8.3
 }
 ```
 
-`counts` comes from the blueprint and `kinds` from the built scene. `scenery` says what the desert layer added: its triangles on top of `field_triangles`, the MB of its textures, and anything it `dropped` to stay in the budget. With `--no-scenery` it is `{"on": false}`. `placed` lists which assets had positions in the blueprint and which were placed automatically. When `ok` is false, `errors` says what to fix.
+`counts` comes from the blueprint and `kinds` from the built scene. `scenery` says what the desert layer added: its triangles on top of `field_triangles`, how far the terrain runs past the lease (`terrain_m`), the mesas and other operators' pads it built, the MB of its textures, and anything it `dropped` to stay in the budget. With `--no-scenery` it is `{"on": false}`. `placed` lists which assets had positions in the blueprint and which were placed automatically. When `ok` is false, `errors` says what to fix.
 
 **Names in this section:** `<tank>`, `<pump>`, `<valve>`, `<well>`, `<swd>`, `<truck>`, and `<yard>` are blueprint IDs, and `n` is a tank ID without its `TANK_` prefix, so `TANK_3` gives `PAD_3`. For today's field they are the same names as before.
 
@@ -178,14 +180,15 @@ Assets on the south side of the road are turned 180 degrees about Y. Their parts
 - A route is the start stop, its junction, along the road, the target's junction, then the target stop.
 
 **Other names:** None of these are clickable assets:
-- `PAD_n` holds each tank pad's gravel, steel containment, liner, step-over, sign, light tower, and `RTU_PAD_n`.
+- `PAD_n` holds each tank pad's caliche (`PAD_n_gravel`) and berm (`PAD_n_berm`), steel containment, liner, step-over, sign, light tower, and `RTU_PAD_n`.
 - `LOADOUT_n` is the truck hookup stand.
 - `SITE_*` is the ground, roads, pipe supports, and the power line.
 - `CAM_OVERVIEW` is a camera framing the whole field.
 - Names ending in `_label`, `_sign`, or `_tag` are painted numbers and signs.
-- `SCENERY` is the desert layer (#88): one root Empty with `userData.kind` `scenery`, and every node under it is named `SCENERY_*`. It holds the barbed wire fence along the lease edge (`SCENERY_fence_*`), the cattle guards and road stubs where the lease road leaves (`SCENERY_cattle_guard_*`, `SCENERY_road_*`), a lease sign, and a seeded scatter of plants and rocks: one node per kit model copy, like `SCENERY_grass_12`, `SCENERY_rock_3`, and `SCENERY_mesquite_1`, and one merged mesh per material for the generated plants (`SCENERY_yucca_*`, `SCENERY_prickly_pear_*`). Nothing under it has an asset ID, so it is never clickable. Hide the whole layer with `scene.getObjectByName("SCENERY").visible = false`. It stays off pads, roads, pipe runs, and truck routes, and it is the same on every build of the same blueprint. The ground (`M_GROUND`) and the road (`M_ROAD`) also get the kit's dry soil and dirt road textures; those are not under `SCENERY`.
+- `SCENERY` is the desert layer (#88, #98): one root Empty with `userData.kind` `scenery`, and every node under it is named `SCENERY_*`. Everything past the lease ground (`SITE_ground`) is under it, so hiding it leaves the plain lease. It holds `SCENERY_terrain`, the ground from the lease's edge out about 5.4 km to the horizon, sharing its edge with `SITE_ground` so there is no seam; `SCENERY_mesas`, a ring of caprock mesas 3 to 5 km out; `SCENERY_road`, the lease road running out of the lease both ways; `SCENERY_power_*`, the lease's power line continued 1.6 km west on wood poles; `SCENERY_neighbors_*`, other operators' caliche pads with far pumpjacks, small tanks and spur roads, 300 m to 2.4 km past the lease's ends; the barbed wire fence along the lease edge (`SCENERY_fence_*`) and the cattle guards where the road leaves (`SCENERY_cattle_guard_*`); `SCENERY_signs_*`, an RRC style lease sign at the west entrance (a made-up operator and lease number), a generic H2S warning on each pad's sign post, and yellow pipeline markers where the trunk runs under a driveway; and a seeded scatter of plants and rocks, thickest along the fence and thinning out in a 45 m band past it: one node per kit model copy, like `SCENERY_grass_12`, `SCENERY_rock_3`, and `SCENERY_mesquite_1`, and one merged mesh per material for the generated plants (`SCENERY_yucca_*`, `SCENERY_prickly_pear_*`). Nothing under it has an asset ID, so it is never clickable. Hide the whole layer with `scene.getObjectByName("SCENERY").visible = false`. It stays off pads, roads, pipe runs, and truck routes, and it is the same on every build of the same blueprint.
+- Surfaces outside `SCENERY` that the scenery pass dresses: the ground (`M_GROUND`) gets the kit's dry soil with its broad patches filtered out, and the road (`M_ROAD`), pads and yard (`M_GRAVEL`), and berms (`M_BERM`) get the kit's caliche. Each multiplies a vertex color layer (`COLOR_0` in the glb) into its texture: patches and caliche dust on the ground, wheel tracks and shoulders on the road. Well flowlines (`PIPE_<well>_<tank>`) are `M_HDPE`, the containment liner is `M_LINER`, signs are `M_SIGN` and `M_HAZARD`, and the mesas are `M_MESA` (vertex colors only).
 
-**Size:** Today's field is about 263,000 triangles and 19 MB with its scenery, or 148,000 triangles and 6.2 MB with `--no-scenery`. The 12-tank sample is about 288,000 triangles and 17 MB. All are inside the 300,000 triangle and 30 MB budget. Scenery only uses what the field leaves: it fills up to 95% of the triangle budget, drops the fence when it can't fit, and builds only the textures when nothing is left. The generator estimates the size before it builds. If a field has more than 12 tanks, or full detail would pass the budget, it drops small detail: bolts, small labels, tags, signs, and containment and fence posts, then wellhead trim if that is still too much. `detail` in the report says what was dropped. Asset nodes, tank numbers (`<tank>_label`), lights, sensors, moving parts, pipes, and waypoints are never dropped.
+**Size:** Today's field is about 258,000 triangles and 14 MB with its scenery, or 155,000 triangles with `--no-scenery`. The 12-tank sample is about 299,000 triangles and 14 MB: its field alone is 298,000, so its scenery is only the coarse terrain. All are inside the 300,000 triangle and 30 MB budget. Scenery only uses what the field leaves: it fills up to 95% of the triangle budget. The terrain always comes, coarser when little is left; then, while they fit, the mesas, the road out of the lease, the signs, the power line out, other operators' pads, and the brush past the fence; the fence and the plants get the rest, and the fence is dropped when it can't fit. The generator estimates the size before it builds. If a field has more than 12 tanks, or full detail would pass the budget, it drops small detail: bolts, small labels, tags, signs, and containment and fence posts, then wellhead trim if that is still too much. `detail` in the report says what was dropped. Asset nodes, tank numbers (`<tank>_label`), lights, sensors, moving parts, pipes, and waypoints are never dropped.
 
 **Scale and axes:** Today's field runs 450 m along X, and the report gives `layout.road_m` for any field. In three.js, Y is up and the lease road runs along X near Z = 0, with the first row of tank pads toward negative Z and a second row, if any, toward positive Z.
 
