@@ -949,11 +949,38 @@ addEventListener("keydown", (e) => {
   if (e.key === "Escape") { if (walk) endWalk(); select(null); flyHome(); }
 });
 
+// ---------------------------------------------------------------- pager ----
+// A QR code for /phone. A judge scans it and their own phone becomes the night pager.
+function mountPager() {
+  const btn = document.createElement("button");
+  btn.className = "upload-open";
+  btn.textContent = "Pager";
+  document.querySelector(".brand-row").appendChild(btn);
+  btn.onclick = async () => {
+    const url = import.meta.env.VITE_PHONE_URL || `${location.origin}/phone`;
+    const QR = (await import("qrcode")).default;
+    const svg = await QR.toString(url, { type: "svg", margin: 1, color: { dark: "#e8e2d6", light: "#050505" } });
+    const local = /^(127\.0\.0\.1|localhost)$/.test(new URL(url).hostname);
+    const box = document.createElement("div");
+    box.className = "pager";
+    box.innerHTML = `<div class="pager-card"><div class="kicker">The night pager</div>
+      <div class="pager-qr">${svg}</div>
+      <p>Scan with a phone on this Wi-Fi. It buzzes on every alert, and a fix can be confirmed from it with a press and hold.</p>
+      <code>${esc(url)}</code>
+      ${local ? `<p class="note">This address only works on this laptop. Start with <b>npm run demo</b> to get a Wi-Fi address.</p>` : ""}
+      <p class="muted">No login: anyone on the Wi-Fi can confirm. Demo only.</p>
+      <button>Close</button></div>`;
+    box.onclick = (e) => { if (e.target === box || e.target.tagName === "BUTTON") box.remove(); };
+    document.body.appendChild(box);
+  };
+}
+
 // ----------------------------------------------------------------- boot ----
 if (api.usingBackend) liveFeed.start(api.BASE);
 liveFeed.on("state", () => { if (data) { renderFeed(); render(); } });
 liveFeed.on("feed", () => { if (data) { renderFeed(); render(); } });
 mountUpload();
+mountPager();
 mountJarvis({
   stage: $("stage"),
   selected: () => selectedId,

@@ -22,7 +22,8 @@ function apiBase() {
   try { if (q) localStorage.setItem("freeboard.phone.api", q); } catch { /* private mode */ }
   let saved = null;
   try { saved = localStorage.getItem("freeboard.phone.api"); } catch { /* ignore */ }
-  const pick = q || saved || import.meta.env.VITE_API || `${location.protocol}//${location.hostname}:8000`;
+  const env = import.meta.env.VITE_API === "same-origin" ? location.origin : import.meta.env.VITE_API;
+  const pick = q || saved || env || `${location.protocol}//${location.hostname}:8000`;
   const u = new URL(pick);
   if (/^(127\.0\.0\.1|localhost|\[::1\])$/.test(u.hostname) && !/^(127\.0\.0\.1|localhost)$/.test(location.hostname)) u.hostname = location.hostname;
   return u.origin;

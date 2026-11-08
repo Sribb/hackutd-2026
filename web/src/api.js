@@ -4,7 +4,10 @@
 // serves /api/field and /api/state still works. The console shows which data is fake.
 // It never treats missing data as safe.
 
-export const BASE = (import.meta.env.VITE_API || "").replace(/\/$/, "");
+// VITE_API=same-origin (npm run demo): the Vite server proxies /api and /ws to the backend,
+// so the laptop and phones on the Wi-Fi use whatever host served the page.
+const RAW_API = import.meta.env.VITE_API || "";
+export const BASE = (RAW_API === "same-origin" ? location.origin : RAW_API).replace(/\/$/, "");
 const fakeCache = new Map();
 
 async function getJson(url, init) {

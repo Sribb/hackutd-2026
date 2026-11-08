@@ -114,3 +114,13 @@ On a phone on the same Wi-Fi:
 The page picks its backend in this order: `?api=http://<laptop-ip>:8000` (remembered on that phone), then `VITE_API` with any `127.0.0.1` swapped for the host the page came from, then the page's own host on port 8000. The backend has to allow that origin (CORS / `PUBLIC_URL`).
 
 **No login.** Anyone on the same network who opens the page can confirm a fix. That's fine for the demo, not for a real field.
+
+## One-command demo (#67)
+
+    cd web && npm install && npm run demo
+
+It starts the backend on `127.0.0.1:8000` (with `.venv/bin/python` if the repo has one, else `$PYTHON`, else `python3`) and the console on `0.0.0.0:5173`. Then it prints the console URL, the phone URL, a QR code for the phone, and the curl lines that trip a pump or speed up the sim. Ctrl+C stops both.
+
+The Vite server proxies `/api` and `/ws` to the backend (`VITE_API=same-origin`), so the laptop and phones on the same Wi-Fi use one origin, and the backend needs no CORS change. The **Pager** button in the console shows the same QR code: a judge scans it, and their phone becomes the night pager.
+
+If the backend can't start, the console still runs on recorded data and says so. The backend needs Python 3.10 or newer, because `anthropic` 2.x doesn't install on 3.9.

@@ -7,12 +7,14 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "phone": "vite --host 0.0.0.0"
+    "phone": "vite --host 0.0.0.0",
+    "demo": "node scripts/demo.mjs"
   },
   "dependencies": {
     "@fontsource/azeret-mono": "5.3.0",
     "@fontsource/gloock": "5.3.0",
     "@mediapipe/tasks-vision": "1.1.1",
+    "qrcode": "1.5.4",
     "three": "0.170.0"
   },
   "devDependencies": {

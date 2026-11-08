@@ -65,7 +65,15 @@ function phoneRoute() {
 
 export default defineConfig({
   plugins: [fieldGlb(), mediapipeWasm(), phoneRoute()],
-  server: { host: "127.0.0.1", port: 5173 },
+  server: {
+    host: "127.0.0.1",
+    port: 5173,
+    // npm run demo sets FREEBOARD_PROXY so the page, /api and /ws share one origin.
+    proxy: process.env.FREEBOARD_PROXY ? {
+      "/api": { target: process.env.FREEBOARD_PROXY, changeOrigin: true },
+      "/ws": { target: process.env.FREEBOARD_PROXY.replace(/^http/, "ws"), ws: true, changeOrigin: true },
+    } : undefined,
+  },
   build: {
     chunkSizeWarningLimit: 1200,
     rollupOptions: { input: { main: path.resolve(__dirname, "index.html"), phone: path.resolve(__dirname, "phone.html") } },

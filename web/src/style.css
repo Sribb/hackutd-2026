@@ -282,3 +282,10 @@ button { white-space: nowrap; }
 .feed .conn.ok { color: var(--good); border-color: rgba(143,163,107,.45); }
 .feed .conn.down { color: var(--alarm); border-color: rgba(255,75,31,.45); }
 .feed.lost { color: var(--alarm); border: 1px solid var(--alarm); padding: 6px 8px; animation: blink 1.4s steps(2) infinite; }
+
+/* ---- pager QR (#67) ---- */
+.pager { position: fixed; inset: 0; z-index: 45; background: rgba(5,5,5,.86); display: grid; place-items: center; }
+.pager-card { width: min(420px, calc(100% - 32px)); border: 1px solid var(--line); background: var(--bg); padding: 24px; display: grid; gap: 12px; }
+.pager-qr svg { width: 100%; height: auto; display: block; }
+.pager-card p { margin: 0; font-size: 12px; line-height: 1.6; color: var(--ink-2); }
+.pager-card code { font: 12px var(--mono); color: var(--ink); word-break: break-all; }
