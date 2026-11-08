@@ -67,9 +67,11 @@ async function getJson(path) {
 }
 let fieldP = null;
 const field = () => (fieldP = fieldP || getJson("/api/field").catch(() => null));
-function idsOf(kind, prefix, f) {
-  const fromField = f && Array.isArray(f[kind]) ? f[kind].map((x) => x.id) : [];
-  const fromModel = window.__freeboard ? [...window.__freeboard.assets.keys()].filter((id) => id.startsWith(prefix)) : [];
+// The field's own lists first; else the model's IDs (TANK_3, or a sponsor ID like S2_TANK_A in dataset mode).
+function idsOf(kind, word, f) {
+  const fromField = f && Array.isArray(f[kind]) ? f[kind].map((x) => x && x.id).filter(Boolean) : [];
+  const re = new RegExp(`(^|_)${word}(_|$)`);
+  const fromModel = window.__freeboard ? [...window.__freeboard.assets.keys()].filter((id) => re.test(id)) : [];
   return fromField.length ? fromField : fromModel;
 }
 const PRIO = { P1: 0, P2: 1, P3: 2 };
@@ -97,7 +99,7 @@ function start(i) {
       <button type="button" class="gt-btn" data-back>back</button><button type="button" class="gt-btn primary" data-next>next</button></div>
     <div class="gt-pillmsg"><span>tour paused while the pager is open</span><button type="button" class="gt-btn" data-unpager>back to the tour</button></div>`;
   document.body.appendChild(card);
-  card.querySelector("[data-unpager]").onclick = () => { const p = $(".pager"); if (p) p.remove(); frame(); };
+  card.querySelector("[data-unpager]").onclick = () => { closePager(); frame(); };
   card.querySelector("[data-skip]").onclick = () => end();
   card.querySelector("[data-back]").onclick = () => go(step - 1);
   card.querySelector("[data-next]").onclick = () => (step === STEPS.length - 1 ? end() : go(step + 1));
@@ -187,6 +189,8 @@ const clipToView = (r) => { const left = Math.max(2, r.left), top = Math.max(2, 
 
 // The pager overlay covers the screen: the card folds to a small pill in the corner until it closes.
 function pill(on) { if (card) card.classList.toggle("pill", on); }
+// Through the pager's own close button, so it also drops its Escape listener (main.js).
+function closePager() { const p = $(".pager"); if (!p) return; const b = p.querySelector(".pager-card > button"); if (b) b.click(); else p.remove(); }
 
 // ------------------------------------------------------------ placing ----
 // Never on the time bar (where it sits when it is up, even while it is tucked away) or the
@@ -272,7 +276,7 @@ const STEPS = [
     async enter(ctx) {
       const f = await field();
       const inc = await openIncident().catch(() => null);
-      const tanks = idsOf("tanks", "TANK_", f), pumps = idsOf("pumps", "PUMP_", f), swds = idsOf("disposal_wells", "SWD_", f);
+      const tanks = idsOf("tanks", "TANK", f), pumps = idsOf("pumps", "PUMP", f), swds = idsOf("disposal_wells", "SWD", f);
       const pick = (list, want) => (want && list.includes(want) ? want : list[0]);
       const stops = [
         ["tank", pick(tanks, inc && inc.consequence_asset_id), (n) => `${n}: produced water from the wells collects in the tanks. when a tank reaches its shutdown level, the wells feeding it stop.`],
@@ -339,7 +343,7 @@ const STEPS = [
       if (!ctx.alive()) return;
       if (!a) {
         const f = await field();
-        const pumps = idsOf("pumps", "PUMP_", f);
+        const pumps = idsOf("pumps", "PUMP", f);
         const pump = pumps.includes("PUMP_3") ? "PUMP_3" : pumps[0];
         if (!pump) { body("<p>this field has no pump to trip.</p>"); return; }
         await sleep(reduced ? 0 : 900);
@@ -435,7 +439,7 @@ const STEPS = [
         else if (st) x = `<span class="gt-note">${esc(lc(($("#csFix .cs-fx-state") || {}).textContent || st))}</span>`;
         else if (sawConfirm) x = `<span class="gt-note">confirmed. the command went out because a person held the button, not because gaia decided.</span>`;
         else if (action && BASE) x = `${btns([["data-propose", "propose the first step", "primary"]])}<span class="gt-note">${esc(said || "nothing moves until you confirm.")}</span>`;
-        else x = `<span class="gt-note">${plan ? "this plan has no step to propose." : ""}</span>`;
+        else x = `<span class="gt-note">${BASE ? "the planner has no step to propose right now, so there is nothing to confirm. press next." : "without a backend there is nothing to propose."}</span>`;
         extra(x, (el) => { const p = el.querySelector("[data-propose]"); if (p) { p.disabled = proposing; p.onclick = propose; } });
         ctx.targets(st ? ["#csPlan", "#csFix"] : ["#csPlan"]);
         if (st && !draw.scrolled) { draw.scrolled = true; const f = $("#csFix"); if (f) f.scrollIntoView({ block: "nearest" }); }
@@ -445,19 +449,22 @@ const STEPS = [
     },
   },
   {
-    id: "phone", title: "your phone", targets: [],
+    id: "phone", title: "your phone", targets: [".pager-pill"],
     enter(ctx) {
       const ph = prettyUsPhone(readPhone());
-      const pager = [...document.querySelectorAll("#side .brand-row button")].find((b) => /^pager$/i.test(b.textContent.trim()));
+      // The console's own pager (#161: the "phone pager" pill and window.__pager), else the classic Pager button.
+      const btn = [...document.querySelectorAll("#side .brand-row button")].find((b) => /^pager$/i.test(b.textContent.trim()));
+      const open = window.__pager && typeof window.__pager.open === "function" ? () => window.__pager.open() : btn ? () => btn.click() : null;
+      const pill = !!$(".pager-pill");
       body(`<p>${ph ? `tonight's alerts go to ${esc(ph)}. texts and calls are coming; for now the phone pager does it.` : "you didn't leave a number, so the phone pager is how alerts reach a phone tonight."}</p>
-        <p>open the pager and scan the code with your phone. it buzzes on every alert, and a fix can be confirmed from it with the same press and hold.</p>`);
-      extra(pager ? btns([["data-pager", "open the pager", "primary"]]) : `<span class="gt-note">the pager is not on this screen.</span>`, (x) => {
+        <p>open the pager${pill ? " (the “phone pager” button on the field)" : ""} and scan the code with your phone. it buzzes on every alert, and a fix can be confirmed from it with the same press and hold.</p>`);
+      extra(open ? btns([["data-pager", "open the pager", "primary"]]) : `<span class="gt-note">the pager is not on this screen.</span>`, (x) => {
         const b = x.querySelector("[data-pager]");
-        if (b) b.onclick = () => pager.click();
+        if (b) b.onclick = () => open();
       });
       void ctx;
     },
-    leave() { const p = $(".pager"); if (p) p.remove(); },
+    leave() { closePager(); },
   },
   {
     id: "done", title: "you're the operator now", targets: [],
