@@ -10,7 +10,13 @@ Sparkplug B's sparkplug_b.proto (Sparkplug 3.0) that carry live values. Field nu
              long_value 11 (uint64), float_value 12 (float), double_value 13 (double),
              boolean_value 14 (bool), string_value 15 (string), bytes_value 16 (bytes)
 
-Every other field (metadata 8, properties 9, and anything a newer edge node adds) is
+Metric properties 9 (a PropertySet: keys 1, repeated string; values 2, repeated
+PropertyValue with type 1, is_null 2, int_value 3, long_value 4, float_value 5,
+double_value 6, boolean_value 7, string_value 8) are decoded into a dict, because
+Sparkplug 3.0 puts a metric's quality there: the "Quality" property, Int32, 0 bad,
+192 good, 500 stale. A nested property set or extension value decodes as None. A key
+with no value decodes as None too, so a "Quality" key whose value is missing or unread
+is still seen. Every other field (metadata 8, and anything a newer edge node adds) is
 skipped by its wire type, so it never breaks the decoder. A dataset 17, template 18, or
 extension 19 value is skipped too, and the metric decodes with value None and a detail
 saying why, never as a number.
@@ -30,17 +36,19 @@ decode_payload(bytes) returns a dict:
 and each metric is a dict:
 
     {"name", "alias", "timestamp", "datatype", "is_null", "is_historical",
-     "is_transient", "value", "value_type", "raw", "detail"}
+     "is_transient", "value", "value_type", "raw", "detail", "properties"}
 
-Absent fields are None (the flags are False). value_type is the field the value came in
+Absent fields are None (the flags are False, properties is {}). value_type is the field the value came in
 ("int", "long", "float", "double", "boolean", "string", "bytes", or "dataset",
 "template", "extension"; None when there was no value field), raw is that field as it
 was on the wire, and detail is "" or why value is None. A metric in NDATA or DDATA
 usually leaves its datatype out because the birth certificate already gave it; the
 caller then calls typed_value(birth_datatype, m["value_type"], m["raw"]).
 
-encode_payload(dict) takes the same shape (only name, alias, timestamp, datatype, value
-and the flags are read from a metric; datatype may be a number or a name like "Float").
+encode_payload(dict) takes the same shape (only name, alias, timestamp, datatype, value,
+the flags and properties are read from a metric; datatype may be a number or a name like
+"Float"). A property value of None is written null, an int as Int32 (Int64 when it
+doesn't fit), a bool as Boolean, a float as Double, and text as String.
 Bytes that aren't a valid payload, and a value that doesn't fit its datatype when
 encoding, raise CodecError, which is a ValueError. Nothing here raises IndexError or
 loops on bad input: every read is bounds-checked and every loop moves forward.
@@ -96,6 +104,11 @@ VALUE_FIELDS = {10: ("int", VARINT), 11: ("long", VARINT), 12: ("float", I32),
 FIELD_NUMBERS = {"int": 10, "long": 11, "float": 12, "double": 13, "boolean": 14,
                  "string": 15, "bytes": 16}
 FLAGS = {5: "is_historical", 6: "is_transient", 7: "is_null"}
+PROPERTIES = 9
+# PropertyValue field number -> (value_type, wire type)
+PROPERTY_VALUE_FIELDS = {3: ("int", VARINT), 4: ("long", VARINT), 5: ("float", I32),
+                         6: ("double", I64), 7: ("boolean", VARINT), 8: ("string", LEN),
+                         9: ("propertyset", LEN), 10: ("propertysets", LEN), 11: ("extension", LEN)}
 
 
 def _varint(n: int) -> bytes:
@@ -293,7 +306,7 @@ def decode_payload(data: Any) -> dict:
 def _decode_metric(data: bytes) -> dict:
     m: dict = {"name": None, "alias": None, "timestamp": None, "datatype": None,
                "is_null": False, "is_historical": False, "is_transient": False,
-               "value": None, "value_type": None, "raw": None, "detail": ""}
+               "value": None, "value_type": None, "raw": None, "detail": "", "properties": {}}
     for number, wire_type, value in _Reader(data).fields():
         if number == 1:
             _want(number, wire_type, LEN, "metric name")
@@ -314,12 +327,76 @@ def _decode_metric(data: bytes) -> dict:
             value_type, expected = VALUE_FIELDS[number]
             _want(number, wire_type, expected, f"{value_type}_value")
             m["value_type"], m["raw"] = value_type, _wire_value(value_type, value)
-        # anything else (metadata 8, properties 9, newer fields) is skipped
+        elif number == PROPERTIES:
+            _want(number, wire_type, LEN, "properties")
+            m["properties"] = _decode_properties(value)
+        # anything else (metadata 8, newer fields) is skipped
     if m["is_null"]:
         m["detail"] = "the metric is null"
     else:
         m["value"], m["detail"] = typed_value(m["datatype"], m["value_type"], m["raw"])
     return m
+
+
+def _decode_properties(data: bytes) -> dict:
+    """{key: value} for a PropertySet. A value that is null, nested, an extension, or
+    missing (more keys than values) is None; values without a key are dropped."""
+    keys: list = []
+    values: list = []
+    for number, wire_type, value in _Reader(data).fields():
+        if number == 1:
+            _want(number, wire_type, LEN, "property key")
+            keys.append(_text(value))
+        elif number == 2:
+            _want(number, wire_type, LEN, "property value")
+            values.append(_decode_property_value(value))
+    return {key: values[i] if i < len(values) else None for i, key in enumerate(keys)}
+
+
+def _decode_property_value(data: bytes) -> Any:
+    datatype, is_null, value_type, raw = None, False, None, None
+    for number, wire_type, value in _Reader(data).fields():
+        if number == 1:
+            _want(number, wire_type, VARINT, "property type")
+            datatype = value & MASK32
+        elif number == 2:
+            _want(number, wire_type, VARINT, "property is_null")
+            is_null = value != 0
+        elif number in PROPERTY_VALUE_FIELDS:
+            value_type, expected = PROPERTY_VALUE_FIELDS[number]
+            _want(number, wire_type, expected, f"property {value_type}_value")
+            nested = value_type in ("propertyset", "propertysets", "extension")
+            raw = None if nested else _wire_value(value_type, value)
+    if is_null or raw is None:
+        return None
+    return typed_value(datatype, value_type, raw)[0]
+
+
+def _encode_properties(props: Any) -> bytes:
+    if not isinstance(props, dict):
+        raise CodecError(f"properties are a dict, got {type(props).__name__}")
+    keys, values = bytearray(), bytearray()
+    for key, value in props.items():
+        keys += _chunk(1, str(key).encode("utf-8"))
+        if value is None:
+            pv = _key(2, VARINT) + b"\x01"
+        elif isinstance(value, bool):
+            pv = _key(1, VARINT) + _varint(BOOLEAN) + _key(7, VARINT) + (b"\x01" if value else b"\x00")
+        elif isinstance(value, int):
+            if -(1 << 31) <= value < 1 << 31:
+                pv = _key(1, VARINT) + _varint(INT32) + _key(3, VARINT) + _varint(value & MASK32)
+            elif -(1 << 63) <= value < 1 << 63:
+                pv = _key(1, VARINT) + _varint(INT64) + _key(4, VARINT) + _varint(value & MASK64)
+            else:
+                raise CodecError(f"property {key!r}: {value} doesn't fit Int64")
+        elif isinstance(value, float):
+            pv = _key(1, VARINT) + _varint(DOUBLE) + _key(6, I64) + struct.pack("<d", value)
+        elif isinstance(value, str):
+            pv = _key(1, VARINT) + _varint(STRING) + _chunk(8, value.encode("utf-8"))
+        else:
+            raise CodecError(f"property {key!r}: can't encode {type(value).__name__}")
+        values += _chunk(2, pv)
+    return bytes(keys + values)
 
 
 # ---------- encoding ----------
@@ -378,6 +455,8 @@ def _encode_metric(m: dict, datatypes: bool) -> bytes:
     for number, flag in FLAGS.items():
         if m.get(flag):
             out += _key(number, VARINT) + b"\x01"
+    if m.get("properties"):
+        out += _chunk(PROPERTIES, _encode_properties(m["properties"]))
     if not m.get("is_null"):
         out += _encode_value(datatype, m.get("value"), m.get("name"))
     return bytes(out)

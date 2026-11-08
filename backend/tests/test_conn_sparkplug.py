@@ -193,6 +193,84 @@ def test_bad_quality_gives_no_reading_and_unknown(broker, edge, make_live):
     assert c.quality[("TANK_3", "level_pct")]["quality"] == "good"
 
 
+def test_quality_property_bad_or_stale_gives_no_reading(broker, edge, make_live):
+    lf = make_live(make_spec(broker.port))
+    c = conn_of(lf)
+    wait_value(lf, "TANK_3", "level_pct", 62.0)
+    key = ("TANK_3", "level_pct")
+    for code, want in ((0, "bad"), (500, "stale"), (64, "uncertain")):
+        edge.set_quality(DEVICE, "TANK_3/Level", code)
+        wait_for(lambda: c.quality[key]["quality"] == want, what=f"Quality {code} -> {want}")
+        assert f"Quality {code}" in c.quality[key]["detail"]
+    lf.step(0.01)
+    mark = lf.latest[key]["t"]
+    edge.set(DEVICE, "TANK_3/Level", 30.0)                  # still uncertain: the value must not count
+    time.sleep(0.6)
+    lf.step(6.0)
+    assert lf.latest[key]["t"] == mark
+    assert 30.0 not in {v for _t, v in lf.history[key]}
+    assert lf.state()["assets"]["TANK_3"]["status"] == "UNKNOWN"
+    edge.set_quality(DEVICE, "TANK_3/Level", 192)           # good again
+    wait_value(lf, "TANK_3", "level_pct", 30.0)
+    assert c.quality[key]["quality"] == "good"
+
+
+def _feed(c, mtype, payload, device=""):
+    topic = f"spBv1.0/{GROUP}/{mtype}/{NODE}" + (f"/{device}" if device else "")
+    c._handle(topic, codec.encode_payload(payload, datatypes=mtype.endswith("BIRTH")), False)
+
+
+def offline_connector(make_live):
+    """A connector whose network thread has stopped, so messages fed by hand are the
+    only thing that changes it (no connect-failure marks racing the test)."""
+    c = conn_of(make_live(make_spec(1)))                    # nothing listens on port 1
+    c.close()
+    wait_for(lambda: c._client._thread is None, what="paho thread stopped")
+    return c
+
+
+def _births(c, device_metrics):
+    ms = int(time.time() * 1000)
+    _feed(c, "NBIRTH", {"timestamp": ms, "seq": 0, "metrics": [
+        {"name": "bdSeq", "datatype": "Int64", "value": 0},
+        {"name": "TANK_5/Level", "alias": 1, "datatype": "Double", "value": 41.0, "timestamp": ms}]})
+    _feed(c, "DBIRTH", {"timestamp": ms, "seq": 1, "metrics": [
+        {"name": name, "alias": 10 + i, "datatype": dt, "value": v, "timestamp": ms}
+        for i, (name, (dt, v)) in enumerate(device_metrics.items())]}, DEVICE)
+
+
+def test_new_nbirth_voids_device_values_until_dbirth(make_live):
+    c = offline_connector(make_live)
+    _births(c, DEVICES[DEVICE])
+    got = {(r["asset_id"], r["signal"]): r["value"] for r in c.read()}
+    assert got[("TANK_3", "level_pct")] == 62.0
+    assert c.quality[("TANK_3", "level_pct")]["quality"] == "good"
+    # The node restarts and is born again, but PLC_1 sends no DBIRTH this time.
+    ms = int(time.time() * 1000)
+    _feed(c, "NBIRTH", {"timestamp": ms, "seq": 0, "metrics": [
+        {"name": "bdSeq", "datatype": "Int64", "value": 1},
+        {"name": "TANK_5/Level", "alias": 1, "datatype": "Double", "value": 42.0, "timestamp": ms}]})
+    for aid, sig in DEVICE_SIGNALS:
+        assert c.quality[(aid, sig)]["quality"] == "uncertain", (aid, sig)
+        assert "DBIRTH" in c.quality[(aid, sig)]["detail"]
+    assert c.quality[("TANK_5", "level_pct")]["quality"] == "good"
+    assert {(r["asset_id"], r["signal"]) for r in c.read()} == {("TANK_5", "level_pct")}
+
+
+def test_metric_not_in_birth_gives_no_value(make_live):
+    c = offline_connector(make_live)
+    metrics = {k: v for k, v in DEVICES[DEVICE].items() if k != "TANK_3/Level"}
+    _births(c, metrics)
+    assert c.quality[("TANK_3", "level_pct")]["quality"] == "bad"
+    c.read()
+    ms = int(time.time() * 1000)
+    _feed(c, "DDATA", {"timestamp": ms, "seq": 2, "metrics": [
+        {"name": "TANK_3/Level", "datatype": "Float", "value": 50.0, "timestamp": ms}]}, DEVICE)
+    assert c.quality[("TANK_3", "level_pct")]["quality"] == "bad"
+    assert "birth certificate" in c.quality[("TANK_3", "level_pct")]["detail"]
+    assert [r for r in c.read() if r["asset_id"] == "TANK_3"] == []
+
+
 def test_retained_and_historical_messages_are_not_live(broker, edge, make_live):
     edge.publish_retained_stale(DEVICE, "TANK_3/Level", 99.0)
     lf = make_live(make_spec(broker.port))

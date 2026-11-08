@@ -278,3 +278,34 @@ def test_encoding_a_value_that_does_not_fit_raises(datatype, value):
 def test_float_on_the_wire_is_little_endian_fixed32():
     data = encode_payload({"metrics": [{"datatype": sp.FLOAT, "value": 12.5}]})
     assert data.endswith(bytes([0x65]) + struct.pack("<f", 12.5))
+
+
+def test_quality_property_round_trips():
+    props = {"Quality": 500, "engUnit": "%", "ok": True, "gain": 1.5, "nothing": None, "big": 1 << 40}
+    data = encode_payload({"metrics": [{"name": "L", "datatype": "Float", "value": 1.0, "properties": props}]})
+    m = decode_payload(data)["metrics"][0]
+    assert m["properties"] == props
+    assert m["value"] == 1.0
+
+
+def test_quality_property_decodes_from_hand_built_bytes():
+    # PropertySet {keys: ["Quality"], values: [{type: Int32, int_value: 192}]}
+    pv = bytes.fromhex("08 03 18 c0 01")
+    pset = bytes.fromhex("0a 07") + b"Quality" + bytes([0x12, len(pv)]) + pv
+    metric = bytes.fromhex("0a 01 78 20 09") + bytes([0x4a, len(pset)]) + pset + bytes.fromhex("65 00 00 c0 3f")
+    m = decode_payload(bytes([0x12, len(metric)]) + metric)["metrics"][0]
+    assert m["properties"] == {"Quality": 192}
+    assert m["value"] == 1.5
+
+
+def test_quality_key_without_a_value_is_still_seen():
+    pset = bytes.fromhex("0a 07") + b"Quality"
+    metric = bytes.fromhex("0a 01 78") + bytes([0x4a, len(pset)]) + pset
+    m = decode_payload(bytes([0x12, len(metric)]) + metric)["metrics"][0]
+    assert "Quality" in m["properties"] and m["properties"]["Quality"] is None
+
+
+def test_malformed_properties_raise_value_error():
+    metric = bytes.fromhex("0a 01 78 4a 03 12 05 08")     # a property value cut short
+    with pytest.raises(ValueError):
+        decode_payload(bytes([0x12, len(metric)]) + metric)

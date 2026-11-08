@@ -15,7 +15,7 @@ it starts itself) and behaves like a Sparkplug 3.0 edge node:
 - die() cuts the socket without DISCONNECT, so the broker publishes the NDEATH will;
   revive() starts a new session. If the broker goes away it reconnects by itself.
 - skip_seq() makes the next message skip a sequence number, null() makes a metric
-  report is_null, publish_historical() sends an is_historical value, and
+  report is_null, set_quality() sends a metric with a Sparkplug "Quality" property, publish_historical() sends an is_historical value, and
   publish_retained_stale() leaves a retained DDATA with old values on the broker.
 
     python -m backend.fakes.sparkplug                 # its own broker on 127.0.0.1:1886
@@ -79,6 +79,7 @@ class FakeEdgeNode:
                 n += 1
         self.by_alias = {a: key for key, a in self.aliases.items()}
         self.nulls: set = set()
+        self.qualities: dict[tuple, int] = {}     # (scope, metric) -> Sparkplug Quality code
         self.bdseq = -1
         self.seq = 0
         self._skip = 0
@@ -114,6 +115,8 @@ class FakeEdgeNode:
         m = {"alias": self.aliases[(scope, name)], "timestamp": ts, "datatype": dt}
         if birth:
             m["name"] = name
+        if (scope, name) in self.qualities:
+            m["properties"] = {"Quality": self.qualities[(scope, name)]}
         if (scope, name) in self.nulls:
             m["is_null"] = True
         else:
@@ -238,6 +241,17 @@ class FakeEdgeNode:
         """Report the metric as is_null (no value) until set() gives it one."""
         def do():
             self.nulls.add((device, metric))
+            self._report(device, [metric])
+        self.lt.call(do)
+
+    def set_quality(self, device: str, metric: str, code: Optional[int]) -> None:
+        """Send the metric with a Sparkplug "Quality" property (0 bad, 192 good, 500
+        stale) from now on, and report it at once. None leaves the property off."""
+        def do():
+            if code is None:
+                self.qualities.pop((device, metric), None)
+            else:
+                self.qualities[(device, metric)] = code
             self._report(device, [metric])
         self.lt.call(do)
 

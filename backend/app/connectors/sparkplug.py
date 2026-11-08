@@ -29,6 +29,11 @@ This connector is the host:
 - A retained message delivered on subscribe is not fresh: it is ignored and a rebirth
   is requested. A metric marked is_historical is never read as live. An is_null metric
   has no value. A metric timestamp older than max_age_s (default 60 s) is stale.
+- A metric's "Quality" property (Sparkplug 3.0: 0 bad, 192 good, 500 stale) is
+  honored: anything but 192 gives no value. A metric that wasn't in the birth
+  certificate gives no value either.
+- A new NBIRTH makes every device signal of that node uncertain until the device's
+  DBIRTH comes.
 
 A value that isn't good becomes no reading (see signalmap.py), so the asset goes stale
 and shows UNKNOWN; `quality` says why at once, for every declared signal:
@@ -73,7 +78,7 @@ from typing import Any, Callable, Optional
 from ..fieldmap import FieldMap
 from .base import Connector, Reading
 from . import sparkplug_codec as codec
-from .signalmap import (BAD, COMM_LOST, GOOD, NULL, UNCERTAIN, Backoff, Inbox, Mapped, SignalMap,
+from .signalmap import (BAD, COMM_LOST, GOOD, NULL, STALE, UNCERTAIN, Backoff, Inbox, Mapped, SignalMap,
                         check_env_names, close_later, env_secret, import_optional, normalize,
                         uncertain_result)
 
@@ -122,6 +127,25 @@ def parse_address(address: Any, group_id: str, what: str) -> tuple[str, str, str
     if parts[0] != group_id:
         raise ValueError(f"{what}: address {address!r} is in group {parts[0]!r}, not config group_id {group_id!r}")
     return parts[1], parts[2], parts[3]
+
+
+def property_quality(props: dict) -> tuple[str, str]:
+    """(quality, detail) from a metric's "Quality" property (Sparkplug 3.0: 0 bad, 192
+    good, 500 stale). No such property is good. Only 192 is good: 64 to 127 (OPC
+    uncertain) is uncertain, and any other code, or a value that isn't an integer, is bad."""
+    key = next((k for k in props if isinstance(k, str) and k.lower() == "quality"), None)
+    if key is None:
+        return GOOD, ""
+    code = props[key]
+    if isinstance(code, bool) or not isinstance(code, int):
+        return BAD, "the metric's Quality property is unreadable"
+    if code == 192:
+        return GOOD, ""
+    if code == 500:
+        return STALE, "the edge node marks the metric stale (Quality 500)"
+    if 64 <= code < 128:
+        return UNCERTAIN, f"the edge node marks the metric uncertain (Quality {code})"
+    return BAD, f"the edge node marks the metric bad (Quality {code})"
 
 
 class _Scope:
@@ -374,6 +398,12 @@ class SparkplugConnector(Connector):
         for m in p["metrics"]:
             if m["name"] == BDSEQ and isinstance(m["value"], int):
                 node.bdseq = m["value"]
+        # A new NBIRTH voids every device's birth: until its DBIRTH, a device's values
+        # from before are not current, even if no DDEATH came.
+        for key, (e, d) in self.where.items():
+            if e == edge and d:
+                self._put(key[0], key[1], Mapped(None, UNCERTAIN,
+                                                 f"edge node {edge} was born again; waiting for {d}'s DBIRTH"))
         self._apply(edge, "", node, p, birth=True)
 
     def _ndeath(self, edge: str, node: _Node, p: dict) -> None:
@@ -412,7 +442,12 @@ class SparkplugConnector(Connector):
                 continue
             stamp = m["timestamp"] if m["timestamp"] is not None else p["timestamp"]
             age_s = None if stamp is None else (now_ms - stamp) / 1000.0
-            if m["is_null"]:
+            pq, pq_detail = property_quality(m.get("properties") or {})
+            if not birth and name not in scope.types:
+                value, quality, detail = None, BAD, f"metric {name!r} is not in the birth certificate"
+            elif pq != GOOD:
+                value, quality, detail = None, pq, pq_detail
+            elif m["is_null"]:
                 value, quality, detail = None, NULL, "the metric is null"
             else:
                 datatype = m["datatype"] if m["datatype"] is not None else scope.types.get(name)
