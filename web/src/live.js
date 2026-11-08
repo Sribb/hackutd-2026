@@ -62,6 +62,7 @@ function mergeState(s) {
   }
   if (s.clock) { live.clock = s.clock; live.clockAt = now; }
   if (typeof s.t === "number") live.t = s.t;
+  if (typeof s.paused === "boolean") live.paused = s.paused; // POST /api/live/sim {paused}: no ticks, field time stands still
   if (typeof s.speed === "number" && s.speed > 0) live.speed = s.speed; // live minutes (CF-7 consequence_t / shelved_until_t use it)
   for (const [id, a] of Object.entries(s.assets || {})) {
     const prev = live.assets[id] || {};
@@ -114,6 +115,8 @@ function connect() {
     ws = new WebSocket(queryToken ? wsUrl(url) : url);
     heard = false;
     authed = false;
+    ticks = 0;               // the watchdog judges each socket on its own messages
+    lastMsgAt = Date.now();
   } catch {
     return retry();
   }
@@ -128,6 +131,8 @@ function connect() {
       authTimer = setTimeout(() => { if (ws === me && !authed) { queryToken = true; try { me.close(); } catch { /* gone */ } } }, 1500);
     }
     live.connected = true;
+    ticks = 0;
+    lastMsgAt = Date.now();
     markLost(false);
     emit("feed", live);
   };
@@ -179,12 +184,23 @@ export function send(msg) {
 }
 
 // Half-open socket (Wi-Fi drop with no close event): once the socket has shown it sends state
-// every second, 6 s of silence means the feed is lost. Close it so the reconnect starts.
+// every second, 6 s of silence means the feed is lost. A ping every 2 s gets a pong back
+// (live_api.py), so a paused sim, which sends no state, still counts as heard.
+// A dead socket can take a minute to fire onclose, so it is dropped and replaced right away.
 setInterval(() => {
-  if (!ws || !live.connected || ticks < 3 || Date.now() - lastMsgAt < 6000) return;
-  markLost(true);
+  if (!ws || ws.readyState !== 1) return;
+  try { ws.send(JSON.stringify({ type: "ping" })); } catch { /* closing */ }
+  if (!live.connected || ticks < 3 || Date.now() - lastMsgAt < 6000) return;
+  const dead = ws;
+  dead.onopen = dead.onmessage = dead.onclose = dead.onerror = null;
+  try { dead.close(); } catch { /* gone */ }
+  ws = null;
   ticks = 0;
-  try { ws.close(); } catch { /* gone */ }
+  sentAuth = "";
+  live.connected = false;
+  markLost(true);
+  emit("feed", live);
+  retry();
 }, 2000);
 
 function retry() {
@@ -200,7 +216,8 @@ function markLost(lost) {
 
 // Live minutes since a wall-clock moment. speed is live minutes per real second
 // (FREEBOARD_SPEED); without one the field runs in real time.
-const liveSince = (ms) => ((Date.now() - ms) / 1000) * (live.speed || 1 / 60);
+// A paused sim (we are connected and it says paused) stands still; a lost feed always runs on.
+const liveSince = (ms) => (live.paused && live.connected && !live.lostSince ? 0 : ((Date.now() - ms) / 1000) * (live.speed || 1 / 60));
 
 // The backend's age_min as of now: its value when the message came, plus the live time since.
 // While the feed is lost this extrapolates at the last known speed, so a 12 min old reading

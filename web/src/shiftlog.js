@@ -50,18 +50,34 @@ export function clockNow(seconds = false, plusMin = 0) {
   return `${hh % 12 || 12}:${String(mm).padStart(2, "0")}${sec} ${hh < 12 ? "AM" : "PM"}`;
 }
 
-// While the console is open the log is alive, written or not: a quiet half hour followed by a
-// reload must keep it. Only a log nobody had open for 30 min is a rehearsal.
+// While the console is open and in view the log is alive, written or not: a quiet half hour
+// followed by a reload must keep it. Only a log nobody had on screen for 30 min is a rehearsal.
+// The timer only touches "last": it re-reads storage, so an idle second tab (a projector
+// window) never writes its older list over the active tab's newer entries.
+const read = () => { try { return JSON.parse(localStorage.getItem(key) || "null"); } catch { return null; } };
+const sig = (e) => `${e.at}|${e.kind}|${e.text}`;
+function merged() {
+  const saved = read();
+  if (!saved || !Array.isArray(saved.list)) return list;
+  const have = new Set(saved.list.map(sig));
+  return saved.list.concat(list.filter((e) => !have.has(sig(e))));
+}
 setInterval(() => {
-  if (!list.length) return;
-  try { localStorage.setItem(key, JSON.stringify({ t0, last: Date.now(), list })); } catch { /* private window */ }
+  if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+  const saved = read();
+  if (!saved || !Array.isArray(saved.list)) return;
+  try { localStorage.setItem(key, JSON.stringify({ ...saved, last: Date.now() })); } catch { /* private window */ }
 }, 60000);
 
 export function add(kind, text) {
-  list.push({ at: clockNow(), kind, text });
+  const e = { at: clockNow(), kind, text };
+  list = merged();
+  list.push(e);
   try { localStorage.setItem(key, JSON.stringify({ t0, last: Date.now(), list })); } catch { /* private window: keep it in memory */ }
 }
 
+// Includes entries another tab on the same incident wrote.
 export function entries() {
+  list = merged();
   return list;
 }

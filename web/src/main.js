@@ -668,9 +668,11 @@ function renderWhatif() {
     // Only a plan the planner checked at +15% inflow gets plain green. Fragile: amber, and says so.
     // Not checked (a hand-made what-if): says it holds at the forecast inflow.
     const robust = (planFor(actions) || {}).robust;
+    // Every tank blind: the console vouches for nothing, so no inflow clause either.
+    const allBlind = blind.length && blind.length === (field.tanks || []).length;
     const [first, ...rest] = noShutdownText(blind).split(/(?<=\.) /);
-    const clause = robust === true ? "" : robust === false ? " Not if inflow runs 15% high." : " Not checked at +15% inflow.";
-    const text = `${robust === true ? first : first.replace(/\.$/, " at the forecast inflow.")}${clause}${rest.length ? ` ${rest.join(" ")}` : ""}`;
+    const clause = allBlind || robust === true ? "" : robust === false ? " Not if inflow runs 15% high." : " Not checked at +15% inflow.";
+    const text = allBlind ? noShutdownText(blind) : `${robust === true ? first : first.replace(/\.$/, " at the forecast inflow.")}${clause}${rest.length ? ` ${rest.join(" ")}` : ""}`;
     verdict = `<div class="verdict ${blind.length || robust === false ? "warn" : "good"}" data-decode="verdict">${text}</div>`;
   }
   else {

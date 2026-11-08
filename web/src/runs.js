@@ -32,7 +32,25 @@ const props = new Map();   // proposal id -> proposal (for SENDING / UNCERTAIN /
 // demo speed in a rehearsal.
 const CHECK_MIN = 20;
 const crew = new Map();    // `${run}:${n}` -> { who, asset, text, since, last, missed }
+const returned = new Set(); // keys marked "Back in": never tracked again from a later snapshot
 let lastStatus = "";
+let wsAt = 0, wsRun = "";   // when the socket last brought the run on screen (an older GET loses)
+
+// People out survive a reload: a reset clock would push a missed check-in out by up to 20 min.
+// Kept 30 min after the page was last open (like the shift log); ?fresh starts empty.
+const CREW_KEY = "freeboard.crew";
+function saveCrew() {
+  try { localStorage.setItem(CREW_KEY, JSON.stringify({ saved: Date.now(), crew: [...crew], returned: [...returned] })); } catch { /* private mode */ }
+}
+function loadCrew() {
+  try {
+    if (new URLSearchParams(location.search).has("fresh")) { localStorage.removeItem(CREW_KEY); return; }
+    const j = JSON.parse(localStorage.getItem(CREW_KEY) || "null");
+    if (!j || Date.now() - j.saved > 30 * 60000) return;
+    for (const [k, c] of j.crew || []) crew.set(k, c);
+    for (const k of j.returned || []) returned.add(k);
+  } catch { /* nothing kept */ }
+}
 
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
 
@@ -137,10 +155,13 @@ function trackCrew(r) {
   if (t == null) return;
   for (const s of r.steps) {
     const key = `${r.id}:${s.n}`;
-    if (crew.has(key) || !["VERIFYING", "DONE", "MISMATCH"].includes(s.status)) continue;
+    if (crew.has(key) || returned.has(key) || !["VERIFYING", "DONE", "MISMATCH"].includes(s.status)) continue;
     const who = hooks.outside && hooks.outside(s.action);
     if (!who) continue;
-    crew.set(key, { who, asset: s.action.asset_id, text: s.text, since: t, last: t, missed: false });
+    // The clock starts when the step was confirmed (live minutes), not when this screen saw it.
+    const at = typeof s.confirmed_t === "number" && s.confirmed_t <= t ? s.confirmed_t : t;
+    crew.set(key, { who, asset: s.action.asset_id, text: s.text, since: at, last: at, missed: false });
+    saveCrew();
     hooks.log(`${who} out at ${hooks.nice(s.action.asset_id)}. Check in every ${CHECK_MIN} min.`);
   }
 }
@@ -148,7 +169,9 @@ function trackCrew(r) {
 function crewHtml() {
   const t = nowT();
   if (!crew.size || t == null) return "";
+  saveCrew();
   return `<div class="run-crew"><div class="run-offer-k">People out</div>${[...crew.entries()].map(([k, c]) => {
+    if (c.last > t + 1) c.last = c.since = t; // the live clock went back (backend restart): count from now
     const due = c.last + CHECK_MIN, late = Math.floor(t - due);
     if (late >= 0 && !c.missed) { c.missed = true; hooks.log(`MISSED CHECK-IN: ${c.who} at ${hooks.nice(c.asset)}. Call them; send backup if no answer.`); }
     return `<div class="crew-row ${late >= 0 ? "late" : ""}"><span>${esc(c.who)} at ${esc(hooks.nice(c.asset))}</span>
@@ -190,12 +213,15 @@ function draw() {
   box.querySelectorAll("[data-checkin]").forEach((b) => { b.onclick = () => {
     const c = crew.get(b.dataset.checkin), t = nowT();
     if (c && t != null) { c.last = t; c.missed = false; hooks.log(`${c.who} checked in at ${hooks.nice(c.asset)}.`); }
+    saveCrew();
     draw();
   }; });
   box.querySelectorAll("[data-back]").forEach((b) => { b.onclick = () => {
     const c = crew.get(b.dataset.back);
     if (c) hooks.log(`${c.who} back in from ${hooks.nice(c.asset)}.`);
     crew.delete(b.dataset.back);
+    returned.add(b.dataset.back);
+    saveCrew();
     draw();
   }; });
   box.querySelectorAll("[data-reject]").forEach((b) => { b.onclick = () => decide(b.dataset.reject, "reject"); });
@@ -210,13 +236,16 @@ function draw() {
   if (cb) holdButton(cb, () => control("cancel"), 800);
 }
 
-function setRun(r) {
+// opts.fresh: the answer to this screen's own execute/resume, never an older snapshot.
+function setRun(r, opts = {}) {
   if (!r) return;
   // An offered re-plan (not started) never replaces the run on screen: it shows as an offer.
   if (run && r.id !== run.id && r.started === false) return;
   // Snapshots arrive out of order (a slow GET after a ws message). A run never leaves a final
   // status, and never goes back from CANCELLING to RUNNING: drop such an older snapshot.
-  if (run && r.id === run.id) {
+  // Same run only: a backend restart numbers runs from run_1 again (created_t tells them apart).
+  const sameRun = run && r.id === run.id && (!r.created_t || !run.created_t || r.created_t === run.created_t);
+  if (sameRun && !opts.fresh) {
     const FINAL = new Set(["DONE", "FAILED", "CANCELLED"]);
     if (FINAL.has(run.status) && !FINAL.has(r.status)) return;
     if (run.status === "CANCELLING" && (r.status === "RUNNING" || r.status === "PAUSED")) return;
@@ -229,7 +258,7 @@ function setRun(r) {
   }
   hooks.progress(r);
   trackCrew(r);
-  if (r.status === "PAUSED" && r.replan_run_id) loadReplan(r.replan_run_id);
+  if (r.status === "PAUSED" && r.replan_run_id && !(offer && offer.kind === "stale" && offer.from === r.replan_run_id)) loadReplan(r.replan_run_id);
   else if (!(offer && offer.kind === "stale")) offer = null;
   draw();
 }
@@ -254,7 +283,7 @@ async function takeOffer() {
       const nr = await call(`/api/runs/${encodeURIComponent(o.run.id)}/resume`, { by: "console" });
       offer = null;
       hooks.log(`Started the re-plan: ${nr.summary.split(". ")[0]} (${hooks.usd(nr.cost_usd)}).`);
-      setRun(nr);
+      setRun(nr, { fresh: true });
     } else if (o.plan) {
       offer = null;
       await execute(o.plan, { approved: true });
@@ -266,7 +295,7 @@ async function takeOffer() {
       // The offered re-plan went out of date while it waited. Same commands re-scored on the live
       // state: start that, since it is what the person just held to run. Otherwise offer it.
       if (fresh && sameActions(o.run, fresh) && sameOutcome(o.run, fresh)) { offer = null; await execute(fresh, { approved: true }); return; }
-      offer = { kind: "stale", plan: fresh || null, text: plain(e.message) + (fresh ? "" : " Nothing needs doing now.") };
+      offer = { kind: "stale", from: o.run.id, plan: fresh || null, text: plain(e.message) + (fresh ? "" : " Nothing needs doing now.") };
     } else note = plain(e.message);
   }
   draw();
@@ -297,7 +326,13 @@ async function decide(pid, verb) {
 
 async function refresh() {
   if (!run) return draw();
-  try { setRun(await call(`/api/runs/${encodeURIComponent(run.id)}`)); } catch { draw(); }
+  const asked = Date.now();
+  try {
+    const r = await call(`/api/runs/${encodeURIComponent(run.id)}`);
+    // The socket brought a newer snapshot of this run while the GET was out: keep that one.
+    if (wsRun === r.id && wsAt > asked) return draw();
+    setRun(r);
+  } catch { draw(); }
 }
 
 // Start a run for a plan. Returns the run, or null (the panel says why).
@@ -308,7 +343,7 @@ export async function execute(plan, opts = {}) {
     const r = await call(`/api/plans/${encodeURIComponent(plan.id)}/execute`, { by: "console" });
     offer = null;
     hooks.log(`APPROVED and started: ${plan.summary.split(". ")[0]} (${hooks.usd(plan.cost ? plan.cost.total_usd : r.cost_usd)}). Each step waits for a confirm.`);
-    setRun(r);
+    setRun(r, { fresh: true });
     return r;
   } catch (e) {
     const fresh = e.body && e.body.plan;
@@ -350,10 +385,12 @@ export function mountRuns(el, h) {
   hooks = h;
   base = h.base || "";
   if (!base) return;
+  loadCrew();
   runsSupported();
   liveFeed.on("run", (msg) => {
     const r = msg && msg.run;
     if (!r) return;
+    wsAt = Date.now(); wsRun = r.id;
     if (!run || r.id === run.id) setRun(r);
     else if (r.replaces === run.id && r.started !== false) { offer = null; setRun(r); } // the re-plan was started (here, on the phone, or by Jarvis)
     else if (run.replan_run_id === r.id) { offer = null; loadReplan(r.id); }
