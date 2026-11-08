@@ -85,3 +85,20 @@ spacetime generate --lang typescript --out-dir web/src/module_bindings --module-
 ```
 
 Then subscribe to `SELECT * FROM asset_state`, `field_clock`, `operator_action`, and `plan_step`. Call `propose_action` when an operator clicks a fix, and `mark_step_done` as they walk the plan.
+
+## Live layer: connectors, alerts, Jarvis (#38, `@vinnycodes67`)
+
+Additive: the endpoints above are unchanged. Shapes are in [docs/CONTRACT.md](../docs/CONTRACT.md#live-layer-38).
+
+| File | What it does |
+|---|---|
+| `app/connectors/` | One interface: `read()` returns `{asset_id, signal, value, t}` readings, `send(command)` returns `{ok, detail}`. `sim` (the default, a live digital twin), `webhook` (readings pushed in, commands POSTed out), and stubs for `mqtt`, `modbus`, `opcua` that report "unavailable" until a driver is written |
+| `app/detect.py` | Pump trip (stopped, no flow, or tank rising faster than its wells explain), stale sensor (UNKNOWN, never OK), valve mismatch. Confirmed over 2 readings |
+| `app/live.py` | The live loop, readings, statuses, and proposals that only a confirm sends |
+| `app/jarvis.py` | Rules fast path (no key needed) plus Claude tool use: focus camera, explain asset, forecast, plans, propose action |
+| `app/hub.py`, `app/notify.py` | `/ws` broadcast and optional ntfy phone push |
+| `app/live_api.py` | The routes, mounted by one guarded block in `main.py` |
+
+The loop starts with the app (`uvicorn ...`). Try it: `curl localhost:8000/api/live/state`, then
+`curl -X POST localhost:8000/api/jarvis -H 'content-type: application/json' -d '{"message":"what is failing?"}'`.
+Set `ANTHROPIC_API_KEY` for open questions and screenshots. Env vars are listed in CONTRACT.md.
