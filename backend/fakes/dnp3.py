@@ -70,7 +70,8 @@ class FakeOutstation:
     add_event(); read what reached it in writes, selects, direct_operates and
     requests. Knobs: silent (stop answering, keep the connection), select_tamper and
     operate_tamper (dicts merged into the echo), select_status, operate_delay_s
-    (answer an operate late, after acting on it)."""
+    (answer an operate late, after acting on it), and iin (IIN bit names, such as
+    "DEVICE_RESTART", sent with every poll answer)."""
 
     def __init__(self, port: int = 0, points: Optional[dict] = None, links: Optional[dict] = None,
                  select_timeout_s: float = 10.0) -> None:
@@ -89,6 +90,7 @@ class FakeOutstation:
         self.operate_tamper: Optional[dict] = None
         self.select_status = SUCCESS
         self.operate_delay_s = 0.0
+        self.iin: set = set()
         self._selected: dict[tuple, tuple] = {}
         self._conns: set[_Conn] = set()
         outer = self
@@ -176,12 +178,13 @@ class FakeOutstation:
                     kind, index = _split(addr)
                     statics.append({"type": kind, "index": index, "value": pt["value"], "flags": pt["flags"],
                                     "time": None})
-                conn.send({"seq": seq, "points": [_wire(e) for e in evs] + statics, "iin": []})
+                conn.send({"seq": seq, "points": [_wire(e) for e in evs] + statics,
+                           "iin": sorted(self.iin)})
             elif fn == "events":
                 classes = set(msg.get("classes") or [])
                 out = [e for e in self.events if e["class"] in classes]
                 self.events = [e for e in self.events if e["class"] not in classes]
-                conn.send({"seq": seq, "points": [_wire(e) for e in out], "iin": []})
+                conn.send({"seq": seq, "points": [_wire(e) for e in out], "iin": sorted(self.iin)})
             elif fn == "unsolicited":
                 conn.unsolicited = set(msg.get("classes") or []) if msg.get("enable") else set()
                 conn.send({"seq": seq, "ok": True})

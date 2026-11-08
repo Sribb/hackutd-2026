@@ -38,8 +38,12 @@ Rules this module keeps:
   reading, and it doesn't replace a newer held value (self.quality says stale only
   when nothing is held). An event older than the last event used for that point is
   skipped too, so events an outstation buffered during an outage never replace a
-  newer value. Between reports the last good value is read again on
-  every read(), as DNP3 reports by exception, but only while polls are answered.
+  newer value. DNP3 reports by exception, so every answered poll (integrity or
+  event) also confirms the values it didn't change: the held good values go to
+  read() once per answered poll, and never again until the next answer. Once the
+  outstation goes quiet nothing is read, not even while the unanswered poll waits
+  out timeout_s. Keep event_s well under sensors.stale_after_min at the live speed.
+  A declared point missing from an integrity poll is dropped (quality null).
 - Link loss. A poll with no answer within timeout_s, or a dropped connection, turns
   status() unavailable with the reason, marks every declared signal comm_lost, drops
   every held value (so no reading until the outstation answers again), and reconnects
@@ -49,7 +53,8 @@ Rules this module keeps:
   matches what was sent and says SUCCESS, operate within select_timeout_s (default 5),
   and check the operate echo. Any mismatch, refusal or timeout returns not ok and
   nothing is retried; an operate that left but got no answer returns
-  uncertain_result(). Direct operate is never used. The whole exchange holds the
+  uncertain_result(), and an operate echo that doesn't match returns the same,
+  with what didn't match added after the standard detail. Direct operate is never used. The whole exchange holds the
   channel, so polls wait, and it never takes longer than timeout_s.
 """
 from __future__ import annotations
@@ -377,7 +382,6 @@ class Dnp3Connector(Connector):
         self._last_t: dict[tuple, float] = {}      # (kind, index) -> epoch time of the value held
         self._master: Optional[Master] = None      # set only while connected
         self._up = False                            # True once the first integrity poll after a connect is answered
-        self._last_ok = 0.0                         # monotonic time of the last answer
         self._want_integrity = False
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
@@ -399,16 +403,11 @@ class Dnp3Connector(Connector):
     def read(self) -> list[Reading]:
         out: list[Reading] = []
         with self._lock:
-            fresh = {(aid, sig): value for aid, sig, value in self.inbox.drain()}
-            alive = self._master is not None and time.monotonic() - self._last_ok <= self.event_s + self.timeout_s + 1
-            if not alive:
-                self._held.clear()
+            fresh = self.inbox.drain()
+            if self._master is None:
                 return out
-            for (aid, sig), value in fresh.items():
+            for aid, sig, value in fresh:
                 out.append(self.reading(aid, sig, value))
-            for (aid, sig), value in self._held.items():
-                if (aid, sig) not in fresh:
-                    out.append(self.reading(aid, sig, value))
         return out
 
     def send(self, command: dict) -> dict:
@@ -466,8 +465,8 @@ class Dnp3Connector(Connector):
             if bad and "refused" in bad:
                 return {"ok": False, "detail": f"{self.id}: operate for {what} {bad}; nothing moved."}
             if bad:
-                return {"ok": False, "uncertain": True,
-                        "detail": f"{self.id}: operate for {what} {bad}; check the field before retrying"}
+                return {**sm.uncertain_result(),
+                        "detail": f"{sm.UNCERTAIN_DETAIL} ({self.id}: operate for {what} {bad})"}
             return {"ok": True, "detail": f"{self.id}: {what} selected and operated, echo SUCCESS."}
         finally:
             self._chan.release()
@@ -515,12 +514,19 @@ class Dnp3Connector(Connector):
     def _mark(self, key: tuple, quality: str, detail: str) -> None:
         self.quality[key] = {"quality": quality, "detail": detail, "t": self.now()}
 
-    def _process(self, resp: Response) -> None:
-        """Map the declared points in one response. Called on the I/O thread or the
-        reader thread (unsolicited)."""
+    def _process(self, master: Master, resp: Response, poll: Optional[str] = None) -> None:
+        """Map the declared points in one response from `master`. poll is "integrity" or
+        "events" for a poll answer, None for an unsolicited response. Called on the I/O
+        thread or the reader thread (unsolicited). Nothing happens unless `master` is
+        still the current link, so an answer that lands after a loss or close() is dropped."""
         wall = time.time()
         with self._lock:
+            if self._master is not master or self._stop.is_set():
+                return
+            statics = set()
             for p in resp.points:
+                if p.time is None:
+                    statics.add((p.kind, p.index))
                 keys = self.by_point.get((p.kind, p.index))
                 if not keys:
                     continue
@@ -553,15 +559,27 @@ class Dnp3Connector(Connector):
                         self._mark((aid, sig), m.quality, f"{addr}: {m.detail}")
                 if p.time is not None and abs(wall - p.time) <= self.smap.max_age_s:
                     self._last_t[pk] = p.time
+            if poll == "integrity":
+                # The integrity poll is the outstation's whole static picture: a declared
+                # point it no longer reports is not held.
+                for pk, keys in self.by_point.items():
+                    if pk in statics:
+                        continue
+                    for aid, sig in keys:
+                        self._held.pop((aid, sig), None)
+                        m = sm.Mapped(None, sm.NULL, f"{pk[0]}:{pk[1]}: not reported in the integrity poll")
+                        self.inbox.put(aid, sig, m)
+                        self._mark((aid, sig), m.quality, m.detail)
+            if poll is not None:
+                # An answered poll confirms every held value it didn't change.
+                for (aid, sig), value in self._held.items():
+                    self.inbox.put(aid, sig, sm.Mapped(value, sm.GOOD))
             if resp.iin & RESTART_IIN:
                 self._want_integrity = True
-            self._last_ok = time.monotonic()
 
     def _on_unsolicited(self, master: Master, resp: Response) -> None:
-        with self._lock:
-            current = self._master is master
-        if current and self.unsolicited and not self._stop.is_set():
-            self._process(resp)
+        if self.unsolicited:
+            self._process(master, resp)
 
     def _poll(self, master: Master, integrity: bool) -> None:
         with self._chan:
@@ -569,7 +587,7 @@ class Dnp3Connector(Connector):
                 return
             resp = (master.integrity_poll(self.timeout_s) if integrity
                     else master.event_poll(EVENT_CLASSES, self.timeout_s))
-        self._process(resp)
+        self._process(master, resp, "integrity" if integrity else "events")
 
     def _lost(self, why: str) -> None:
         with self._lock:
@@ -597,6 +615,8 @@ class Dnp3Connector(Connector):
                 with self._chan:
                     master.enable_unsolicited(self.unsolicited, EVENT_CLASSES, self.timeout_s)
                 with self._lock:
+                    if self._stop.is_set():
+                        break
                     self._master = master
                     self._want_integrity = False
                 self._poll(master, integrity=True)
@@ -635,3 +655,8 @@ class Dnp3Connector(Connector):
             delay = self.backoff.next_delay()
             self._lost(f"{why}; reconnecting in {delay:.1f} s")
             self._stop.wait(delay)
+        with self._lock:                            # stopped: no link is left behind
+            self._master = None
+            self._up = False
+            self._held.clear()
+            self.inbox.clear()

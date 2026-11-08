@@ -3,12 +3,13 @@
 Every fake a test starts is stopped, and every connector is closed."""
 import asyncio
 import copy
+import threading
 import time
 
 import pytest
 
 from backend.app.connectors import KINDS
-from backend.app.connectors.dnp3 import Dnp3Connector
+from backend.app.connectors.dnp3 import Dnp3Connector, LineMaster
 from backend.app.live import LiveField
 from backend.app.scenario import load_scenario
 from backend.fakes import dnp3 as fake_dnp3
@@ -174,9 +175,9 @@ def test_bad_flags_show_unknown_in_live_state(fake, live):
     c = live.registry.get("CONN_DNP3")
     wait_for(lambda: c.quality[("TANK_6", "level_pct")]["quality"] == "comm_lost", step=tick)
     last_t = live.latest[("TANK_6", "level_pct")]["t"]
-    for _ in range(8):
+    for _ in range(8):                        # about 0.6 s: several answered event polls
         live.step(1.0)
-        time.sleep(0.02)
+        time.sleep(0.075)
     assert live.latest[("TANK_6", "level_pct")]["t"] == last_t, "never the last good value carried forward"
     tank = live.state()["assets"]["TANK_6"]
     assert tank["status"] == "UNKNOWN" and tank["stale"] is True
@@ -188,8 +189,11 @@ def test_old_buffered_event_is_never_a_reading(fake, conn):
     fake.add_event("AI:0", 10.0, age_s=900)   # older than max_age_s (60)
     fake.add_event("AI:1", 5.0, age_s=-900)   # stamped in the future
     time.sleep(0.5)
-    assert 10.0 not in values(conn, "level_pct") and 5.0 not in values(conn, "flow_bbl_hr")
-    assert values(conn, "level_pct") == [50.0], "the newer value stays"
+    got = conn.read()                         # one drain: the newest value per signal
+    level = [r["value"] for r in got if r["signal"] == "level_pct"]
+    flow = [r["value"] for r in got if r["signal"] == "flow_bbl_hr"]
+    assert level == [50.0], "the newer value stays"
+    assert flow == [120.0]
 
 
 def test_old_event_with_nothing_held_marks_stale(fake):
@@ -297,7 +301,8 @@ def test_late_operate_answer_is_uncertain_and_not_resent(fake, conn):
 def test_operate_echo_mismatch_is_not_ok(fake, conn):
     fake.operate_tamper = {"index": 7}
     res = conn.send({"type": "SET_VALVE", "asset_id": "VALVE_D_6", "value": "CLOSED"})
-    assert res["ok"] is False and res.get("uncertain") is True and "check the field" in res["detail"]
+    assert res["ok"] is False and res.get("uncertain") is True
+    assert res["detail"].startswith(UNCERTAIN["detail"]) and "echo names CROB:7" in res["detail"], res
     assert fake.requests.count("operate") == 1 and fake.requests.count("select") == 1
 
 
@@ -416,3 +421,63 @@ def test_close_returns_at_once(fake):
     assert time.monotonic() - t0 < 0.2
     assert c.read() == [] and c.status()["available"] is False
     wait_for(lambda: not c._thread.is_alive(), timeout=3)
+
+
+# ---------- review round 1 ----------
+
+def test_silent_outstation_repeats_nothing_before_the_timeout(fake, conn):
+    """Once polls stop being answered, no value is read again, even while the poll in
+    flight is still waiting for its timeout and status still says available."""
+    wait_for(lambda: values(conn, "level_pct"))
+    fake.silent = True
+    time.sleep(0.3)                           # an answer already on its way may still land
+    conn.read()
+    end = time.monotonic() + 0.6              # well inside event_s + timeout_s (1.2 s)
+    while time.monotonic() < end:
+        assert conn.read() == [], "the last good value was repeated after the outstation went silent"
+        time.sleep(0.05)
+
+
+def test_restart_iin_gets_an_integrity_poll(fake, conn):
+    n = fake.requests.count("integrity")
+    fake.iin = {"DEVICE_RESTART"}
+    wait_for(lambda: fake.requests.count("integrity") >= n + 2, timeout=3)
+    fake.iin = set()
+    time.sleep(0.3)
+    m = fake.requests.count("integrity")
+    time.sleep(0.6)                           # several event polls, no more integrity polls
+    assert fake.requests.count("integrity") == m
+
+
+def test_point_missing_from_integrity_poll_is_dropped(fake, conn):
+    wait_for(lambda: 50.0 in values(conn, "level_pct"))
+    with fake.lock:
+        del fake.points["AI:0"]               # the outstation no longer reports it
+    fake.iin = {"DEVICE_RESTART"}             # so it gets integrity polls
+    wait_for(lambda: conn.quality[("TANK_6", "level_pct")]["quality"] == "null")
+    conn.read()
+    time.sleep(0.4)
+    assert values(conn, "level_pct") == [], "a point the outstation stopped reporting is not held"
+
+
+def test_close_while_connecting_leaves_no_master(fake):
+    gate, entered = threading.Event(), threading.Event()
+
+    class SlowMaster(LineMaster):
+        def connect(self, timeout):
+            entered.set()
+            gate.wait(3)
+            super().connect(timeout)
+
+    c = Dnp3Connector(spec_for(fake.port), None, lambda: 0.0,
+                      master_factory=lambda: SlowMaster("127.0.0.1", fake.port))
+    try:
+        wait_for(lambda: entered.is_set())
+        c.close()
+        gate.set()
+        wait_for(lambda: not c._thread.is_alive(), timeout=3)
+        assert c._master is None and c.status()["available"] is False
+        assert c.read() == []
+    finally:
+        gate.set()
+        c.close()
