@@ -341,7 +341,10 @@ def test_expires_at_is_the_last_minute_the_plan_works():
 @needs_data
 @pytest.mark.parametrize("snap", SNAPSHOTS)
 def test_wait_curve_on_snapshots(snap):
-    """Delay 0 is the plan; the price of waiting never goes down; points stop before the repair."""
+    """Delay 0 is the plan; points stop before the repair. What SPEC implies about waiting: with
+    every tank holding at least one truckload, the system's total never falls (a later plan is
+    matched by the same trucks called sooner); one event's own cost may fall only when the shared
+    trucks move to it, so its truck count goes up at that step."""
     ds = load(_folder(snap))
     events = _key_events(_key(snap))
     plans = P.plan_failures(ds, events, mode="now")
@@ -350,11 +353,38 @@ def test_wait_curve_on_snapshots(snap):
         e = next(x for x in events if x.id == eid)
         assert curve[0]["delay_min"] == 0 and curve[0]["cost"] == pytest.approx(p.cost, abs=0.01)
         assert curve[0]["summary"] == p.summary
+        assert curve[0]["system_cost"] == pytest.approx(
+            sum(q.cost for q in plans.values() if q.system == p.system), abs=0.01)
         assert [c["delay_min"] for c in curve] == list(range(0, 5 * len(curve), 5))
         assert all(c["start_ts"] < e.repair_end for c in curve)
         assert e.repair_end - curve[-1]["start_ts"] <= 300
-        costs = [c["cost"] for c in curve]
-        assert all(b >= a - 0.01 for a, b in zip(costs, costs[1:])), (eid, costs)
+        # the precondition: no tank of the system ever holds less than a truckload (levels only rise)
+        assert all(x.level_pct / 100 * ds.facilities[x.facility].capacity_bbl >= ds.truck_capacity_bbl
+                   for x in events if x.id in plans and x.system == e.system)
+        system = [c["system_cost"] for c in curve]
+        assert all(b >= a - 0.01 for a, b in zip(system, system[1:])), (eid, system)
+        for a, b in zip(curve, curve[1:]):
+            if b["cost"] < a["cost"] - 0.01:
+                assert b["trucks"] > a["trucks"], (eid, a, b)
+
+
+@needs_data
+def test_wait_curve_drop_is_a_truck_moving_between_tanks():
+    """Snapshot 2026-10-10T0900, hand-checked: EVENT_20's own price of waiting falls from $1,215 to
+    $905 between 10:45 and 10:50, because a truck called for EVENT_19 at 10:50 arrives at 12:20
+    (response 90 min), after EVENT_19 trips if nobody acts (60.4 % at 09:00, 9.7222 %/h, 92 % at
+    12:15:01). EVENT_19 falls back on a shut-in ($1,546.88) and its truck goes to EVENT_20; S4's
+    total rises from $905 + $1,215 + $2,030 = $4,150.00 to $1,546.88 + $905 + $2,084.69 = $4,536.57."""
+    snap = "snapshot_2026-10-10T0900"
+    ds = load(_folder(snap))
+    events = _key_events(_key(snap))
+    P.plan_failures(ds, events, mode="now")
+    curve = {c["delay_min"]: c for c in P.wait_curve(ds, events, "EVENT_20")}
+    a, b = curve[105], curve[110]
+    assert (a["cost"], a["trucks"], a["system_cost"]) == (1215.0, 0, 4150.0)
+    assert (b["cost"], b["trucks"], b["system_cost"]) == (905.0, 1, 4536.57)
+    e19 = {c["delay_min"]: c for c in P.wait_curve(ds, events, "EVENT_19")}
+    assert (e19[105]["trucks"], e19[110]["trucks"], e19[110]["cost"]) == (1, 0, 1546.88)
 
 
 @needs_data
@@ -554,10 +584,19 @@ def test_countdown_recovers_exact_level_and_no_peeking(tmp_path):
     cd = P.countdown(ds, e)
     assert cd["level_at_onset_fit_pct"] == pytest.approx(61.3, abs=1e-6)
     assert cd["fill_pct_per_hour"] == pytest.approx(5.0)
-    assert cd["level_pct"] == pytest.approx(61.3 + 5.0 * 40 * 5 / 60, abs=0.051)
+    # now is row 59, 39 rows (3.25 h) after the onset: 77.55 %, which a plan uses as 77.5 (R2)
+    assert ds.now - e.onset == 39 * 300
+    assert cd["level_pct"] == pytest.approx(61.3 + 5.0 * 39 * 5 / 60, abs=0.051)
+    # 30.7 points at 5 %/h is 6.14 h, after the 6 h repair: it never trips (trips_at None, as the
+    # key's EVENT_6), but the countdown "if nothing changes" still runs to the crossing (+368 min)
     cross = T0 + 300 * 20 + (92 - 61.3) / 5.0 * 3600
-    assert cd["trips_at"] == round(cross / 60) * 60
-    assert cd["hours_to_limit"]["p50"] == pytest.approx(round((cd["trips_at"] - ds.now) / 3600, 2))
+    assert cross > e.onset + 6 * 3600 and cd["trips_at"] is None
+    assert cd["hours_to_limit"]["p50"] == pytest.approx(round((round(cross / 60) * 60 - ds.now) / 3600, 2))
+    # from 63.3 % the crossing (5.74 h) comes before the repair: trips_at is that minute
+    hi = P.countdown(load(_write(tmp_path / "h", 60, {"SX_FAC_A": (20, 63.3)})), e)
+    cross_hi = T0 + 300 * 20 + (92 - 63.3) / 5.0 * 3600
+    assert hi["trips_at"] == round(cross_hi / 60) * 60 == e.onset + 344 * 60
+    assert hi["hours_to_limit"]["p50"] == pytest.approx(round((hi["trips_at"] - ds.now) / 3600, 2))
     # a view that ends earlier never sees the later rows: writing them differently changes nothing
     early = P.countdown(ds, e, at_ts=T0 + 300 * 25)
     ds2 = load(_write(tmp_path / "e", 60, {"SX_FAC_A": (20, 61.3)}, noise=0.0))
@@ -656,10 +695,17 @@ def test_wait_curve_trip_while_waiting_costs_the_whole_shutdown(tmp_path):
     curve = P.wait_curve(ds, [e], "E1", step_min=10)
     assert curve[0]["cost"] == pytest.approx(plan.cost, abs=0.01)
     costs = [c["cost"] for c in curve]
+    # one tank alone, always holding far more than a truckload: waiting never gets cheaper
     assert all(b >= a - 0.01 for a, b in zip(costs, costs[1:]))
-    # A trips 204 min after its onset whatever happens once nobody acts; that is 104 min after now
-    whole = 117500 / 24 * (360 - 204) / 60
-    assert curve[-1]["cost"] == pytest.approx(whole, abs=0.05)
+    assert all(c["system_cost"] == c["cost"] for c in curve)
+    # Plans at now start from the level rounded to 0.1 % (R2): 75 + 5 * 100/60 = 83.33 -> 83.3 %,
+    # so in the plan's world A trips (92 - 83.3) / 5 h = 104.4 min after now (the raw fit says 104).
+    # Waiting to the end and doing nothing costs exactly what doing nothing now costs.
+    assert e.level_pct == 83.3
+    whole = 117500 / 24 * (260 - (92 - 83.3) / 5.0 * 60) / 60
+    assert curve[-1]["cost"] == pytest.approx(whole, abs=0.01)
+    nothing = next(p for p in P.alternatives(ds, e) if p.actions == [{"type": "none"}])
+    assert curve[-1]["cost"] == pytest.approx(nothing.cost, abs=0.01)
     assert P.wait_curve(ds, [e], "E1", until=ds.now + 1800)[-1]["delay_min"] == 25
     with pytest.raises(ValueError):
         P.wait_curve(ds, [e], "missing")

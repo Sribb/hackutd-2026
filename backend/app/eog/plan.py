@@ -731,8 +731,21 @@ def wait_curve(ds: Dataset, events: Sequence[Event], event_id: str, step_min: in
     and then follows the best plan, with the system's failures re-planned together at that moment
     (shared trucks as in mode "now"). Each tank starts from its plan level at now (as
     plan_failures) and fills untouched during the wait, so delay 0 is plan_failures' plan.
-    cost = revenue already lost to a trip during the wait + the plan's cost from then on, so a tank
-    that trips while you wait costs its whole shutdown."""
+
+    Each point: delay_min, start_ts, summary and trucks (this event's plan at that start);
+    cost = revenue this tank already lost to a trip during the wait + its plan's cost from then
+    on, so a tank that trips while you wait costs its whole shutdown; system_cost = the same sum
+    over every failure of the system that is ongoing at now (a tank whose repair ends during the
+    wait counts the shutdown it went through).
+
+    system_cost never falls as you wait while every tank holds at least one truckload: a plan
+    started later is matched by the same trucks and trips called earlier (each trip still takes a
+    full load and arrives sooner, so the level is never higher) with the shut-ins at the same
+    clock times. Only a tank holding less than one load can make a later truck worth more (SPEC: a
+    trip can't remove more water than is in the tank). One event's `cost` can fall, though:
+    the shared trucks go where they save the system the most, so when waiting takes a truck plan
+    away from one tank (its truck would now arrive after it trips), the truck moves to another
+    tank and that tank's cost drops while system_cost rises. Its `trucks` then goes up."""
     if step_min <= 0:
         raise ValueError("step_min must be positive.")
     target = next((e for e in events if e.id == event_id), None)
@@ -747,24 +760,37 @@ def wait_curve(ds: Dataset, events: Sequence[Event], event_id: str, step_min: in
     level0 = {t.event.id: (ds.shutdown_pct if t.tripped_at(now) else t.plan_level(now)) for t in tanks}
     me = next(t for t in tanks if t.event.id == event_id)
     stop = me.repair_end if until is None else min(int(until), me.repair_end)
-    rev_h = sum(ds.revenue_per_hour(w) for w in me.wells_on)
-    trip0 = None                                   # when my tank trips if nobody acts
-    if level0[event_id] >= ds.shutdown_pct - 1e-9:
-        cross = me.cross_ts()
-        trip0 = float(now) if cross is None else min(cross, float(now))
-    elif me.rate_pct_h > 0:
-        trip0 = now + (ds.shutdown_pct - level0[event_id]) / me.rate_pct_h * 3600.0
+    rev_h = {t.event.id: sum(ds.revenue_per_hour(w) for w in t.wells_on) for t in tanks}
+
+    def trip_ts(t: _Tank) -> Optional[float]:      # when the tank trips if nobody acts
+        lvl = level0[t.event.id]
+        if lvl >= ds.shutdown_pct - 1e-9:
+            cross = t.cross_ts()
+            return float(now) if cross is None else min(cross, float(now))
+        if t.rate_pct_h > 0:
+            return now + (ds.shutdown_pct - lvl) / t.rate_pct_h * 3600.0
+        return None
+
+    trip0 = {t.event.id: trip_ts(t) for t in tanks}
+
+    def lost(t: _Tank, s: int) -> float:           # revenue lost to a trip between now and s
+        tr = trip0[t.event.id]
+        if tr is None:
+            return 0.0
+        return rev_h[t.event.id] * max(0.0, min(float(s), float(t.repair_end)) - max(float(now), tr)) / 3600.0
+
     out = []
     d = 0
     while now + 60 * d < stop:
         s = now + 60 * d
         live = [t for t in tanks if s < t.repair_end]
         levels = {t.event.id: level0[t.event.id] + t.rate_pct_h * (s - now) / 3600.0 for t in live}
-        p = _plan_now(ds, live, s, None, expiry=False, levels=levels)[event_id]
-        lost = 0.0
-        if trip0 is not None and trip0 < s:
-            lost = rev_h * (s - max(float(now), trip0)) / 3600.0
-        out.append({"delay_min": d, "start_ts": s, "cost": round(p.cost + lost, 2), "summary": p.summary})
+        plans = _plan_now(ds, live, s, None, expiry=False, levels=levels)
+        p = plans[event_id]
+        system = sum(plans[t.event.id].cost for t in live) + sum(lost(t, s) for t in tanks)
+        out.append({"delay_min": d, "start_ts": s, "cost": round(p.cost + lost(me, s), 2), "summary": p.summary,
+                    "trucks": sum(a["trucks"] for a in p.actions if a["type"] == "dispatch_truck"),
+                    "system_cost": round(system, 2)})
         d += step_min
     return out
 
