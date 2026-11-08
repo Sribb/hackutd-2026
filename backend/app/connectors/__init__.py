@@ -12,8 +12,10 @@ from typing import Callable, Optional
 
 from ..fieldmap import FieldMap
 from .base import Connector, Reading, UnavailableConnector
+from .modbus import ModbusConnector
+from .mqtt import MqttConnector
 from .sim import SimConnector
-from .stubs import ModbusConnector, MqttConnector, OpcuaConnector
+from .stubs import OpcuaConnector
 from .webhook import WebhookConnector
 
 KINDS = {"webhook": WebhookConnector, "mqtt": MqttConnector, "modbus": ModbusConnector,

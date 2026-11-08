@@ -1,10 +1,11 @@
-"""Stubs for industrial protocols: MQTT, Modbus TCP, OPC UA.
+"""Stub for OPC UA, the one industrial protocol without a driver yet.
 
-Each imports its library only when asked for its status, so the backend runs without
-any of them installed. Until a driver is written, each reports why it isn't
-available (library missing, config missing, or driver not written yet), returns no
-readings, and refuses commands. Its assets then go stale and show as UNKNOWN,
-never as OK, which is the safe failure.
+MQTT and Modbus TCP have real drivers (mqtt.py, modbus.py, #62).
+
+A stub imports its library only when asked for its status, so the backend runs
+without it installed. It reports why it isn't available (library missing, config
+missing, or driver not written yet), returns no readings, and refuses commands. Its
+assets then go stale and show as UNKNOWN, never as OK, which is the safe failure.
 """
 from __future__ import annotations
 
@@ -50,20 +51,6 @@ class LibraryStub(Connector):
 
     def status(self) -> dict:
         return {"id": self.id, "kind": self.kind, "available": False, "detail": self.why_unavailable()}
-
-
-class MqttConnector(LibraryStub):
-    kind = "mqtt"
-    library = "paho.mqtt.client"
-    package = "paho-mqtt"
-    required = ("host",)
-
-
-class ModbusConnector(LibraryStub):
-    kind = "modbus"
-    library = "pymodbus.client"
-    package = "pymodbus"
-    required = ("host",)
 
 
 class OpcuaConnector(LibraryStub):
