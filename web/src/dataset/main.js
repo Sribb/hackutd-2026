@@ -993,8 +993,43 @@ function traces(f, alert) {
     add({ title: "Pump state", unit: "0 stopped · 1 running · 2 fault", height: 70, step: true, yMin: 0, yMax: 2,
       series: [{ name: f.pump.id, points: R(f.pump.id, "status") }],
       format: (v) => (v === 1 ? "running" : v === 2 ? "FAULT" : "stopped") });
+    pickedCharts(f, wrap, add, R);
   });
   return wrap;
+}
+
+// README: "select anything on the network and plot any of its sensor readings". Any
+// sensor of this facility (its wells, tank, pump, pipeline) or its disposal site. Picks of
+// the same metric share one chart, up to four, so every chart keeps one unit and one axis.
+const unitOf = (m) => (/_pct$/.test(m) ? "% full" : /_bpd$/.test(m) ? "bbl/day" : /_mcfd$/.test(m) ? "mcf/day" : /_psi$/.test(m) ? "psi" : m === "status" ? "0 off · 1 on · 2 fault" : m);
+function pickedCharts(f, wrap, add, R) {
+  const sys = facilityOf(f.id)?.s;
+  const assets = [f.id, f.tank.id, f.pump.id, f.pipeline.id, ...f.wells.map((w) => w.id), sys?.disposal_site?.id].filter(Boolean);
+  const picked = (state.picked ||= new Map()).get(f.id) || [];
+  const bar = document.createElement("div");
+  bar.className = "ds-pick";
+  const opts = assets.map((a) => {
+    const ms = state.store.metrics(a).filter((m) => !picked.includes(`${a}|${m}`));
+    return ms.length ? `<optgroup label="${esc(a)}">${ms.map((m) => `<option value="${esc(a)}|${esc(m)}">${esc(a)} · ${esc(m)}</option>`).join("")}</optgroup>` : "";
+  }).join("");
+  bar.innerHTML = `<span class="kicker">Plot any sensor</span><select aria-label="Add a sensor to plot"><option value="">add a sensor…</option>${opts}</select>
+    ${picked.map((k) => `<span class="ds-chip">${esc(k.replace("|", " · "))}<button type="button" data-k="${esc(k)}" aria-label="Remove ${esc(k)}">×</button></span>`).join("")}`;
+  wrap.appendChild(bar);
+  const set = (list) => { state.picked.set(f.id, list); renderDetail(); };
+  bar.querySelector("select").onchange = (e) => {
+    const k = e.target.value;
+    if (!k) return;
+    const m = k.split("|")[1];
+    if (picked.filter((x) => x.split("|")[1] === m).length >= 4) { e.target.value = ""; e.target.setCustomValidity?.("Four of one metric is the most one chart shows."); return; }
+    set([...picked, k]);
+  };
+  for (const b of bar.querySelectorAll("[data-k]")) b.onclick = () => set(picked.filter((k) => k !== b.dataset.k));
+  const byMetric = new Map();
+  for (const k of picked) { const [a, m] = k.split("|"); if (!byMetric.has(m)) byMetric.set(m, []); byMetric.get(m).push(a); }
+  for (const [m, list] of byMetric) {
+    add({ title: m, unit: unitOf(m), step: m === "status", yMin: m === "status" || /_bpd$|_pct$|_mcfd$/.test(m) ? 0 : undefined, yMax: m === "status" ? 2 : undefined,
+      series: list.map((a) => ({ name: a, points: R(a, m) })) });
+  }
 }
 
 // What-if: replays a plan for one tank from this moment and prices it against doing

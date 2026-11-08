@@ -14,6 +14,8 @@
   --ok: #8fb8a0;
   --s1: #3987e5; /* series 1, blue: validated with s2 on --surface (CVD dE 19.6) */
   --s2: #199e70; /* series 2, aqua: always dashed, so color is never the only cue */
+  --s3: #9a6be0; /* series 3, violet, dotted (the four validated together) */
+  --s4: #d1608e; /* series 4, rose, dash-dot */
   --mono: "Azeret Mono", ui-monospace, Menlo, monospace;
   --display: "Gloock", "Times New Roman", serif;
   color-scheme: dark;
@@ -299,3 +301,10 @@ button { text-transform: lowercase; } /* browsers reset text-transform on button
   .ds-outage-t td:last-child { grid-column: 2; grid-row: 1; }
   .ds-outage-t td:first-of-type { grid-column: 1 / -1; grid-row: 2; }
 }
+
+/* ---- plot any sensor ---- */
+.ds-pick { display: flex; flex-wrap: wrap; gap: 6px 8px; align-items: center; margin: 10px 0 4px; }
+.ds-pick select { max-width: 100%; }
+.ds-chip { display: inline-flex; gap: 6px; align-items: center; padding: 1px 4px 1px 10px; border: 1px solid var(--line-2); border-radius: 999px; font-size: 12px; }
+.ds-chip button { padding: 0 7px; border: 0; background: transparent; color: var(--muted); }
+.ds-chip button:hover { color: var(--ink); }

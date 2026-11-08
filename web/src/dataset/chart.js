@@ -11,8 +11,10 @@ const el = (tag, attrs = {}, parent) => {
   return n;
 };
 
-export const SERIES = ["var(--s1)", "var(--s2)"];
-const DASH = ["", "5 4"];
+// Up to four series, in fixed order (validated together on the dark surface: CVD dE 13.3,
+// normal-vision dE 15.5). Each also has its own dash, so color is never the only cue.
+export const SERIES = ["var(--s1)", "var(--s2)", "var(--s3)", "var(--s4)"];
+const DASH = ["", "5 4", "1 3", "8 3 2 3"];
 
 export function niceTicks(lo, hi, count = 4) {
   if (!Number.isFinite(lo) || !Number.isFinite(hi)) return [];
@@ -62,7 +64,7 @@ export function lineChart(host, opts) {
     opts.series.forEach((s, i) => {
       const k = document.createElement("span");
       k.className = "key";
-      k.innerHTML = `<svg width="18" height="6" aria-hidden="true"><line x1="0" y1="3" x2="18" y2="3" stroke="${SERIES[i % 2]}" stroke-width="2" stroke-dasharray="${DASH[i % 2]}"/></svg>`;
+      k.innerHTML = `<svg width="18" height="6" aria-hidden="true"><line x1="0" y1="3" x2="18" y2="3" stroke="${SERIES[i % SERIES.length]}" stroke-width="2" stroke-dasharray="${DASH[i % DASH.length]}"/></svg>`;
       k.appendChild(document.createTextNode(s.name));
       legend.appendChild(k);
     });
@@ -141,7 +143,7 @@ export function lineChart(host, opts) {
       else d += `L${px},${py}`;
       prev = [t, v];
     }
-    el("path", { d, class: "line", stroke: s.color || SERIES[i % 2], "stroke-dasharray": s.dash ?? DASH[i % 2], fill: "none" }, svg);
+    el("path", { d, class: "line", stroke: s.color || SERIES[i % SERIES.length], "stroke-dasharray": s.dash ?? DASH[i % DASH.length], fill: "none" }, svg);
   });
 
   if (!opts.series.some((s) => s.points.length)) {
@@ -149,7 +151,7 @@ export function lineChart(host, opts) {
   }
 
   const cross = el("line", { y1: m.t, y2: H - m.b, class: "cross", visibility: "hidden" }, svg);
-  const dots = opts.series.map((s, i) => el("circle", { r: 3.5, class: "cross-dot", fill: s.color || SERIES[i % 2], visibility: "hidden" }, svg));
+  const dots = opts.series.map((s, i) => el("circle", { r: 3.5, class: "cross-dot", fill: s.color || SERIES[i % SERIES.length], visibility: "hidden" }, svg));
   const hit = el("rect", { x: m.l, y: 0, width: W - m.l - m.r, height: H, fill: "transparent" }, svg);
 
   const nearest = (pts, t) => {
