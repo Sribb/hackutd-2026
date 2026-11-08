@@ -55,6 +55,10 @@ def expected(bp):
     if bp["yard"]:
         add("yard", bp["yard"]["id"])
         add("waypoint", f"STOP_{bp['yard']['id']}", f"ROAD_JCT_{bp['yard']['id']}")
+    for e in bp.get("equipment", []):
+        add("equipment", e["id"])
+        if e["model"] is None:
+            add("equipment part", f"{e['id']}_label")
     add("waypoint", "ROAD_END_W", "ROAD_END_E")
     add("camera", "CAM_OVERVIEW")
     if bp["pumps"]:
@@ -72,4 +76,5 @@ def asset_kinds(bp):
     kinds.update({t["id"]: "truck" for t in bp["trucks"]})
     if bp["yard"]:
         kinds[bp["yard"]["id"]] = "yard"
+    kinds.update({e["id"]: "equipment" for e in bp.get("equipment", [])})
     return kinds

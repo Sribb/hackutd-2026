@@ -18,15 +18,22 @@ import math
 import re
 
 ID_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
-LISTS = ("tanks", "pumps", "valves", "wells", "disposal_wells", "trucks", "yards")
-COUNT_LIMITS = {"tanks": (1, 20), "disposal_wells": (1, 4), "trucks": (0, 6), "yards": (0, 1)}
+LISTS = ("tanks", "pumps", "valves", "wells", "disposal_wells", "trucks", "yards", "equipment")
+COUNT_LIMITS = {"tanks": (1, 20), "disposal_wells": (1, 4), "trucks": (0, 6), "yards": (0, 1), "equipment": (0, 30)}
+# Equipment types with a generated model (equipment_parts.py). Any other type, or none,
+# builds as a labeled placeholder, so a blueprint never fails over a missing model.
+EQUIPMENT_MODELS = ("SEPARATOR", "HEATER_TREATER", "FLARE", "COMPRESSOR", "LACT", "METER_RUN")
+EQUIPMENT_ALIASES = {"SEP": "SEPARATOR", "TWO_PHASE_SEPARATOR": "SEPARATOR", "THREE_PHASE_SEPARATOR": "SEPARATOR",
+                     "HT": "HEATER_TREATER", "TREATER": "HEATER_TREATER", "HEATER": "HEATER_TREATER",
+                     "FLARE_STACK": "FLARE", "COMP": "COMPRESSOR", "GAS_COMPRESSOR": "COMPRESSOR",
+                     "LACT_UNIT": "LACT", "METER": "METER_RUN", "GAS_METER": "METER_RUN", "ORIFICE_METER": "METER_RUN"}
 WELLS_PER_TANK = 8
 PUMPS_PER_TANK = 2
 XO_PER_TANK = 4
 MAX_COORD = 5000.0
 FORMAT_VERSION = 1
 # Top-level keys in docs/blueprint.schema.json. The generator reads some; the backend reads the rest.
-KNOWN_KEYS = {"version", "name", "clock_start", "site", *LISTS, "connections", "connectors", "equipment",
+KNOWN_KEYS = {"version", "name", "clock_start", "site", *LISTS, "connections", "connectors",
               "lead_min", "costs", "initial", "faults", "sensors"}
 SITE_KEYS = ("name", "operator", "lat", "lon", "width_m", "timezone")
 
@@ -86,6 +93,13 @@ def _entries(data, key, errors):
             continue          # a comment entry such as {"_note": "..."}
         out.append((i, entry))
     return out
+
+
+def equipment_type(raw):
+    """'heater treater' -> HEATER_TREATER. Returns (type, model), model None for a placeholder."""
+    t = re.sub(r"[^A-Z0-9]+", "_", str(raw).upper()).strip("_") if raw is not None else ""
+    t = EQUIPMENT_ALIASES.get(t, t) or "OTHER"
+    return t, (t if t in EQUIPMENT_MODELS else None)
 
 
 def _site(data, warnings):
@@ -183,7 +197,7 @@ def check(data):
             errors.append(f'{where} {field} "{value}" is not an asset in this blueprint')
             return None
         if allowed and kinds[value] not in allowed:
-            errors.append(f'{where} {field} "{value}" is a {kinds[value][:-1].replace("_", " ")}, '
+            errors.append(f'{where} {field} "{value}" is a {kinds[value].rstrip("s").replace("_", " ")}, '
                           f"expected one of: {', '.join(allowed)}")
             return None
         return value
@@ -200,7 +214,7 @@ def check(data):
         name = site["name"]
     bp = {"name": name, "site": site, "connectors": _connectors(data, kinds, warnings),
           "tanks": [], "pumps": [], "discharge": [], "crossovers": [], "wells": [],
-          "swds": [], "trucks": [], "yard": None}
+          "swds": [], "trucks": [], "yard": None, "equipment": []}
 
     for i, e, where in valid("tanks"):
         cap = e.get("capacity_bbl")
@@ -306,6 +320,20 @@ def check(data):
                     ref(where, "minutes_to", target, None)
         bp["trucks"].append({"id": e["id"], "pos": _position(e, where, errors)})
 
+    for i, e, where in valid("equipment"):
+        etype, model = equipment_type(e.get("type"))
+        if model is None:
+            warnings.append(f"{where} type {etype} has no model yet; it builds as a labeled placeholder")
+        tank = ref(where, "tank_id", e["tank_id"], ["tanks"]) if e.get("tank_id") is not None else None
+        links = e.get("connects")
+        if links is not None and not (isinstance(links, list) and all(isinstance(c, str) for c in links)):
+            errors.append(f"{where} connects must be a list of asset IDs")
+            links = None
+        links = [c for c in links or [] if ref(where, "connects", c, None)]
+        label = e.get("label") if isinstance(e.get("label"), str) and e.get("label").strip() else None
+        bp["equipment"].append({"id": e["id"], "type": etype, "model": model, "label": label, "tank_id": tank,
+                                "connects": links, "pos": _position(e, where, errors)})
+
     # connections are links between assets or connectors; they are checked, not drawn
     links = data.get("connections")
     if links is not None and not isinstance(links, list):
@@ -342,7 +370,7 @@ def check(data):
 
     # field size
     sizes = {"tanks": len(bp["tanks"]), "disposal_wells": len(bp["swds"]),
-             "trucks": len(bp["trucks"]), "yards": len(raw["yards"])}
+             "trucks": len(bp["trucks"]), "yards": len(raw["yards"]), "equipment": len(bp["equipment"])}
     for key, (lo, hi) in COUNT_LIMITS.items():
         if not lo <= sizes[key] <= hi:
             label = key.replace("_", " ")
@@ -375,4 +403,4 @@ def counts(bp):
     return {"tanks": len(bp["tanks"]), "pumps": len(bp["pumps"]),
             "discharge_valves": len(bp["discharge"]), "crossover_valves": len(bp["crossovers"]),
             "wells": len(bp["wells"]), "disposal_wells": len(bp["swds"]),
-            "trucks": len(bp["trucks"]), "yards": 1 if bp["yard"] else 0}
+            "trucks": len(bp["trucks"]), "yards": 1 if bp["yard"] else 0, "equipment": len(bp["equipment"])}

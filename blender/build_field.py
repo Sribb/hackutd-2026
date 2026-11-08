@@ -40,9 +40,11 @@ import field_parts as fp  # noqa: E402
 import detail_equipment as de  # noqa: E402
 import detail_site as ds  # noqa: E402
 import piping  # noqa: E402
+import siting  # noqa: E402
+import equipment_parts  # noqa: E402
 import field_build  # noqa: E402
 
-for _mod in (blueprint, layout, names, fp, de, ds, piping, field_build):
+for _mod in (blueprint, layout, siting, names, fp, de, ds, piping, equipment_parts, field_build):
     importlib.reload(_mod)
 
 ROOT = os.path.dirname(HERE)
@@ -64,9 +66,9 @@ DROPPED = {
 # its pad and load-out, a pump its valve and lines, a well its flowline. The site (ground,
 # road, power, trunk, yard) costs one triangle per 12.5 m2 of ground plus 28 per road meter.
 COSTS = {
-    "full": {"tank": 7150, "pump": 4150, "well": 1900, "swd": 3800, "truck": 3100, "xo": 1750},
-    "lite": {"tank": 6400, "pump": 3350, "well": 1820, "swd": 3120, "truck": 3100, "xo": 1350},
-    "bare": {"tank": 6400, "pump": 3350, "well": 1060, "swd": 3120, "truck": 3100, "xo": 1350},
+    "full": {"tank": 7150, "pump": 4150, "well": 1900, "swd": 3800, "truck": 3100, "xo": 1750, "equipment": 2400},
+    "lite": {"tank": 6400, "pump": 3350, "well": 1820, "swd": 3120, "truck": 3100, "xo": 1350, "equipment": 2200},
+    "bare": {"tank": 6400, "pump": 3350, "well": 1060, "swd": 3120, "truck": 3100, "xo": 1350, "equipment": 2200},
 }
 
 
@@ -100,7 +102,8 @@ def estimate(bp, L, level):
     gx0, gx1, gy0, gy1 = L["ground"]
     site = (gx1 - gx0) * (gy1 - gy0) / 12.5 + 28 * (L["road"][1] - L["road"][0]) + 2000 * (L["rows"] - 1)
     return int(site + c["tank"] * len(bp["tanks"]) + c["pump"] * len(bp["pumps"]) + c["well"] * len(bp["wells"])
-               + c["swd"] * len(bp["swds"]) + c["truck"] * len(bp["trucks"]) + c["xo"] * len(bp["crossovers"]))
+               + c["swd"] * len(bp["swds"]) + c["truck"] * len(bp["trucks"]) + c["xo"] * len(bp["crossovers"])
+               + c["equipment"] * len(bp["equipment"]))
 
 
 def clear_scene():
@@ -178,7 +181,7 @@ RENDER_VIEWS = {   # camera and target offsets in the asset's own frame
     "tank": ((15.5, -24.0, 8.85), (0.0, -6.0, 2.35)), "well": ((7.5, -11.0, 4.5), (0.0, -1.5, 2.0)),
     "truck": ((11.0, -11.0, 4.9), (1.0, 0.0, 1.7)), "disposal_well": ((0.0, -40.0, 22.0), (0.0, 0.0, 2.0)),
     "valve": ((14.0, -20.0, 16.0), (0.0, 0.0, 1.0)), "yard": ((0.0, -45.0, 30.0), (0.0, 0.0, 0.0)),
-    "pump": ((6.0, -8.0, 4.0), (0.0, 0.0, 1.0)),
+    "pump": ((6.0, -8.0, 4.0), (0.0, 0.0, 1.0)), "equipment": ((9.0, -13.0, 7.0), (0.0, 0.0, 2.0)),
 }
 
 
