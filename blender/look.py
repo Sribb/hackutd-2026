@@ -13,20 +13,24 @@ and triangle count stays exactly as built.
    M_LAMP, M_BRINE, M_GROUND, M_ROAD, M_WIRE and every material that already carries an
    image (the scenery kit, the ground and road textures) are left alone.
 2. UVs: a box projection in each mesh's own frame, in meters, so a tiling texture keeps the
-   same real-world size on every part. Each object gets its own offset, so 24 pumpjacks do
-   not share one rust pattern.
+   same real-world size on every part, with an offset per kind of part.
 3. Weathering into the color attribute "Col" (glTF COLOR_0, which three.js multiplies into
-   the base color): dust and grime near the ground, a darker horsehead, a little per-object
-   paint fade, and in "full" mode ambient occlusion from ray casts against the whole field.
+   the base color): dust and grime near the ground, a darker horsehead, a little paint fade
+   per kind of part, and in "full" mode ambient occlusion from ray casts against the field.
    Colors only ever darken and stay near gray, so the console's status colors stay clean.
+
+Identical copies (the same mesh, role and base height, like each pumpjack's parts) get the
+same UVs and colors, worked out once on the first copy by name. optimize.py (#97) can then
+still share their meshes, and the AO costs one cast per kind of part, not per copy.
 
 Textures are shared CC0 detail maps (blender/assets/materials, made by make_materials.py):
 each material's own color is the glTF baseColorFactor, and the map adds wear, chips, rust
-spots and grain. With textures=False (build_field.py --no-scenery) no image is attached:
-the field gets the role colors and weathering only.
+spots and grain around a bright mean, so a status color lerped into the factor stays bright.
+With textures=False (build_field.py --no-scenery) no image is attached: the field gets the
+role colors and weathering only.
 
 Modes: "fast" (the default, for uploads through the API) skips ambient occlusion; "full"
-(the committed blender/field.glb) adds it.
+(the committed blender/field.glb) adds it. Run apply() before optimize.run().
 """
 import hashlib
 import math
@@ -42,7 +46,8 @@ from mathutils.bvhtree import BVHTree
 MODES = ("fast", "full")
 HERE = os.path.dirname(os.path.abspath(__file__))
 ASSETS = os.path.join(HERE, "assets")
-DETAIL = (0.78 / 1.055 + 0.055 / 1.055) ** 2.4     # linear mean of every detail map (make_materials.py)
+DETAIL_SRGB = 0.88          # sRGB mean of every detail map (make_materials.DETAIL_MEAN)
+DETAIL = ((DETAIL_SRGB + 0.055) / 1.055) ** 2.4     # the same, linear: each factor is divided by it
 ATTR = "Col"
 
 # Texture sets: folder under blender/assets, file stem, meters per tile, is it a detail map.
@@ -291,7 +296,7 @@ def pieces(me):
     return label, int(label.max()) + 1 if len(label) else 0
 
 
-def weather_colors(obj, dust, ground_z):
+def weather_colors(obj, dust, ground_z, fade):
     """Per-vertex multiplier: dust and grime by height above grade, horsehead, paint fade."""
     co, wp = world_points(obj)
     h = wp[:, 2] - ground_z
@@ -305,8 +310,23 @@ def weather_colors(obj, dust, ground_z):
         label, n = pieces(obj.data)
         ends = np.bincount(label, weights=co[:, 1], minlength=n) / np.maximum(np.bincount(label, minlength=n), 1)
         col[ends[label] < -2.6] *= HORSEHEAD
-    col *= 0.93 + 0.07 * seed(obj.name)
+    col *= 0.93 + 0.07 * fade
     return col
+
+
+def geometry_key(obj, role):
+    """Objects with the same mesh, role and base height get the same UVs and colors, so
+    optimize.py (#97) can still share their mesh: 24 pumpjacks store each part once."""
+    me = obj.data
+    h = hashlib.sha1(role.encode())
+    for coll, prop, width, dtype in ((me.vertices, "co", 3, np.float32), (me.loops, "vertex_index", 1, np.int32),
+                                     (me.polygons, "loop_total", 1, np.int32)):
+        arr = np.empty(len(coll) * width, dtype=dtype)
+        coll.foreach_get(prop, arr)
+        h.update(arr.tobytes())
+    h.update(repr(tuple(round(s, 4) for s in obj.matrix_world.to_scale())).encode())
+    h.update(str(round(obj.matrix_world.translation.z, 2)).encode())
+    return h.hexdigest()
 
 
 def ambient_occlusion(targets, bvh):
@@ -318,7 +338,7 @@ def ambient_occlusion(targets, bvh):
         a = i * golden
         dirs.append((r * math.cos(a), r * math.sin(a), math.sqrt(max(0.0, 1 - r * r))))
     out = {}
-    for obj, wp in targets:
+    for key, obj, wp in targets:
         me = obj.data
         nrm = np.empty(len(me.vertices) * 3, dtype=np.float32)
         me.vertices.foreach_get("normal", nrm)
@@ -335,7 +355,7 @@ def ambient_occlusion(targets, bvh):
                 if bvh.ray_cast(origin, t * dx + b * dy + n * dz, AO_DIST)[0] is not None:
                     hits += 1
             ao[i] = max(AO_FLOOR, 1.0 - AO_STRENGTH * hits / AO_RAYS)
-        out[obj.name] = ao
+        out[key] = ao
     return out
 
 
@@ -391,18 +411,22 @@ def apply(scene, mode="fast", textures=True):
         styled.append((obj, role))
     t_roles = time.time()
 
-    for obj, role in styled:
-        tex = ROLES[role][0]
-        if tex and textures:
-            s = seed(obj.name)
-            box_uvs(obj, SETS[tex][2], (s, seed(obj.name + "v")))
-        else:
-            while obj.data.uv_layers:        # no texture reads them: keep the glb small
-                obj.data.uv_layers.remove(obj.data.uv_layers[0])
+    # one representative per geometry key: it gets the UVs and colors, its copies get the same
+    groups = {}
+    for obj, role in sorted(styled, key=lambda s: s[0].name):
+        groups.setdefault(geometry_key(obj, role), []).append((obj, role))
+    for key, members in groups.items():
+        tex = ROLES[members[0][1]][0]
+        for obj, _ in members:
+            if tex and textures:
+                box_uvs(obj, SETS[tex][2], (seed(key), seed(key + "v")))
+            else:
+                while obj.data.uv_layers:    # no texture reads them: keep the glb small
+                    obj.data.uv_layers.remove(obj.data.uv_layers[0])
     t_uv = time.time()
 
     ground_z = -0.2                     # field_build.ground_height's mean
-    colors = {obj.name: weather_colors(obj, ROLES[role][5], ground_z) for obj, role in styled}
+    colors = {key: weather_colors(m[0][0], ROLES[m[0][1]][5], ground_z, seed(key + "f")) for key, m in groups.items()}
     ao_s = 0.0
     if mode == "full":
         t = time.time()
@@ -411,18 +435,20 @@ def apply(scene, mode="fast", textures=True):
                  and not o.name.startswith("SCENERY_")]
         bvh = field_bvh(solid)
         targets = []
-        for obj, _ in styled:
+        for key, members in groups.items():
+            obj = members[0][0]
             wp = world_points(obj)[1]
             if not obj.name.startswith("SCENERY_") and len(wp) and np.ptp(wp, axis=0).max() <= AO_MAX_SIZE:
-                targets.append((obj, wp))
-        for name, ao in ambient_occlusion(targets, bvh).items():
-            colors[name] = colors[name] * ao[:, None]
+                targets.append((key, obj, wp))
+        for key, ao in ambient_occlusion(targets, bvh).items():
+            colors[key] = colors[key] * ao[:, None]
         ao_s = time.time() - t
-    for obj, _ in styled:
-        set_colors(obj, colors[obj.name])
+    for key, members in groups.items():
+        for obj, _ in members:
+            set_colors(obj, colors[key])
     t_end = time.time()
     return {"mode": mode, "textures": bool(textures), "materials": dict(sorted(counts.items())),
-            "styled": len(styled),
+            "styled": len(styled), "looks": len(groups),
             "seconds": {"roles": round(t_roles - t0, 2), "uvs": round(t_uv - t_roles, 2),
                         "weather": round(t_end - t_uv - ao_s, 2), "ao": round(ao_s, 2),
                         "total": round(t_end - t0, 2)}}

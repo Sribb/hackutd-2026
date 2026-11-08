@@ -425,7 +425,7 @@
       "file": "materials/paint_worn/paint_worn_color.jpg",
       "files": ["materials/paint_worn/paint_worn_color.jpg", "materials/paint_worn/paint_worn_normal_gl.jpg"],
       "triangles": 0,
-      "bytes": 251656,
+      "bytes": 243170,
       "max_texture_px": 1024,
       "main_ground": false
     },
@@ -441,7 +441,7 @@
       "file": "materials/paint_light/paint_light_color.jpg",
       "files": ["materials/paint_light/paint_light_color.jpg", "materials/paint_light/paint_light_normal_gl.jpg"],
       "triangles": 0,
-      "bytes": 231302,
+      "bytes": 208358,
       "max_texture_px": 1024,
       "main_ground": false
     },
@@ -457,7 +457,7 @@
       "file": "materials/galvanized/galvanized_color.jpg",
       "files": ["materials/galvanized/galvanized_color.jpg", "materials/galvanized/galvanized_normal_gl.jpg"],
       "triangles": 0,
-      "bytes": 217944,
+      "bytes": 212716,
       "max_texture_px": 1024,
       "main_ground": false
     },
@@ -473,7 +473,7 @@
       "file": "materials/concrete/concrete_color.jpg",
       "files": ["materials/concrete/concrete_color.jpg", "materials/concrete/concrete_normal_gl.jpg"],
       "triangles": 0,
-      "bytes": 263707,
+      "bytes": 242132,
       "max_texture_px": 1024,
       "main_ground": false
     },
@@ -489,7 +489,7 @@
       "file": "materials/plastic_black/plastic_black_color.jpg",
       "files": ["materials/plastic_black/plastic_black_color.jpg", "materials/plastic_black/plastic_black_normal_gl.jpg"],
       "triangles": 0,
-      "bytes": 252837,
+      "bytes": 215682,
       "max_texture_px": 1024,
       "main_ground": false
     },
@@ -505,7 +505,7 @@
       "file": "materials/wood_weathered/wood_weathered_color.jpg",
       "files": ["materials/wood_weathered/wood_weathered_color.jpg", "materials/wood_weathered/wood_weathered_normal_gl.jpg"],
       "triangles": 0,
-      "bytes": 738764,
+      "bytes": 657638,
       "max_texture_px": 1024,
       "main_ground": false
     },
@@ -521,7 +521,7 @@
       "file": "materials/caliche/caliche_color.jpg",
       "files": ["materials/caliche/caliche_color.jpg", "materials/caliche/caliche_normal_gl.jpg"],
       "triangles": 0,
-      "bytes": 873806,
+      "bytes": 809576,
       "max_texture_px": 1024,
       "main_ground": false
     }

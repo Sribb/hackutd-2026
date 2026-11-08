@@ -18,8 +18,9 @@ import bpy
 import numpy as np
 
 OUT = os.path.dirname(os.path.abspath(__file__))
-DETAIL_MEAN = 0.78          # sRGB mean of every detail map; look.py divides by its linear value
-QUALITY = 82
+DETAIL_MEAN = 0.88          # sRGB mean of every detail map (look.DETAIL_SRGB). Bright, so a status
+                            # color the console lerps into a material's factor stays bright
+QUALITY, NORMAL_QUALITY = 82, 75
 # name: (source maps, contrast, saturation kept, flip u/v so the grain runs along v). A source
 # is an ambientCG asset ID in SRC, or a path under blender/assets for the kit's own maps.
 SETS = {
@@ -41,13 +42,13 @@ def load(path):
     return px
 
 
-def save(px, path):
+def save(px, path, quality=QUALITY):
     h, w = px.shape[:2]
     img = bpy.data.images.new(os.path.basename(path), w, h)
     img.pixels = np.clip(px, 0.0, 1.0).ravel()
     img.filepath_raw = path
     img.file_format = "JPEG"
-    img.save(filepath=path, quality=QUALITY)
+    img.save(filepath=path, quality=quality)
     bpy.data.images.remove(img)
     print(f"wrote {os.path.relpath(path, OUT)} ({os.path.getsize(path) // 1024} KB)")
 
@@ -88,7 +89,7 @@ def main():
         if flip:
             color, normal = flip_uv(color), flip_uv(normal, normal=True)
         save(color, os.path.join(folder, f"{name}_color.jpg"))
-        save(normal, os.path.join(folder, f"{name}_normal_gl.jpg"))
+        save(normal, os.path.join(folder, f"{name}_normal_gl.jpg"), NORMAL_QUALITY)
 
 
 if __name__ == "__main__":
