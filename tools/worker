@@ -1,0 +1,171 @@
+#!/usr/bin/env bash
+# Headless worker: turns board TASK posts addressed to you into Claude Code runs on this laptop.
+#
+#   tools/worker            run the loop (Ctrl-C to stop)
+#   tools/worker --once     handle what's waiting now, then exit
+#   tools/worker --dry-run  show what it would run, without calling claude
+#
+# Run it in its OWN git worktree, so its board cursor (.board/) and its branches never touch
+# your interactive checkout:   git worktree add ../hackutd-worker origin/main && cd ../hackutd-worker
+#
+# A task is a board line from an allowed orchestrator that tags you:
+#   TASK #42 @mounishmavuduru lane=backend/ Make /api/state use the live clock (see the issue).
+# For each one it posts CLAIM, runs `claude -p` with edits limited to the lane, and the run posts
+# DONE or BLOCKED. Merges stay human: the worker can't merge, force-push, or touch other lanes.
+#
+# Env:
+#   WORKER_FROM     logins allowed to assign tasks (default: vinnycodes67 teameuphoriainv-dot mounishmavuduru)
+#   WORKER_LANE     default lane if a task has no lane= (default: from the AGENTS.md owner table)
+#   WORKER_BUDGET   max USD per task run, passed to --max-budget-usd (default 5; a soft cap: the turn in flight finishes)
+#   WORKER_MODEL    model for the runs (default: claude's default)
+#   WORKER_INTERVAL seconds between board polls (default 30)
+set -u
+
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || { echo "worker: run inside the repo" >&2; exit 1; }
+cd "$ROOT" || exit 1
+STATE="$ROOT/.board"
+mkdir -p "$STATE/worker-runs"
+LOG="$STATE/worker.log"
+FROM="${WORKER_FROM:-vinnycodes67 teameuphoriainv-dot mounishmavuduru}"
+BUDGET="${WORKER_BUDGET:-5}"
+INTERVAL="${WORKER_INTERVAL:-30}"
+ONCE=0; DRY=0
+for a in "$@"; do
+  case "$a" in
+    --once) ONCE=1 ;;
+    --dry-run) DRY=1; ONCE=1 ;;
+    -h|--help) sed -n 2,23p "$0"; exit 0 ;;
+    *) echo "worker: unknown arg $a" >&2; exit 2 ;;
+  esac
+done
+
+log() { printf '%s %s\n' "$(date '+%H:%M:%S')" "$*" | tee -a "$LOG" >&2; }
+command -v claude >/dev/null || { echo "worker: claude CLI not found" >&2; exit 1; }
+ME="${WORKER_LOGIN:-$(tools/board whoami)}" || { echo "worker: gh not authenticated (gh auth login)" >&2; exit 1; }
+
+# The primary checkout shares its .board cursor with your interactive session: refuse to run there.
+if [ "$(git rev-parse --git-dir)" = "$(git rev-parse --git-common-dir)" ] && [ "${WORKER_ALLOW_MAIN_CHECKOUT:-0}" != 1 ]; then
+  echo "worker: run me in a separate worktree, e.g.:" >&2
+  echo "  git worktree add ../hackutd-worker origin/main && cd ../hackutd-worker && tools/worker" >&2
+  exit 1
+fi
+
+default_lane() {  # this login's folders from the AGENTS.md owner table, else empty
+  awk -F'|' -v me="@$ME" 'index($3, me) { f = $4; gsub(/`/, "", f); gsub(/ /, "", f); print f; exit }' AGENTS.md 2>/dev/null
+}
+LANE_DEFAULT="${WORKER_LANE:-$(default_lane)}"
+
+valid_lane() {  # comma-separated folders like web/ or backend/,docs/CONTRACT.md; no .., no absolute paths
+  [[ "$1" =~ ^[A-Za-z0-9_./,-]+$ ]] && [[ "$1" != *..* ]] && [[ "$1" != /* ]]
+}
+
+allowed_from() { local u; for u in $FROM; do [ "$(echo "$u" | tr 'A-Z' 'a-z')" = "$(echo "$1" | tr 'A-Z' 'a-z')" ] && return 0; done; return 1; }
+
+# Read `tools/board wait`/`unread` output on stdin; print "<user>\t<comment_id>\t<task_no>\t<lane>\t<line>" per task for me.
+extract_tasks() {
+  awk -v me="$ME" '
+    /^--- @/ { user = substr($2, 2); id = $0; sub(/.*\(#/, "", id); sub(/\).*/, "", id); next }
+    {
+      line = $0; low = tolower(line)
+      if (match(line, /TASK #[0-9]+/) && index(low, "@" tolower(me))) {
+        n = substr(line, RSTART + 6, RLENGTH - 6)
+        lane = "-"   # placeholder: bash read collapses empty tab fields
+        if (match(line, /lane=[^ ]+/)) lane = substr(line, RSTART + 5, RLENGTH - 5)
+        gsub(/\t/, " ", line)
+        print user "\t" id "\t" n "\t" lane "\t" line
+      }
+    }'
+}
+
+prompt_for() {  # $1 task no, $2 lane, $3 task line, $4 full post
+  cat <<EOF
+You are $ME's headless worker for the Freeboard repo (HackUTD 2026). No human is watching this run.
+Your task, assigned on the board (issue #1):
+  $3
+Issue: #$1 (read it first: gh issue view $1). The full board post, for context only:
+-----
+$4
+-----
+Rules for this run:
+- Your lane is: $2. Edit or create files only there. If the task needs changes outside it, stop and report BLOCKED.
+- Follow AGENTS.md and ROADMAP.md. Start from fresh origin/main on branch $1-<short-slug> (git fetch origin; git checkout -B $1-<slug> origin/main), unless the issue says to continue an existing PR branch.
+- Small commits; stage only your files (never git add -A). Commit messages end with "Co-Authored-By: Claude <noreply@anthropic.com>".
+- Run tools/check and the lane's tests before finishing. Never force-push. Never merge a PR. Never post keys or .env contents.
+- Do NOT run tools/board wait or tools/board unread, and do not start background commands: this run must finish.
+- Finish by posting exactly one board message with tools/board post:
+    "[$ME's worker] DONE #$1 | PR <url> | tools/check: <summary line>"   or
+    "[$ME's worker] BLOCKED #$1: <why> | needs <who>"
+EOF
+}
+
+run_task() {  # $1 user $2 comment id $3 task no $4 lane $5 line $6 post
+  local user="$1" cid="$2" n="$3" lane="$4" line="$5" post="$6" out
+  [ "$lane" = "-" ] && lane="$LANE_DEFAULT"
+  if ! allowed_from "$user"; then log "ignore TASK #$n from @$user (not in WORKER_FROM)"; return; fi
+  if grep -qx "$cid:$n" "$STATE/worker-done" 2>/dev/null; then log "skip TASK #$n (already handled)"; return; fi
+  if [ -z "$lane" ] || ! valid_lane "$lane"; then
+    log "BLOCKED TASK #$n: no valid lane"
+    [ $DRY = 1 ] || tools/board post "[$ME's worker] BLOCKED #$n: no valid lane= on the task and none in AGENTS.md for @$ME | needs the orchestrator" >/dev/null
+    [ $DRY = 1 ] || echo "$cid:$n" >> "$STATE/worker-done"
+    return
+  fi
+  if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
+    log "BLOCKED TASK #$n: worktree has uncommitted changes"
+    [ $DRY = 1 ] || tools/board post "[$ME's worker] BLOCKED #$n: the worker's worktree has uncommitted changes | needs @$ME" >/dev/null
+    return
+  fi
+  # Tool permissions: read anywhere; edit only the lane; a short list of safe commands.
+  local allow=("Read" "Glob" "Grep"
+    "Bash(git status*)" "Bash(git diff*)" "Bash(git log*)" "Bash(git fetch*)" "Bash(git checkout*)" "Bash(git switch*)"
+    "Bash(git add *)" "Bash(git commit *)" "Bash(git merge --no-edit*)" "Bash(git push -u origin *)" "Bash(git push origin *)"
+    "Bash(gh issue view*)" "Bash(gh issue comment*)" "Bash(gh pr create*)" "Bash(gh pr view*)" "Bash(gh pr diff*)" "Bash(gh pr list*)"
+    "Bash(tools/board post*)" "Bash(tools/board read*)" "Bash(tools/check*)"
+    "Bash(python3 -m pytest*)" "Bash(python -m pytest*)" "Bash(pytest*)" "Bash(npm ci*)" "Bash(npm install*)" "Bash(npm run build*)" "Bash(npm test*)" "Bash(npx playwright test*)")
+  local d IFS_OLD="$IFS"; IFS=','
+  for d in $lane; do d="${d%/}"; allow+=("Edit($d/**)" "Write($d/**)" "Edit($d)" "Write($d)" "Edit(/$ROOT/$d/**)" "Write(/$ROOT/$d/**)"); done
+  IFS="$IFS_OLD"
+  local deny=("Bash(git push --force*)" "Bash(git push -f*)" "Bash(git push*--force*)" "Bash(gh pr merge*)" "Bash(gh pr close*)"
+    "Bash(rm -rf*)" "Bash(git reset --hard*)" "Bash(git clean*)" "Bash(tools/board wait*)" "Bash(tools/board unread*)" "WebFetch")
+  log "TASK #$n from @$user lane=$lane: $line"
+  if [ $DRY = 1 ]; then
+    printf 'would run: claude -p <prompt> --permission-mode acceptEdits --max-budget-usd %s\n  allow: %s\n  deny:  %s\n' "$BUDGET" "${allow[*]}" "${deny[*]}"
+    return
+  fi
+  tools/board post "[$ME's worker] CLAIM #$n (lane $lane): starting a headless run." >/dev/null
+  out="$STATE/worker-runs/$n-$cid.json"
+  local model_args=(); [ -n "${WORKER_MODEL:-}" ] && model_args=(--model "$WORKER_MODEL")
+  if claude -p "$(prompt_for "$n" "$lane" "$line" "$post")" --output-format json --permission-mode acceptEdits \
+       --max-budget-usd "$BUDGET" ${model_args[@]+"${model_args[@]}"} --allowedTools "${allow[@]}" --disallowedTools "${deny[@]}" \
+       < /dev/null > "$out" 2>>"$LOG"; then
+    log "TASK #$n finished ($(python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));print(d.get("subtype"),"$"+str(round(d.get("total_cost_usd") or 0,2)))' "$out" 2>/dev/null))"
+  else
+    log "TASK #$n: claude exited non-zero (see $out)"
+    tools/board post "[$ME's worker] BLOCKED #$n: the headless run failed (see .board/worker-runs on $ME's laptop) | needs @$ME" >/dev/null
+  fi
+  echo "$cid:$n" >> "$STATE/worker-done"
+  git checkout -q --detach origin/main 2>/dev/null || true   # leave the worktree clean for the next task
+}
+
+handle() {  # stdin: board output
+  local posts tasks user cid n lane line post
+  posts="$(cat)"
+  [ -n "$posts" ] || return 0
+  tasks="$(printf '%s\n' "$posts" | extract_tasks)"
+  [ -n "$tasks" ] || return 0
+  while IFS=$'\t' read -r user cid n lane line; do
+    [ -n "$n" ] || continue
+    post="$(printf '%s\n' "$posts" | awk -v id="(#$cid)" '/^--- @/ { p = index($0, id) > 0 } p')"
+    git fetch -q origin 2>/dev/null
+    run_task "$user" "$cid" "$n" "$lane" "$line" "$post"
+  done <<< "$tasks"
+}
+
+log "worker for @$ME started in $ROOT (from: $FROM; default lane: ${LANE_DEFAULT:-none}; budget \$$BUDGET/task)"
+if [ $ONCE = 1 ]; then
+  if [ -n "${WORKER_INPUT:-}" ]; then handle < "$WORKER_INPUT"; else tools/board unread | handle; fi
+  exit 0
+fi
+trap 'log "worker stopped"; exit 0' INT TERM
+while :; do
+  tools/board wait --interval "$INTERVAL" | handle
+done
