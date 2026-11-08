@@ -292,7 +292,9 @@ def test_auto_confirm_still_confirms_sim_commands(monkeypatch):
     monkeypatch.setenv("JARVIS_CONFIRM", "0")
     live = LiveField(healthy_scenario())
     p = run(live.propose({"type": "SEND_TRUCK", "asset_id": "TRUCK_1", "target_id": "TANK_3"}, source="jarvis"))
-    assert p["status"] == "CONFIRMED" and p["decided_by"] == "JARVIS_CONFIRM=0"
+    assert p["status"] == "CONFIRMED" and p["decided_by"] == "jarvis"
+    confirmed = [e for e in live.audit.entries() if e["event"] == "confirmed"]
+    assert confirmed[-1]["source"] == "jarvis" and confirmed[-1]["auto"] == "JARVIS_CONFIRM=0"
 
 
 def test_auto_confirm_never_sends_to_real_equipment(monkeypatch):
