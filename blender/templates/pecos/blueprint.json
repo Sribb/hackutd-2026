@@ -1,0 +1,856 @@
+{
+ "_note": "Demo kit sample 1 (issue #39): a complete blueprint, different from Avon. 8 tanks, 24 wells, 3 disposal wells, 3 trucks. Pump 6 trips 2 minutes in; Tank 6 reaches shutdown in about an hour. Numbers are illustrative placeholders, not real lease data.",
+ "version": 1,
+ "name": "Pecos Ridge lease - night shift",
+ "clock_start": "00:58",
+ "site": {
+  "name": "Pecos Ridge lease",
+  "operator": "Demo Operating LLC (fictional)",
+  "lat": 31.42,
+  "lon": -103.49,
+  "width_m": 600,
+  "timezone": "America/Chicago"
+ },
+ "tanks": [
+  {
+   "id": "TANK_1",
+   "label": "T-1",
+   "capacity_bbl": 500,
+   "shutdown_pct": 90,
+   "warning_pct": 80,
+   "pump_low_pct": 35
+  },
+  {
+   "id": "TANK_2",
+   "label": "T-2",
+   "capacity_bbl": 500,
+   "shutdown_pct": 90,
+   "warning_pct": 80,
+   "pump_low_pct": 35
+  },
+  {
+   "id": "TANK_3",
+   "label": "T-3",
+   "capacity_bbl": 500,
+   "shutdown_pct": 90,
+   "warning_pct": 80,
+   "pump_low_pct": 35
+  },
+  {
+   "id": "TANK_4",
+   "label": "T-4",
+   "capacity_bbl": 500,
+   "shutdown_pct": 90,
+   "warning_pct": 80,
+   "pump_low_pct": 35
+  },
+  {
+   "id": "TANK_5",
+   "label": "T-5",
+   "capacity_bbl": 750,
+   "shutdown_pct": 90,
+   "warning_pct": 80,
+   "pump_low_pct": 35
+  },
+  {
+   "id": "TANK_6",
+   "label": "T-6",
+   "capacity_bbl": 750,
+   "shutdown_pct": 90,
+   "warning_pct": 80,
+   "pump_low_pct": 35
+  },
+  {
+   "id": "TANK_7",
+   "label": "T-7",
+   "capacity_bbl": 500,
+   "shutdown_pct": 90,
+   "warning_pct": 80,
+   "pump_low_pct": 35
+  },
+  {
+   "id": "TANK_8",
+   "label": "T-8",
+   "capacity_bbl": 500,
+   "shutdown_pct": 90,
+   "warning_pct": 80,
+   "pump_low_pct": 35
+  }
+ ],
+ "pumps": [
+  {
+   "id": "PUMP_1",
+   "tank_id": "TANK_1",
+   "rate_bbl_hr": 160,
+   "valve_id": "VALVE_D_1",
+   "swd_id": "SWD_1"
+  },
+  {
+   "id": "PUMP_2",
+   "tank_id": "TANK_2",
+   "rate_bbl_hr": 160,
+   "valve_id": "VALVE_D_2",
+   "swd_id": "SWD_1"
+  },
+  {
+   "id": "PUMP_3",
+   "tank_id": "TANK_3",
+   "rate_bbl_hr": 160,
+   "valve_id": "VALVE_D_3",
+   "swd_id": "SWD_1"
+  },
+  {
+   "id": "PUMP_4",
+   "tank_id": "TANK_4",
+   "rate_bbl_hr": 160,
+   "valve_id": "VALVE_D_4",
+   "swd_id": "SWD_2"
+  },
+  {
+   "id": "PUMP_5",
+   "tank_id": "TANK_5",
+   "rate_bbl_hr": 160,
+   "valve_id": "VALVE_D_5",
+   "swd_id": "SWD_2"
+  },
+  {
+   "id": "PUMP_6",
+   "tank_id": "TANK_6",
+   "rate_bbl_hr": 160,
+   "valve_id": "VALVE_D_6",
+   "swd_id": "SWD_2"
+  },
+  {
+   "id": "PUMP_7",
+   "tank_id": "TANK_7",
+   "rate_bbl_hr": 160,
+   "valve_id": "VALVE_D_7",
+   "swd_id": "SWD_3"
+  },
+  {
+   "id": "PUMP_8",
+   "tank_id": "TANK_8",
+   "rate_bbl_hr": 160,
+   "valve_id": "VALVE_D_8",
+   "swd_id": "SWD_3"
+  }
+ ],
+ "valves": [
+  {
+   "id": "VALVE_D_1",
+   "kind": "DISCHARGE",
+   "pump_id": "PUMP_1",
+   "connects": [
+    "PUMP_1",
+    "SWD_1"
+   ],
+   "default": "OPEN",
+   "remote": true
+  },
+  {
+   "id": "VALVE_D_2",
+   "kind": "DISCHARGE",
+   "pump_id": "PUMP_2",
+   "connects": [
+    "PUMP_2",
+    "SWD_1"
+   ],
+   "default": "OPEN",
+   "remote": true
+  },
+  {
+   "id": "VALVE_D_3",
+   "kind": "DISCHARGE",
+   "pump_id": "PUMP_3",
+   "connects": [
+    "PUMP_3",
+    "SWD_1"
+   ],
+   "default": "OPEN",
+   "remote": true
+  },
+  {
+   "id": "VALVE_D_4",
+   "kind": "DISCHARGE",
+   "pump_id": "PUMP_4",
+   "connects": [
+    "PUMP_4",
+    "SWD_2"
+   ],
+   "default": "OPEN",
+   "remote": true
+  },
+  {
+   "id": "VALVE_D_5",
+   "kind": "DISCHARGE",
+   "pump_id": "PUMP_5",
+   "connects": [
+    "PUMP_5",
+    "SWD_2"
+   ],
+   "default": "OPEN",
+   "remote": true
+  },
+  {
+   "id": "VALVE_D_6",
+   "kind": "DISCHARGE",
+   "pump_id": "PUMP_6",
+   "connects": [
+    "PUMP_6",
+    "SWD_2"
+   ],
+   "default": "OPEN",
+   "remote": true
+  },
+  {
+   "id": "VALVE_D_7",
+   "kind": "DISCHARGE",
+   "pump_id": "PUMP_7",
+   "connects": [
+    "PUMP_7",
+    "SWD_3"
+   ],
+   "default": "OPEN",
+   "remote": true
+  },
+  {
+   "id": "VALVE_D_8",
+   "kind": "DISCHARGE",
+   "pump_id": "PUMP_8",
+   "connects": [
+    "PUMP_8",
+    "SWD_3"
+   ],
+   "default": "OPEN",
+   "remote": true
+  },
+  {
+   "id": "VALVE_XO_12",
+   "kind": "CROSSOVER",
+   "connects": [
+    "TANK_1",
+    "TANK_2"
+   ],
+   "default": "CLOSED",
+   "max_bbl_hr": 220,
+   "bbl_hr_per_pct": 22,
+   "manual": true
+  },
+  {
+   "id": "VALVE_XO_34",
+   "kind": "CROSSOVER",
+   "connects": [
+    "TANK_3",
+    "TANK_4"
+   ],
+   "default": "CLOSED",
+   "max_bbl_hr": 220,
+   "bbl_hr_per_pct": 22,
+   "manual": true
+  },
+  {
+   "id": "VALVE_XO_56",
+   "kind": "CROSSOVER",
+   "connects": [
+    "TANK_5",
+    "TANK_6"
+   ],
+   "default": "CLOSED",
+   "max_bbl_hr": 60,
+   "bbl_hr_per_pct": 22,
+   "manual": true
+  },
+  {
+   "id": "VALVE_XO_67",
+   "kind": "CROSSOVER",
+   "connects": [
+    "TANK_6",
+    "TANK_7"
+   ],
+   "default": "CLOSED",
+   "max_bbl_hr": 60,
+   "bbl_hr_per_pct": 22,
+   "manual": true
+  },
+  {
+   "id": "VALVE_XO_78",
+   "kind": "CROSSOVER",
+   "connects": [
+    "TANK_7",
+    "TANK_8"
+   ],
+   "default": "CLOSED",
+   "max_bbl_hr": 220,
+   "bbl_hr_per_pct": 22,
+   "manual": true
+  }
+ ],
+ "wells": [
+  {
+   "id": "WELL_1",
+   "tank_id": "TANK_1",
+   "water_bbl_hr": 18,
+   "lost_usd_hr": 280
+  },
+  {
+   "id": "WELL_2",
+   "tank_id": "TANK_1",
+   "water_bbl_hr": 19,
+   "lost_usd_hr": 340
+  },
+  {
+   "id": "WELL_3",
+   "tank_id": "TANK_1",
+   "water_bbl_hr": 20,
+   "lost_usd_hr": 250
+  },
+  {
+   "id": "WELL_4",
+   "tank_id": "TANK_2",
+   "water_bbl_hr": 20,
+   "lost_usd_hr": 310
+  },
+  {
+   "id": "WELL_5",
+   "tank_id": "TANK_2",
+   "water_bbl_hr": 21,
+   "lost_usd_hr": 220
+  },
+  {
+   "id": "WELL_6",
+   "tank_id": "TANK_2",
+   "water_bbl_hr": 22,
+   "lost_usd_hr": 280
+  },
+  {
+   "id": "WELL_7",
+   "tank_id": "TANK_3",
+   "water_bbl_hr": 22,
+   "lost_usd_hr": 340
+  },
+  {
+   "id": "WELL_8",
+   "tank_id": "TANK_3",
+   "water_bbl_hr": 23,
+   "lost_usd_hr": 250
+  },
+  {
+   "id": "WELL_9",
+   "tank_id": "TANK_3",
+   "water_bbl_hr": 24,
+   "lost_usd_hr": 310
+  },
+  {
+   "id": "WELL_10",
+   "tank_id": "TANK_4",
+   "water_bbl_hr": 19,
+   "lost_usd_hr": 220
+  },
+  {
+   "id": "WELL_11",
+   "tank_id": "TANK_4",
+   "water_bbl_hr": 20,
+   "lost_usd_hr": 280
+  },
+  {
+   "id": "WELL_12",
+   "tank_id": "TANK_4",
+   "water_bbl_hr": 21,
+   "lost_usd_hr": 340
+  },
+  {
+   "id": "WELL_13",
+   "tank_id": "TANK_5",
+   "water_bbl_hr": 24,
+   "lost_usd_hr": 250
+  },
+  {
+   "id": "WELL_14",
+   "tank_id": "TANK_5",
+   "water_bbl_hr": 25,
+   "lost_usd_hr": 310
+  },
+  {
+   "id": "WELL_15",
+   "tank_id": "TANK_5",
+   "water_bbl_hr": 26,
+   "lost_usd_hr": 220
+  },
+  {
+   "id": "WELL_16",
+   "tank_id": "TANK_6",
+   "water_bbl_hr": 25,
+   "lost_usd_hr": 280
+  },
+  {
+   "id": "WELL_17",
+   "tank_id": "TANK_6",
+   "water_bbl_hr": 26,
+   "lost_usd_hr": 340
+  },
+  {
+   "id": "WELL_18",
+   "tank_id": "TANK_6",
+   "water_bbl_hr": 27,
+   "lost_usd_hr": 250
+  },
+  {
+   "id": "WELL_19",
+   "tank_id": "TANK_7",
+   "water_bbl_hr": 21,
+   "lost_usd_hr": 310
+  },
+  {
+   "id": "WELL_20",
+   "tank_id": "TANK_7",
+   "water_bbl_hr": 22,
+   "lost_usd_hr": 220
+  },
+  {
+   "id": "WELL_21",
+   "tank_id": "TANK_7",
+   "water_bbl_hr": 23,
+   "lost_usd_hr": 280
+  },
+  {
+   "id": "WELL_22",
+   "tank_id": "TANK_8",
+   "water_bbl_hr": 20,
+   "lost_usd_hr": 340
+  },
+  {
+   "id": "WELL_23",
+   "tank_id": "TANK_8",
+   "water_bbl_hr": 21,
+   "lost_usd_hr": 250
+  },
+  {
+   "id": "WELL_24",
+   "tank_id": "TANK_8",
+   "water_bbl_hr": 22,
+   "lost_usd_hr": 310
+  }
+ ],
+ "disposal_wells": [
+  {
+   "id": "SWD_1",
+   "max_bbl_hr": 520
+  },
+  {
+   "id": "SWD_2",
+   "max_bbl_hr": 520
+  },
+  {
+   "id": "SWD_3",
+   "max_bbl_hr": 520
+  }
+ ],
+ "trucks": [
+  {
+   "id": "TRUCK_1",
+   "label": "Vac truck 1",
+   "capacity_bbl": 130,
+   "home_id": "YARD_1",
+   "minutes_to": {
+    "TANK_1": 20,
+    "TANK_2": 25,
+    "TANK_3": 30,
+    "TANK_4": 35,
+    "TANK_5": 40,
+    "TANK_6": 45,
+    "TANK_7": 50,
+    "TANK_8": 55
+   },
+   "load_minutes": 20,
+   "minutes_to_disposal": 25,
+   "unload_minutes": 15,
+   "usd_hr": 115
+  },
+  {
+   "id": "TRUCK_2",
+   "label": "Vac truck 2",
+   "capacity_bbl": 130,
+   "home_id": "YARD_1",
+   "minutes_to": {
+    "TANK_1": 45,
+    "TANK_2": 40,
+    "TANK_3": 35,
+    "TANK_4": 30,
+    "TANK_5": 25,
+    "TANK_6": 30,
+    "TANK_7": 35,
+    "TANK_8": 40
+   },
+   "load_minutes": 20,
+   "minutes_to_disposal": 25,
+   "unload_minutes": 15,
+   "usd_hr": 115
+  },
+  {
+   "id": "TRUCK_3",
+   "label": "Vac truck 3",
+   "capacity_bbl": 130,
+   "home_id": "YARD_1",
+   "minutes_to": {
+    "TANK_1": 65,
+    "TANK_2": 60,
+    "TANK_3": 55,
+    "TANK_4": 50,
+    "TANK_5": 45,
+    "TANK_6": 40,
+    "TANK_7": 35,
+    "TANK_8": 30
+   },
+   "load_minutes": 20,
+   "minutes_to_disposal": 25,
+   "unload_minutes": 15,
+   "usd_hr": 115
+  }
+ ],
+ "yards": [
+  {
+   "id": "YARD_1",
+   "label": "Pumper's yard"
+  }
+ ],
+ "connections": [
+  {
+   "from": "SWD_2",
+   "to": "SWD_3",
+   "kind": "WATER"
+  }
+ ],
+ "connectors": [
+  {
+   "id": "CONN_SIM",
+   "kind": "sim",
+   "_note": "Simulated SCADA. Swap kind to mqtt/modbus/opcua with real addresses to go live; see docs/BLUEPRINT.md.",
+   "signals": [
+    {
+     "asset_id": "TANK_1",
+     "signal": "level_pct"
+    },
+    {
+     "asset_id": "TANK_2",
+     "signal": "level_pct"
+    },
+    {
+     "asset_id": "TANK_3",
+     "signal": "level_pct"
+    },
+    {
+     "asset_id": "TANK_4",
+     "signal": "level_pct"
+    },
+    {
+     "asset_id": "TANK_5",
+     "signal": "level_pct"
+    },
+    {
+     "asset_id": "TANK_6",
+     "signal": "level_pct"
+    },
+    {
+     "asset_id": "TANK_7",
+     "signal": "level_pct"
+    },
+    {
+     "asset_id": "TANK_8",
+     "signal": "level_pct"
+    },
+    {
+     "asset_id": "PUMP_1",
+     "signal": "running"
+    },
+    {
+     "asset_id": "PUMP_2",
+     "signal": "running"
+    },
+    {
+     "asset_id": "PUMP_3",
+     "signal": "running"
+    },
+    {
+     "asset_id": "PUMP_4",
+     "signal": "running"
+    },
+    {
+     "asset_id": "PUMP_5",
+     "signal": "running"
+    },
+    {
+     "asset_id": "PUMP_6",
+     "signal": "running"
+    },
+    {
+     "asset_id": "PUMP_7",
+     "signal": "running"
+    },
+    {
+     "asset_id": "PUMP_8",
+     "signal": "running"
+    },
+    {
+     "asset_id": "PUMP_1",
+     "signal": "flow_bbl_hr"
+    },
+    {
+     "asset_id": "PUMP_2",
+     "signal": "flow_bbl_hr"
+    },
+    {
+     "asset_id": "PUMP_3",
+     "signal": "flow_bbl_hr"
+    },
+    {
+     "asset_id": "PUMP_4",
+     "signal": "flow_bbl_hr"
+    },
+    {
+     "asset_id": "PUMP_5",
+     "signal": "flow_bbl_hr"
+    },
+    {
+     "asset_id": "PUMP_6",
+     "signal": "flow_bbl_hr"
+    },
+    {
+     "asset_id": "PUMP_7",
+     "signal": "flow_bbl_hr"
+    },
+    {
+     "asset_id": "PUMP_8",
+     "signal": "flow_bbl_hr"
+    }
+   ],
+   "commands": [
+    {
+     "asset_id": "VALVE_D_1",
+     "command": "SET_VALVE"
+    },
+    {
+     "asset_id": "VALVE_D_2",
+     "command": "SET_VALVE"
+    },
+    {
+     "asset_id": "VALVE_D_3",
+     "command": "SET_VALVE"
+    },
+    {
+     "asset_id": "VALVE_D_4",
+     "command": "SET_VALVE"
+    },
+    {
+     "asset_id": "VALVE_D_5",
+     "command": "SET_VALVE"
+    },
+    {
+     "asset_id": "VALVE_D_6",
+     "command": "SET_VALVE"
+    },
+    {
+     "asset_id": "VALVE_D_7",
+     "command": "SET_VALVE"
+    },
+    {
+     "asset_id": "VALVE_D_8",
+     "command": "SET_VALVE"
+    },
+    {
+     "asset_id": "VALVE_XO_12",
+     "command": "SET_VALVE"
+    },
+    {
+     "asset_id": "VALVE_XO_34",
+     "command": "SET_VALVE"
+    },
+    {
+     "asset_id": "VALVE_XO_56",
+     "command": "SET_VALVE"
+    },
+    {
+     "asset_id": "VALVE_XO_67",
+     "command": "SET_VALVE"
+    },
+    {
+     "asset_id": "VALVE_XO_78",
+     "command": "SET_VALVE"
+    },
+    {
+     "asset_id": "PUMP_1",
+     "command": "SET_PUMP"
+    },
+    {
+     "asset_id": "PUMP_2",
+     "command": "SET_PUMP"
+    },
+    {
+     "asset_id": "PUMP_3",
+     "command": "SET_PUMP"
+    },
+    {
+     "asset_id": "PUMP_4",
+     "command": "SET_PUMP"
+    },
+    {
+     "asset_id": "PUMP_5",
+     "command": "SET_PUMP"
+    },
+    {
+     "asset_id": "PUMP_6",
+     "command": "SET_PUMP"
+    },
+    {
+     "asset_id": "PUMP_7",
+     "command": "SET_PUMP"
+    },
+    {
+     "asset_id": "PUMP_8",
+     "command": "SET_PUMP"
+    },
+    {
+     "asset_id": "WELL_1",
+     "command": "CHOKE_WELL"
+    },
+    {
+     "asset_id": "WELL_2",
+     "command": "CHOKE_WELL"
+    },
+    {
+     "asset_id": "WELL_3",
+     "command": "CHOKE_WELL"
+    },
+    {
+     "asset_id": "WELL_4",
+     "command": "CHOKE_WELL"
+    },
+    {
+     "asset_id": "WELL_5",
+     "command": "CHOKE_WELL"
+    },
+    {
+     "asset_id": "WELL_6",
+     "command": "CHOKE_WELL"
+    },
+    {
+     "asset_id": "WELL_7",
+     "command": "CHOKE_WELL"
+    },
+    {
+     "asset_id": "WELL_8",
+     "command": "CHOKE_WELL"
+    },
+    {
+     "asset_id": "WELL_9",
+     "command": "CHOKE_WELL"
+    },
+    {
+     "asset_id": "WELL_10",
+     "command": "CHOKE_WELL"
+    },
+    {
+     "asset_id": "WELL_11",
+     "command": "CHOKE_WELL"
+    },
+    {
+     "asset_id": "WELL_12",
+     "command": "CHOKE_WELL"
+    },
+    {
+     "asset_id": "WELL_13",
+     "command": "CHOKE_WELL"
+    },
+    {
+     "asset_id": "WELL_14",
+     "command": "CHOKE_WELL"
+    },
+    {
+     "asset_id": "WELL_15",
+     "command": "CHOKE_WELL"
+    },
+    {
+     "asset_id": "WELL_16",
+     "command": "CHOKE_WELL"
+    },
+    {
+     "asset_id": "WELL_17",
+     "command": "CHOKE_WELL"
+    },
+    {
+     "asset_id": "WELL_18",
+     "command": "CHOKE_WELL"
+    },
+    {
+     "asset_id": "WELL_19",
+     "command": "CHOKE_WELL"
+    },
+    {
+     "asset_id": "WELL_20",
+     "command": "CHOKE_WELL"
+    },
+    {
+     "asset_id": "WELL_21",
+     "command": "CHOKE_WELL"
+    },
+    {
+     "asset_id": "WELL_22",
+     "command": "CHOKE_WELL"
+    },
+    {
+     "asset_id": "WELL_23",
+     "command": "CHOKE_WELL"
+    },
+    {
+     "asset_id": "WELL_24",
+     "command": "CHOKE_WELL"
+    }
+   ]
+  }
+ ],
+ "lead_min": {
+  "SET_VALVE_manual": 25,
+  "SET_VALVE_remote": 1,
+  "CHOKE_WELL": 2,
+  "SEND_TRUCK": 5,
+  "SET_PUMP": 1
+ },
+ "costs": {
+  "disposal_usd_bbl": 1.1,
+  "truck_usd_hr": 115,
+  "well_restart_usd": 600,
+  "_source": "Placeholders in the same range as scenario/field.json."
+ },
+ "initial": {
+  "tank_pct": {
+   "TANK_1": 46,
+   "TANK_2": 52,
+   "TANK_3": 58,
+   "TANK_4": 41,
+   "TANK_5": 63,
+   "TANK_6": 79.5,
+   "TANK_7": 50,
+   "TANK_8": 44
+  }
+ },
+ "faults": [
+  {
+   "asset_id": "PUMP_6",
+   "type": "TRIP",
+   "at_min": 2,
+   "reason": "Pump 6 tripped: motor overload after a power sag."
+  }
+ ],
+ "sensors": {
+  "level_noise_pct": 0.08,
+  "flow_noise_bbl_hr": 2.0,
+  "stale_after_min": 5
+ },
+ "_ingest": {
+  "source": {
+   "file": "sample1_pecos_8tank.json",
+   "media_type": "application/json",
+   "read_by": "parser"
+  },
+  "unclear": []
+ }
+}
