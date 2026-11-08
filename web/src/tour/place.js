@@ -53,7 +53,12 @@ function hardRects() {
 const hits = (a, b) => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
 
 export function placeCard(card, softEls) {
-  if (card.classList.contains("pill")) { Object.assign(card.style, { left: "8px", top: "8px", maxHeight: "" }); card.classList.remove("mini"); return; }
+  if (card.classList.contains("pill")) {
+    card.classList.remove("mini");
+    const p = spot(card, [], 0) || { x: 8, y: 8 }; // the pager is up: any free corner
+    Object.assign(card.style, { left: `${Math.round(p.x)}px`, top: `${Math.round(p.y)}px`, maxHeight: "" });
+    return;
+  }
   card.classList.remove("mini");
   let best = spot(card, softEls, 110);
   // A screen with no room left (a phone with the alert card up): just the title and the buttons.
