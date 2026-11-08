@@ -2,11 +2,8 @@
 // "what did sensor X read at time T". It never reads answer_key.json: the dev server
 // does not serve it and nothing here asks for it.
 //
-// Two sources, same shape:
-//   api   the backend's dataset mode (/api/dataset/...): folders, files, and alerts.
-//   files the dev server's /eog/ folder, for the map and trends when no backend has
-//         dataset mode yet. It has no detection, so alerts() returns null and the page
-//         says so instead of showing an empty all-clear.
+// The files come from the dev server's /eog/ folder (vite.config.js), the same folder the
+// backend's dataset mode reads. Detection and plans are the backend's (eog.js).
 
 export const STEP_S = 300; // the telemetry grid: every series, every 5 minutes
 
@@ -212,32 +209,6 @@ export function sortFolders(list) {
   return [...list].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
 }
 
-export function apiSource(apiBase, authFetch = fetch) {
-  const u = (p) => `${apiBase}/api/dataset${p}`;
-  return {
-    kind: "api",
-    async info() { return getJSON(u("")); },
-    async folders() { return sortFolders((await getJSON(u(""))).folders || []); },
-    async load(folder, onProgress) {
-      const r = await authFetch(u("/load"), {
-        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ folder }),
-      });
-      if (!r.ok) throw new Error(`The backend could not load ${folder} (${r.status}).`);
-      const [network, ops, text] = await Promise.all([
-        getJSON(u("/file/network.json")), getJSON(u("/file/ops.json")), getText(u("/file/telemetry.csv"), onProgress),
-      ]);
-      return { network, ops, store: parseTelemetry(text) };
-    },
-    async alerts(at, folder) {
-      const q = new URLSearchParams();
-      if (at) q.set("at", String(Math.round(at)));
-      if (folder) q.set("folder", folder);
-      return getJSON(u(`/alerts${q.toString() ? `?${q}` : ""}`));
-    },
-    eventsUrl: (at) => u(`/events.json${at ? `?at=${Math.round(at)}` : ""}`),
-  };
-}
-
 export function fileSource(base = "/eog") {
   return {
     kind: "files",
@@ -250,7 +221,5 @@ export function fileSource(base = "/eog") {
       ]);
       return { network, ops, store: parseTelemetry(text) };
     },
-    async alerts() { return null; },
-    eventsUrl: () => null,
   };
 }
