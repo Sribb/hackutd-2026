@@ -53,7 +53,7 @@ A generator builds the field from a blueprint, so anyone can rebuild it, and a c
 - With no `--blueprint`, it builds `scenario/field.json` into `blender/`. That is the committed `blender/field.glb`, with the IDs in the table above.
 - With `--blueprint` and no `--out`, it writes to `blender/out/<blueprint name>/`, which git ignores.
 - It writes `field.glb`, `field.blend`, and `build_report.json`. A blueprint with errors exits with code 1 and writes only the report, never a glb. A crash or a failed self-check exits with code 2.
-- `--detail full|lite|bare` forces a detail level. `--render-dir DIR` saves Workbench check renders.
+- `--detail full|lite|bare` forces a detail level. `--render-dir DIR` saves Workbench check renders. `--no-scenery` builds the plain field, with no `SCENERY` layer and flat ground and road colors.
 - `python3 blender/test_generator.py` builds the samples in `blender/samples/` and checks every glb. `blender/preview/index.html` opens any `field.glb` in a browser; how to serve it is at the top of the file.
 
 Change the model in the scripts, not by hand in the `.blend`, or the next rebuild will overwrite your edits:
@@ -63,6 +63,9 @@ Change the model in the scripts, not by hand in the `.blend`, or the next rebuil
 - `blender/field_parts.py` builds each core asset.
 - `blender/detail_equipment.py` adds gauges, sensors, panels, wellhead trees, labels, and load-outs.
 - `blender/detail_site.py` adds power, light towers, containment, disposal well and yard equipment, and truck detail.
+- `blender/siting.py` finds free spots for anything added after the core layout, and `blender/equipment_parts.py` builds the blueprint's `equipment`.
+- `blender/scenery_parts.py` generates the scenery the CC0 kit lacks: barbed wire fence, yucca, prickly pear, and a cattle guard. `blender/parts_preview.py` builds every generated model in a row to look at.
+- `blender/scenery.py` dresses the built field as desert with the kit in `blender/assets/` and those parts, and `siting.plan_scenery()` decides where each piece goes.
 - `blender/names.py` lists the names every build must contain. Each build checks itself against it before it exports.
 
 ### The blueprint
@@ -78,6 +81,7 @@ A blueprint follows [BLUEPRINT.md](BLUEPRINT.md), format v1. The generator reads
 | `disposal_wells[]`: `id` | 1 to 4, fed by the trunk line. |
 | `trucks[]`: `id`, `home_id` | Up to 6, parked in the yard. |
 | `yards[]`: `id` | One yard, or none. |
+| `equipment[]`: `id`, `type`, `label`, `tank_id`, `connects` | Up to 30. `SEPARATOR`, `HEATER_TREATER`, `FLARE`, `COMPRESSOR`, `LACT`, and `METER_RUN` get a generated model. Any other type, or none, builds as a labeled placeholder box, so a blueprint never fails over a missing model. Without `x` and `y`, an item with a `tank_id` goes beside that tank's pad, one with `connects` goes near the first asset it names, and the rest go near the middle of the field, always off pads, roads, pipes, and truck routes. |
 | `x`, `y` on any asset | Optional position in meters. Assets without one, or with a null `x` and `y`, are placed automatically. Valves always sit on their pipe, so their `x` and `y` are ignored with a warning. |
 | `connections` | Checked for unknown IDs, not drawn yet. An end may be a connector ID. |
 | `site`, `connectors` | Read for the report: `site` and the connector IDs appear in `build_report.json`. |
@@ -104,20 +108,27 @@ Positions are plan meters. The lease road runs along x on y = 0, and y points no
 {
   "ok": true, "errors": [], "warnings": [],
   "blueprint": "scenario/field.json",
-  "counts": { "tanks": 6, "pumps": 6, "discharge_valves": 6, "crossover_valves": 1, "wells": 24, "disposal_wells": 2, "trucks": 2, "yards": 1 },
+  "counts": { "tanks": 6, "pumps": 6, "discharge_valves": 6, "crossover_valves": 1, "wells": 24, "disposal_wells": 2, "trucks": 2, "yards": 1, "equipment": 0 },
   "kinds": { "disposal_well": 2, "pump": 6, "tank": 6, "truck": 2, "valve": 7, "well": 24, "yard": 1 },
   "placed": { "given": [], "auto": ["PUMP_1", "..."] },
   "layout": { "rows": 1, "road_m": 450.0, "crossovers": { "VALVE_XO_34": "straight" } },
   "detail": { "level": "full", "dropped": [] },
-  "triangles": 144230, "glb_mb": 6.0, "nodes": 776, "seconds": 1.9
+  "iot": { "sensors": 12, "rtus": 6 },
+  "scenery": { "on": true, "textures": ["ground_dry_soil", "dirt_road_tracks"], "fence_m": 1216.0, "cattle_guards": 2,
+               "items": { "boulder": 6, "branch": 6, "creosote": 2, "grass": 110, "lease_sign": 1, "mesquite": 1,
+                          "prickly_pear": 28, "rock": 15, "yucca": 65 },
+               "dropped": [], "triangles": 114650, "field_triangles": 148435, "images_mb": 9.43 },
+  "triangles": 263085, "glb_mb": 19.0, "nodes": 1013, "seconds": 7.8
 }
 ```
 
-`counts` comes from the blueprint and `kinds` from the built scene. `placed` lists which assets had positions in the blueprint and which were placed automatically. When `ok` is false, `errors` says what to fix.
+`counts` comes from the blueprint and `kinds` from the built scene. `scenery` says what the desert layer added: its triangles on top of `field_triangles`, the MB of its textures, and anything it `dropped` to stay in the budget. With `--no-scenery` it is `{"on": false}`. `placed` lists which assets had positions in the blueprint and which were placed automatically. When `ok` is false, `errors` says what to fix.
 
 **Names in this section:** `<tank>`, `<pump>`, `<valve>`, `<well>`, `<swd>`, `<truck>`, and `<yard>` are blueprint IDs, and `n` is a tank ID without its `TANK_` prefix, so `TANK_3` gives `PAD_3`. For today's field they are the same names as before.
 
-**Finding what was clicked:** Every asset is an empty node named with its ID. Static parts are child meshes, like `TANK_3_tank` and `TANK_3_steel`. Walk up from the clicked mesh until a node has `userData.asset_id`. Three.js puts glTF extras in `userData`, and `userData.kind` is `tank`, `pump`, `valve`, `well`, `disposal_well`, `truck`, or `yard`.
+**Finding what was clicked:** Every asset is an empty node named with its ID. Static parts are child meshes, like `TANK_3_tank` and `TANK_3_steel`. Walk up from the clicked mesh until a node has `userData.asset_id`. Three.js puts glTF extras in `userData`, and `userData.kind` is `tank`, `pump`, `valve`, `well`, `disposal_well`, `truck`, `yard`, or `equipment`.
+
+**Equipment:** each `equipment` item is an asset node named with its ID, with `userData.kind` `equipment`, `userData.equipment_type` (like `SEPARATOR`), `userData.model` (`generic` or `placeholder`), and `userData.label` when the blueprint gives one. A placeholder has its type and ID painted on top as `<id>_label`. Equipment is display and context only: it is not in `/api/field`, so the console can show its ID and type but has nothing to forecast.
 
 **Moving parts:** Each one has its origin at its pivot, with no rotation in the file. Animate it with one property:
 
@@ -138,8 +149,13 @@ Assets on the south side of the road are turned 180 degrees about Y. Their parts
 - `<pump>_light` and `<well>_light` are the status lights on each pump panel and well controller.
 - `<truck>_beacon` is the amber beacon for a truck on a job, and `<truck>_headlights` are its head and tail lights.
 - `PAD_n_lamps` and `<swd>_lamps` are the light tower heads.
+- `SENSOR_<asset>_light` is the LED on each IoT sensor node, and `RTU_PAD_n_light` is the status light on each pad's RTU (#46). Light them for a live, stale, or lost feed.
 
 **Sensors:** `<tank>_lt` (radar level) and `<tank>_lshh` (high-level switch) are separate meshes, so the console can highlight the sensor behind an alarm. Clicking them selects the tank.
+
+**IoT sensor nodes (#46):** `SENSOR_<asset>` is a wireless sensor node (an enclosure, a stub antenna, and the `SENSOR_<asset>_light` LED) mounted on an asset and parented to it, so clicking it selects that asset. The assets named in the blueprint's `connectors[].signals` get one each, and with no connectors every tank and pump does. Its `userData` has `kind` `sensor`, `for_asset` (the asset ID), `signals`, and `connectors`, the last two as comma-separated text like `"running,flow_bbl_hr"` and `"CONN_SIM"` (empty with no connectors). Today's field has `SENSOR_TANK_1` to `SENSOR_TANK_6` and `SENSOR_PUMP_1` to `SENSOR_PUMP_6`.
+
+**RTUs (#46):** `RTU_PAD_n` is the remote terminal unit on each tank pad: a cabinet on a stand with a solar panel and battery box, the `RTU_PAD_n_light` status light, and `RTU_PAD_n_antenna`, the radio mast with an omni whip and a Yagi toward the road. It is parented to `PAD_n`, and its `userData` has `kind` `rtu` and `pad`. It is not a clickable asset. Today's field has `RTU_PAD_1` to `RTU_PAD_6`.
 
 **Pipes:** Every pipe is its own mesh named for what it connects, with `userData.pipe_id`:
 
@@ -160,13 +176,14 @@ Assets on the south side of the road are turned 180 degrees about Y. Their parts
 - A route is the start stop, its junction, along the road, the target's junction, then the target stop.
 
 **Other names:** None of these are clickable assets:
-- `PAD_n` holds each tank pad's gravel, steel containment, liner, step-over, sign, and light tower.
+- `PAD_n` holds each tank pad's gravel, steel containment, liner, step-over, sign, light tower, and `RTU_PAD_n`.
 - `LOADOUT_n` is the truck hookup stand.
 - `SITE_*` is the ground, roads, pipe supports, and the power line.
 - `CAM_OVERVIEW` is a camera framing the whole field.
 - Names ending in `_label`, `_sign`, or `_tag` are painted numbers and signs.
+- `SCENERY` is the desert layer (#88): one root Empty with `userData.kind` `scenery`, and every node under it is named `SCENERY_*`. It holds the barbed wire fence along the lease edge (`SCENERY_fence_*`), the cattle guards and road stubs where the lease road leaves (`SCENERY_cattle_guard_*`, `SCENERY_road_*`), a lease sign, and a seeded scatter of plants and rocks: one node per kit model copy, like `SCENERY_grass_12`, `SCENERY_rock_3`, and `SCENERY_mesquite_1`, and one merged mesh per material for the generated plants (`SCENERY_yucca_*`, `SCENERY_prickly_pear_*`). Nothing under it has an asset ID, so it is never clickable. Hide the whole layer with `scene.getObjectByName("SCENERY").visible = false`. It stays off pads, roads, pipe runs, and truck routes, and it is the same on every build of the same blueprint. The ground (`M_GROUND`) and the road (`M_ROAD`) also get the kit's dry soil and dirt road textures; those are not under `SCENERY`.
 
-**Size:** Today's field is about 144,000 triangles and 6 MB, and the 12-tank sample is about 279,000 triangles and 11.5 MB, inside the 300,000 triangle and 30 MB budget. The generator estimates the size before it builds. If a field has more than 12 tanks, or full detail would pass the budget, it drops small detail: bolts, small labels, tags, signs, and containment and fence posts, then wellhead trim if that is still too much. `detail` in the report says what was dropped. Asset nodes, tank numbers (`<tank>_label`), lights, sensors, moving parts, pipes, and waypoints are never dropped.
+**Size:** Today's field is about 263,000 triangles and 19 MB with its scenery, or 148,000 triangles and 6.2 MB with `--no-scenery`. The 12-tank sample is about 288,000 triangles and 17 MB. All are inside the 300,000 triangle and 30 MB budget. Scenery only uses what the field leaves: it fills up to 95% of the triangle budget, drops the fence when it can't fit, and builds only the textures when nothing is left. The generator estimates the size before it builds. If a field has more than 12 tanks, or full detail would pass the budget, it drops small detail: bolts, small labels, tags, signs, and containment and fence posts, then wellhead trim if that is still too much. `detail` in the report says what was dropped. Asset nodes, tank numbers (`<tank>_label`), lights, sensors, moving parts, pipes, and waypoints are never dropped.
 
 **Scale and axes:** Today's field runs 450 m along X, and the report gives `layout.road_m` for any field. In three.js, Y is up and the lease road runs along X near Z = 0, with the first row of tank pads toward negative Z and a second row, if any, toward positive Z.
 
