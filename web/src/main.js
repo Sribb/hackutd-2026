@@ -19,6 +19,7 @@ import { mountTwoNights } from "./twonights.js";
 import { mountScenery } from "./scenery.js";
 import { mountInspect } from "./inspect.js";
 import { mountAlarms, alarms } from "./alarms.js";
+import { startTrend, trendHtml, wireTrend } from "./trend.js";
 
 const $ = (id) => document.getElementById(id);
 // Meshopt-compressed glb (#112/#117) loads with no extra files; a plain glb is unaffected.
@@ -536,6 +537,8 @@ function renderSelected(view) {
       add(room >= 0 ? "Headroom" : "Over shutdown", `${Math.abs(room).toLocaleString()} bbl`);
     }
   }
+  // CF-3: past and forecast on one line. A what-if moves only the dashed part.
+  const trendOpts = tank && { id: selectedId, fc, shutdownPct: tank.shutdown_pct, fcClock: (fc && fc.clock) || data.state.clock, sliderMin: tMin, blind: blindTanks().includes(selectedId) };
   const pump = (field.pumps || []).find((p) => p.id === selectedId);
   if (pump) { add("Tank", nice(pump.tank_id)); add("Rated", `${pump.rate_bbl_hr} bbl/hr`); }
   const valve = (field.valves || []).find((v) => v.id === selectedId);
@@ -566,8 +569,10 @@ function renderSelected(view) {
     ${reason ? `<div class="reason">${esc(reason)}</div>` : ""}
     ${s.trying ? `<div class="reason trying">${esc(s.trying)}</div>` : ""}
     ${rows.length ? `<dl class="kv">${rows.join("")}</dl>` : ""}
+    ${tank ? trendHtml(trendOpts) : ""}
     ${buttons ? `<div class="tries"><div class="kicker">Try a change</div>${buttons}</div>` : ""}`;
   box.querySelectorAll("button.try").forEach((b) => { b.onclick = () => toggle(opts[Number(b.dataset.i)]); });
+  if (tank) wireTrend(box, trendOpts);
   decode(box);
 }
 
@@ -1084,6 +1089,7 @@ function mountPager() {
 
 // ----------------------------------------------------------------- boot ----
 if (api.usingBackend) liveFeed.start(api.BASE);
+startTrend(api.usingBackend ? api.BASE : "");
 liveFeed.on("state", () => { if (data) { renderFeed(); render(); } });
 
 // #104: the countdown, plans and Last Call were read once at boot and went stale as the

@@ -422,3 +422,28 @@ body.two-nights .sky-ctl { display: none; }
 .al-empty.unknown { color: var(--warning); }
 .al-shelf-k { margin-top: 12px; }
 .shiftlog .log li.alarm span { color: var(--warning); }
+
+/* ---- CF-3 trend (trend.js): one y axis, past solid, forecast dashed ---- */
+.trend { margin: 10px 0 4px; }
+.trend svg { width: 100%; height: auto; display: block; overflow: visible; }
+.trend .tr-grid { stroke: var(--line); stroke-width: 1; }
+.trend .tr-ax { font: 9px var(--mono); fill: var(--muted); }
+.trend .tr-shut { stroke: var(--alarm); stroke-width: 1; opacity: .7; }
+.trend .tr-range { stroke: var(--alarm); stroke-width: 4; stroke-linecap: round; opacity: .35; }
+.trend .tr-cross { fill: var(--bg); stroke: var(--alarm); stroke-width: 2; }
+.trend .tr-lbl { font: 9px var(--mono); fill: var(--ink-2); }
+.trend .tr-lbl.alarm { fill: var(--alarm); }
+.trend .tr-band { fill: var(--ink); opacity: .09; stroke: none; }
+.trend .tr-now { stroke: var(--muted); stroke-width: 1; }
+.trend .tr-slider { stroke: var(--trying, #c9a14a); stroke-width: 1; stroke-dasharray: 2 2; }
+.trend .tr-past { fill: none; stroke: var(--ink); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.trend .tr-fc { fill: none; stroke: var(--ink-2); stroke-width: 2; stroke-dasharray: 5 4; stroke-linecap: round; }
+.trend .tr-hit { fill: transparent; cursor: crosshair; }
+.trend .tr-hover line { stroke: var(--ink-2); stroke-width: 1; }
+.trend .tr-tip { font: 10px var(--mono); fill: var(--ink); }
+.trend figcaption { font: 10px var(--mono); color: var(--muted); margin-top: 4px; line-height: 1.5; }
+.trend .k { display: inline-block; width: 14px; height: 0; vertical-align: middle; margin: 0 4px 0 6px; border-top: 2px solid var(--ink); }
+.trend .k:first-child { margin-left: 0; }
+.trend .k.fc { border-top: 2px dashed var(--ink-2); }
+.trend .k.band { height: 8px; border: 0; background: var(--ink); opacity: .18; }
+.trend .tr-hover[hidden] { display: none; }

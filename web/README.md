@@ -174,3 +174,14 @@ After the field loads, the console measures its own frame rate. Under 45 fps it 
   - State, the countdown, plans and Last Call refresh every minute and 2 s after any alert.
   - The handoff note lists tank levels as of the moment it's written, from live readings, and marks stale ones.
   - Hold-to-confirm needs the full hold, even if the list redraws.
+
+## Alarms, trend, and handoff (CF-1 to CF-4)
+
+- **Alarm list** (`src/alarms.js`, the Alarms card): `GET /api/alerts` plus `/ws` alert events. There is one row per root cause, with related alarms folded under it as "+N related". Rows sort by priority, then by least time to consequence. Ack is one click. Shelve needs a reason and 15 min to 4 h, and the alarm comes back when the shelf ends. Shelving a root never hides the unshelved alarms that follow from it. The card counts alarms in the last 10 min and switches to flood mode over 10. Without `/api/alerts`, the list is derived from the forecast and says so. Other modules can read it with `import { alarms } from "./alarms.js"`.
+- **Trend** (`src/trend.js`, in the Selected card for a tank):
+  - A solid line for the last 60 live minutes, kept in this browser, plus `GET /api/history` when the backend has it.
+  - A dashed line for the forecast on screen.
+  - A give-or-take band from the shutdown event's `t_min_low` and `t_min_high`.
+  - The shutdown line, with the crossing time marked.
+  - A what-if moves only the dashed part. Hover any minute to read its level.
+- **Handoff** has six fixed sections: open alarms, shelved alarms, blind sensors, the approved plan, the next deadline, and the what-ifs tried. Tank levels and the full log come after. `window.__freeboard.handoff()` returns the text.
