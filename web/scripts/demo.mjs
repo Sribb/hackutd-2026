@@ -26,6 +26,28 @@ import QRCode from "qrcode";
 
 const WEB = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const ROOT = path.resolve(WEB, "..");
+
+// The repo's .env (gitignored): KEY=VALUE lines with this laptop's server settings, such as
+// ANTHROPIC_API_KEY, FREEBOARD_EOG_DIR and TWILIO_*. Empty values are skipped, a value already
+// set in the shell wins, and no value from it is ever printed (only the names).
+function dotenv() {
+  const out = {};
+  let text = "";
+  try { text = fs.readFileSync(path.join(ROOT, ".env"), "utf8"); } catch { return out; }
+  for (const raw of text.split(/\r?\n/)) {
+    if (raw.trim().startsWith("#")) continue;
+    const m = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/.exec(raw);
+    if (!m) continue;
+    let v = m[2];
+    if (v.length >= 2 && ((v[0] === '"' && v.endsWith('"')) || (v[0] === "'" && v.endsWith("'")))) v = v.slice(1, -1);
+    if (v) out[m[1]] = v;
+  }
+  return out;
+}
+const DOT = dotenv();
+const ENV = { ...process.env };
+for (const [k, v] of Object.entries(DOT)) if (!process.env[k]) ENV[k] = v;
+const DOT_KEYS = Object.keys(DOT).filter((k) => !process.env[k]);
 const API_PORT = Number(process.env.API_PORT || 8000);
 const WEB_PORT = Number(process.env.WEB_PORT || 5173);
 
@@ -104,6 +126,7 @@ if (TUNNEL) {
 const tunnelHost = tunnelUrl ? new URL(tunnelUrl).hostname : "";
 const base = tunnelUrl || `http://${host}:${WEB_PORT}`;
 console.log("\nGAIA demo\n");
+if (DOT_KEYS.length) console.log(`Loaded from .env: ${DOT_KEYS.join(", ")}`);
 let backend = true;
 let ownTokens = true;
 if (await up(`${api}/api/health`, 300)) {
@@ -116,7 +139,7 @@ if (await up(`${api}/api/health`, 300)) {
   run(py, ["-m", "uvicorn", "backend.app.main:app", "--host", "127.0.0.1", "--port", String(API_PORT)],
     // --lan: pages load from the Wi-Fi IP, but the proxy (changeOrigin) hands the backend
     // Host 127.0.0.1, so its origin guard (#115) would refuse every write. Allow that IP.
-    { cwd: ROOT, env: { ...process.env, FREEBOARD_TOKEN: OP, FREEBOARD_PHONE_TOKEN: PH,
+    { cwd: ROOT, env: { ...ENV, FREEBOARD_TOKEN: OP, FREEBOARD_PHONE_TOKEN: PH,
       ...(LAN || tunnelHost ? { FREEBOARD_ALLOWED_HOSTS: [process.env.FREEBOARD_ALLOWED_HOSTS, LAN && host, tunnelHost].filter(Boolean).join(",") } : {}) } }, "api");
   backend = await up(`${api}/api/health`, 30000);
   if (!backend) console.log("\nThe backend didn't come up in 30 s (see the [api] lines). The console will run on recorded data.\n  Fix: pip install -r backend/requirements.txt\n");
@@ -125,7 +148,7 @@ if (await up(`${api}/api/health`, 300)) {
 run(process.execPath, [path.join(WEB, "node_modules/vite/bin/vite.js"), "--host", LAN ? "0.0.0.0" : "127.0.0.1", "--port", String(WEB_PORT), "--strictPort"], {
   cwd: WEB,
   env: {
-    ...process.env,
+    ...ENV,
     ...(backend ? { VITE_API: "same-origin", FREEBOARD_PROXY: api } : {}),
     VITE_PHONE_URL: `${base}/phone`,
     ...(tunnelHost ? { FREEBOARD_TUNNEL_HOST: tunnelHost } : {}),
