@@ -13,7 +13,8 @@ After a step is confirmed, the run checks its effect in the live readings:
   CHOKE_WELL  the well's `flow_bbl_hr` is within 10% of design x the choke
   SEND_TRUCK  this step's own truck job (dispatched after the step was released, to the
               step's target) exists and leaves within TRUCK_ON_TIME_MIN of the confirm,
-              not queued behind another job
+              not queued behind another job. The job is held once the confirm lands, so a
+              live reload (a new simulator) doesn't lose it
 within VERIFY_MIN live minutes. It also replays what was actually confirmed, at the
 times it was confirmed, and watches every tank: one that runs TANK_TOL_PCT points
 above that replay for TANK_SUSTAIN_MIN is "rising faster than forecast".
@@ -567,7 +568,7 @@ class RunManager:
                 continue
             s["status"] = "PENDING"  # claimed before the await, so it's released once
             sim = live.registry.sim   # so _check finds this step's own truck job
-            self._ctx[run["id"]]["jobs"][s["n"]] = [sim, len(sim.truck_jobs), None]
+            self._ctx[run["id"]]["jobs"][s["n"]] = {"sim": sim, "start": len(sim.truck_jobs), "job": None}
             try:
                 p = await live.propose(s["action"], source="run", extra={"run_id": run["id"], "step": s["n"]},
                                        reason=f"Step {s['n']} of {len(run['steps'])} in {run['id']} "
@@ -589,9 +590,8 @@ class RunManager:
             s["status"] = "PENDING"
         elif st == "CONFIRMED":
             s.update(status="VERIFYING", confirmed_t=self.live.t, result=p.get("result"))
-            mark = self._ctx[run["id"]]["jobs"].get(s["n"])
-            if mark and mark[0] is self.live.registry.sim and mark[2] is None:
-                mark[2] = len(mark[0].truck_jobs)  # the step's job was added before this
+            if s["action"]["type"] == "SEND_TRUCK":
+                self._claim_job(run, s)  # the step's job was added before this
         elif st == "REJECTED":
             if run["status"] not in ACTIVE:
                 s["status"] = "CANCELLED"
@@ -616,18 +616,44 @@ class RunManager:
             await self._clear_alert(run)
 
     # ---------- checks ----------
-    def _truck_job(self, run: dict, s: dict) -> Optional[dict]:
-        """This step's own job in the simulator: added between the step's release and its
-        confirm, for this truck and this target. The latest such job, as the confirm adds
-        it last."""
-        sim, a = self.live.registry.sim, s["action"]
+    def _claim_job(self, run: dict, s: dict) -> Optional[dict]:
+        """Find and keep this step's own truck job: the latest job for this truck and
+        target added after the step was released. Called when the confirm lands (the
+        connector adds the job before that), so the job is then held by identity, with the
+        simulator time it was claimed at. A live reload (a new simulator, with an empty job
+        list and its own clock) can't lose it or flip a good step to MISMATCH.
+
+        A reload between the release and the confirm means the job went to the new
+        simulator, every one of whose jobs came after the release, so it is searched from
+        its start. The release-time simulator is searched too, for a reload that landed
+        between the send and this call."""
         mark = self._ctx[run["id"]]["jobs"].get(s["n"])
-        if not mark or mark[0] is not sim:
+        if not mark:
             return None
-        hi = mark[2] if mark[2] is not None else len(sim.truck_jobs)
-        mine = [j for j in sim.truck_jobs[mark[1]:hi]
-                if j["truck_id"] == a["asset_id"] and j["target_id"] == a["target_id"]]
-        return mine[-1] if mine else None
+        if mark["job"] is not None:
+            return mark["job"]
+        a, cur = s["action"], self.live.registry.sim
+        places = [(cur, mark["start"] if mark["sim"] is cur else 0)]
+        if mark["sim"] is not cur:
+            places.append((mark["sim"], mark["start"]))
+        for sim, start in places:
+            mine = [j for j in sim.truck_jobs[start:]
+                    if j["truck_id"] == a["asset_id"] and j["target_id"] == a["target_id"]]
+            if mine:
+                mark.update(job=mine[-1], sim_t=sim.t, live_t=self.live.t)
+                return mark["job"]
+        return None
+
+    def _truck_job(self, run: dict, s: dict) -> tuple[Optional[dict], float, float]:
+        """(this step's own job, its simulator's time at the confirm, that simulator's time
+        now). Job times are on their simulator's clock, which restarts at 0 on a reload,
+        so they are compared on that clock, carried forward by live time."""
+        job = self._claim_job(run, s)
+        if job is None:
+            return None, 0.0, 0.0
+        mark = self._ctx[run["id"]]["jobs"][s["n"]]
+        at_confirm = mark["sim_t"] - (mark["live_t"] - s["confirmed_t"])
+        return job, at_confirm, mark["sim_t"] + (self.live.t - mark["live_t"])
 
     def _check(self, run: dict, s: dict) -> tuple[bool, str]:
         """(effect seen, what the readings say) for a confirmed step."""
@@ -641,13 +667,13 @@ class RunManager:
             return r["value"] if ok else None
 
         if typ == "SEND_TRUCK":
-            job, tgt = self._truck_job(run, s), name(a["target_id"])
+            (job, at_confirm, t), tgt = self._truck_job(run, s), name(a["target_id"])
             if job is None:
                 return False, f"No dispatch of {name(aid)} to {tgt} seen {mins} after it was confirmed."
-            if job["depart"] > since + TRUCK_ON_TIME_MIN + 1e-9:
+            if job["depart"] > at_confirm + TRUCK_ON_TIME_MIN + 1e-9:
+                leaves = since + (job["depart"] - at_confirm)   # on the live clock
                 return False, (f"{name(aid)} is queued behind another job: it leaves for {tgt} at "
-                               f"{live.fmap.clock_text(job['depart'])}, not when it was confirmed.")
-            t = live.registry.sim.t
+                               f"{live.fmap.clock_text(leaves)}, not when it was confirmed.")
             phase = ("queued" if t < job["depart"] else "en route" if t < job["arrive"] else
                      "loading" if t < job["load_end"] else "hauling to disposal" if t < job["done"] else "done")
             return True, f"{name(aid)} is {phase} for {tgt}."

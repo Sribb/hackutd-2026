@@ -512,6 +512,57 @@ def test_truck_step_verify_names_its_target():
     assert s["status"] == "DONE" and "en route for Tank 3" in s["verify"]
 
 
+def _reload_same_field(live: LiveField) -> None:
+    """A live reload of the same blueprint: a new simulator, empty job list, clock at 0."""
+    old = live.registry.sim
+    live.reload(load_scenario(TEAM_SCENARIO), json.loads(TEAM_SCENARIO.read_text()))
+    assert live.registry.sim is not old and live.registry.sim.truck_jobs == []
+
+
+@needs_field
+def test_truck_step_released_before_a_reload_and_confirmed_after_it_verifies():
+    live, runs, _ = field()
+    plan = cheapest(runs)
+
+    async def go():
+        run = await runs.execute(plan)
+        await advance(live, 30, confirm=False, until=lambda: any(
+            s["action"]["type"] == "SEND_TRUCK" and s["status"] == "PENDING" for s in run["steps"]))
+        s = next(s for s in run["steps"] if s["action"]["type"] == "SEND_TRUCK")
+        assert s["status"] == "PENDING"
+        _reload_same_field(live)
+        assert live.proposals[s["proposal_id"]]["status"] == "PENDING"   # same connector, still valid
+        await live.confirm(s["proposal_id"], by="operator")             # the job goes to the new sim
+        assert live.registry.sim.truck_jobs
+        await advance(live, 6, until=lambda: s["status"] != "VERIFYING")
+        return s
+
+    s = asyncio.run(go())
+    assert s["status"] == "DONE", s
+    assert "for Tank 3" in s["verify"]
+
+
+@needs_field
+def test_truck_step_confirmed_before_a_reload_is_not_flipped_to_mismatch():
+    live, runs, _ = field()
+    plan = cheapest(runs)
+
+    async def go():
+        run = await runs.execute(plan)
+        await advance(live, 30, confirm=False, until=lambda: any(
+            s["action"]["type"] == "SEND_TRUCK" and s["status"] == "PENDING" for s in run["steps"]))
+        s = next(s for s in run["steps"] if s["action"]["type"] == "SEND_TRUCK")
+        await live.confirm(s["proposal_id"], by="operator")             # dispatched on the old sim
+        assert s["status"] == "VERIFYING"
+        _reload_same_field(live)                                        # before the next tick checks it
+        await advance(live, 6, until=lambda: s["status"] != "VERIFYING")
+        return s
+
+    s = asyncio.run(go())
+    assert s["status"] == "DONE", s
+    assert "en route for Tank 3" in s["verify"]
+
+
 # ---------- stale plans ----------
 
 @needs_field
@@ -636,10 +687,32 @@ def test_fix_it_request_reads_negations_and_questions():
     assert fix_it_request("what's failing") is None
 
 
+def test_fix_it_request_reads_a_negation_or_question_after_the_match():
+    from backend.app.jarvis import fix_it_request
+
+    # A retraction after the order, in the same clause or a later one, starts nothing.
+    for t in ("fix it, actually no don't", "Fix it. Actually, wait.", "run the plan... never mind",
+              "make it so. No, hold off", "fix it, scratch that", "execute the plan, or rather not",
+              "fix it, forget it", "fix it, not yet", "Fix it \u2014 no, stop!", "fix it now. Actually, don\u2019t",
+              "start the plan, then cancel", "fix it without touching pump 2", "fix it. nevermind",
+              "fix it, hold on", "Run the plan? No."):
+        assert fix_it_request(t) == "negated", t
+    # A question about it, anywhere from its sentence on, starts nothing either.
+    for t in ("fix it, right?", "Fix it. Is that safe?", "Can you fix it? Will it hold?",
+              "I wonder if we should fix it", "fix it, what do you think?", "run the plan, then what?",
+              "Jarvis: is it safe to run the plan", "make it so?"):
+        assert fix_it_request(t) == "question", t
+    # Plain orders and polite requests still run.
+    for t in ("fix it now", "Fix it, please.", "Jarvis, fix it, thanks", "please run the plan now!",
+              "Fix it. Thanks.", "ok jarvis: make it so", "Can you fix it?", "Could you run the plan please?"):
+        assert fix_it_request(t) == "run", t
+
+
 @needs_field
 def test_jarvis_does_not_start_a_run_on_a_negation_or_a_question():
     live, runs, jarvis = field()
-    for msg in ("Don't fix it yet", "Should I run the plan?", "how would you fix it?"):
+    for msg in ("Don't fix it yet", "Should I run the plan?", "how would you fix it?",
+                "fix it, actually no don't", "Fix it. Is that safe?", "make it so... never mind"):
         body = asyncio.run(jarvis.handle(msg))
         assert body["runs"] == [] and runs.list() == [], msg
     body = asyncio.run(jarvis.handle("Should I run the plan?"))

@@ -48,32 +48,45 @@ HELP = ("I can show and explain assets, report what's failing, give the time to 
         "crossover' or 'send truck 1 to tank 3'.")
 FIX_IT = re.compile(r"\b(fix (it|this|that|the field|everything|tank \d+)|make it so|"
                     r"(run|execute|start) (the |a )?(cheapest |best )?plan)\b")
-# "Don't fix it", "do not run the plan yet": a negation in the same clause before the match.
-FIX_NEGATION = re.compile(r"\b(don'?t|dont|do not|never|not|no|stop|cancel|hold off|wait|without)\b")
+# "Don't fix it", "do not run the plan yet": a negation in the clause before the match.
+# "Fix it, actually no don't", "fix it. wait.", "make it so... never mind": a negation or a
+# retraction anywhere after it. Either starts nothing: a person can always say it again.
+FIX_NEGATION = re.compile(r"\b(don'?t|dont|do not|never|not|no|nope|nah|stop|cancel|abort|belay|hold off|"
+                          r"hold on|wait|without|rather not|forget (it|that)|scratch that|nevermind|"
+                          r"(should|would|must|wo|ca)n'?t|cannot)\b")
 # A question isn't an order ("should I fix it?", "how would you run the plan?"), except a
 # polite request ("can you fix it?", "could you please run the plan?").
 QUESTION_START = re.compile(r"^\s*(how|what|why|when|which|who|where|should|shall|would|could|can|will|"
                             r"is|are|was|does|do|did|if|whether|any idea)\b")
 POLITE_REQUEST = re.compile(r"^\s*(jarvis,? )?(please |(can|could|will|would) you\b( please)?)")
+# Asking, not ordering, in the middle of a sentence: "I wonder if we should fix it".
+MID_QUESTION = re.compile(r"\b(wonder(ing)? (if|whether)|any idea (if|whether|how)|is it (safe|ok|okay) to)\b")
 REPLAN_TIMEOUT_S = 20.0
 
 
 def fix_it_request(text: str) -> Optional[str]:
     """'run' when the text orders a plan run ("fix it", "make it so", "please run the
-    plan"), 'negated' for "don't fix it", 'question' for "should I fix it?", else None."""
+    plan"), 'negated' for "don't fix it" or "fix it, actually no don't", 'question' for
+    "should I fix it?" or "fix it, right?", else None.
+
+    Starting a run is the one thing here that leads to commands, so anything short of a
+    plain order starts nothing: a negation in the clause before the match or anywhere
+    after it, and a question about it anywhere in the message from its sentence on."""
     t = text.lower().replace("-", " ").replace("’", "'")
     m = FIX_IT.search(t)
     if not m:
         return None
-    # The clause holding the match: from the last sentence or clause break before it to the next.
+    # The clause before the match: from the last sentence or clause break before it.
     start = max(t.rfind(c, 0, m.start()) for c in ".!?;:,") + 1
-    ends = [i for i in (t.find(c, m.end()) for c in ".!?;") if i >= 0]
-    clause, end = t[start:m.start()], min(ends) if ends else len(t)
-    sentence_start = max(t.rfind(c, 0, m.start()) for c in ".!?;") + 1
-    if FIX_NEGATION.search(clause):
+    if FIX_NEGATION.search(t[start:m.start()]) or FIX_NEGATION.search(t[m.end():]):
         return "negated"
+    sentence_start = max(t.rfind(c, 0, m.start()) for c in ".!?;") + 1
     sentence = t[sentence_start:m.start()]
-    jarvis_name = re.sub(r"^\s*(hey |ok |okay )?jarvis,?\s*", "", sentence)
+    jarvis_name = re.sub(r"^\s*(hey |ok |okay )?jarvis[,:]?\s*", "", sentence)
+    ends = [i for i in (t.find(c, m.end()) for c in ".!?;") if i >= 0]
+    end = min(ends) if ends else len(t)
+    if "?" in t[end + 1:] or MID_QUESTION.search(t[sentence_start:]):
+        return "question"   # "fix it. is that safe?", "can you fix it? will it hold?"
     if POLITE_REQUEST.search(jarvis_name):
         return "run"
     if t[end:end + 1] == "?" or QUESTION_START.search(jarvis_name):
