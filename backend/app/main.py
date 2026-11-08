@@ -1,6 +1,9 @@
 """Freeboard backend. Run from the repo root:
 
     uvicorn backend.app.main:app --host 127.0.0.1 --port 8000
+
+Everything reads the active field (backend/app/fields.py). At startup that's the
+scenario file. POST /api/blueprints/{id}/activate switches it.
 """
 from __future__ import annotations
 
@@ -11,26 +14,36 @@ import threading
 from contextlib import asynccontextmanager
 from typing import Optional, Union
 
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, File, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
-from . import spacetime_sync
-from .forecast import build_plant, forecast
+from . import actuators, blueprints, commands, fields, spacetime_sync
+from .forecast import forecast
 from .planner import approve, make_plans
-from .scenario import field_payload, load_scenario, state_payload
+from .scenario import field_payload, load_scenario
 
 log = logging.getLogger("freeboard")
-SCENARIO = load_scenario()
+MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 _plans: dict[str, dict] = {}   # plan id -> plan, from the latest /api/plans calls
+
+fields.activate(load_scenario())
+
+
+def _push(snap) -> None:
+    """Mirror every field change into SpacetimeDB, off the request thread."""
+    if spacetime_sync.enabled():
+        threading.Thread(target=spacetime_sync.push_state, args=(fields.live_state(snap),), daemon=True).start()
+
+
+fields.on_change(_push)
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    # Mirror the starting state into SpacetimeDB without blocking startup.
-    threading.Thread(target=spacetime_sync.push_state,
-                     args=(state_payload(SCENARIO),), daemon=True).start()
+    _push(fields.snapshot())
+    commands.start_worker(actuators.get())
     yield
 
 
@@ -42,6 +55,17 @@ async def unhandled(_request: Request, exc: Exception) -> JSONResponse:
     """Any bug comes back as JSON the console can show, never a bare crash page."""
     log.exception("Unhandled error: %s", exc)
     return JSONResponse(status_code=500, content={"detail": f"Internal error: {type(exc).__name__}: {exc}"})
+
+
+@app.exception_handler(commands.CommandError)
+async def command_error(_request: Request, exc: commands.CommandError) -> JSONResponse:
+    return JSONResponse(status_code=exc.status, content={"detail": exc.message})
+
+
+@app.exception_handler(blueprints.BlueprintError)
+async def blueprint_error(_request: Request, exc: blueprints.BlueprintError) -> JSONResponse:
+    return JSONResponse(status_code=exc.status, content={"detail": exc.message, **exc.detail})
+
 
 # The web console runs on a local dev server (Vite defaults to 5173).
 app.add_middleware(
@@ -71,40 +95,64 @@ class PlansRequest(BaseModel):
     top_n: int = Field(3, ge=1, le=10)
 
 
+class CommandRequest(BaseModel):
+    action: Action
+    reason: str = ""
+
+
+class RejectRequest(BaseModel):
+    reason: str = ""
+
+
+# ---------- field, state, forecast, plans ----------
+
 @app.get("/api/field")
 def get_field() -> dict:
-    return field_payload(SCENARIO)
+    return field_payload(fields.snapshot().scenario)
 
 
 @app.get("/api/state")
 def get_state() -> dict:
-    return state_payload(SCENARIO)
+    return fields.live_state()
 
 
 @app.post("/api/forecast")
 def post_forecast(req: ForecastRequest = ForecastRequest()) -> dict:
-    actions = [a.model_dump(exclude_none=True) for a in req.actions]
-    return forecast(SCENARIO, actions, req.horizon_minutes, req.step_minutes)
+    """The future from now. Actions already carried out are always included."""
+    snap = fields.snapshot()
+    actions = list(snap.applied) + [a.model_dump(exclude_none=True) for a in req.actions]
+    return forecast(snap.scenario, actions, req.horizon_minutes, req.step_minutes, plant=snap.plant)
 
 
 @app.post("/api/plans")
 def post_plans(req: PlansRequest = PlansRequest()) -> dict:
-    out = make_plans(SCENARIO, req.horizon_minutes, req.top_n)
+    snap = fields.snapshot()
+    out = make_plans(snap.scenario, req.horizon_minutes, req.top_n, base_actions=list(snap.applied),
+                     plant=snap.plant)
     for p in out["plans"]:
         _plans[p["id"]] = p
     return out
 
 
 @app.post("/api/plans/{plan_id}/approve")
-def post_approve(plan_id: str) -> dict:
+def post_approve(plan_id: str, x_operator: Optional[str] = Header(None)) -> dict:
+    """Turns a plan into numbered steps, and proposes one command per step.
+    Each command still needs its own human approval (POST /api/commands/{id}/approve)."""
+    snap = fields.snapshot()
     plan = _plans.get(plan_id)
     if plan is None:  # e.g. the server restarted; plan ids are deterministic
-        for p in make_plans(SCENARIO)["plans"]:
+        for p in make_plans(snap.scenario, base_actions=list(snap.applied), plant=snap.plant)["plans"]:
             _plans[p["id"]] = p
         plan = _plans.get(plan_id)
     if plan is None:
         raise HTTPException(404, f"No plan {plan_id}. Call POST /api/plans first.")
-    out = approve(SCENARIO, plan)
+    out = approve(snap.scenario, plan)
+    by = f"plan:{plan_id}" + (f" via {x_operator}" if x_operator else "")
+    step_for = {s["asset_id"]: s["n"] for s in out["steps"]}
+    ordered = sorted(plan["actions"], key=lambda a: step_for.get(a["asset_id"], 99))
+    out["command_ids"] = [commands.propose({k: v for k, v in a.items() if k != "at_min"}, by,
+                                           f"Step {step_for.get(a['asset_id'])} of {plan_id}")["id"]
+                          for a in ordered]
     threading.Thread(target=_push_plan, args=(out,), daemon=True).start()
     return out
 
@@ -119,16 +167,106 @@ def _push_plan(out: dict) -> None:
         log.warning("SpacetimeDB set_plan failed: %s", e)
 
 
+# ---------- commands (the only path to a machine) ----------
+
+@app.post("/api/commands")
+def post_command(req: CommandRequest, x_operator: Optional[str] = Header(None)) -> dict:
+    """Propose. Anyone (agent or human) can propose. Nothing runs until a human approves."""
+    by = x_operator or "agent"
+    return commands.propose(req.action.model_dump(exclude_none=True, exclude={"at_min"}), by, req.reason)
+
+
+@app.get("/api/commands")
+def get_commands() -> dict:
+    return {"commands": commands.list_commands(), **commands.status()}
+
+
+@app.post("/api/commands/halt")
+def post_halt(x_operator: Optional[str] = Header(None)) -> dict:
+    return commands.halt(x_operator or "unknown")
+
+
+@app.post("/api/commands/resume")
+def post_resume(x_operator: Optional[str] = Header(None)) -> dict:
+    if not x_operator:
+        raise HTTPException(403, "Only a named human operator can resume. Send the X-Operator header.")
+    return commands.resume(x_operator)
+
+
+@app.post("/api/commands/{cid}/approve")
+def post_command_approve(cid: str, x_operator: Optional[str] = Header(None)) -> dict:
+    return commands.approve(cid, x_operator or "")
+
+
+@app.post("/api/commands/{cid}/reject")
+def post_command_reject(cid: str, req: RejectRequest = RejectRequest(),
+                        x_operator: Optional[str] = Header(None)) -> dict:
+    return commands.reject(cid, x_operator or "unknown", req.reason)
+
+
+@app.get("/api/audit")
+def get_audit() -> dict:
+    return {"audit": commands.audit()}
+
+
+# ---------- blueprints ----------
+
+@app.post("/api/blueprints")
+async def post_blueprint(file: UploadFile = File(...)) -> dict:
+    data = await file.read()
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise HTTPException(413, "Uploads must be under 20 MB.")
+    from fastapi.concurrency import run_in_threadpool
+    return await run_in_threadpool(blueprints.create, data, file.filename or "upload", file.content_type)
+
+
+@app.get("/api/blueprints")
+def get_blueprints() -> dict:
+    return {"blueprints": blueprints.list_all(), "active": fields.snapshot().blueprint_id}
+
+
+@app.get("/api/blueprints/{bid}")
+def get_blueprint(bid: str) -> dict:
+    return blueprints.get(bid)
+
+
+@app.put("/api/blueprints/{bid}")
+def put_blueprint(bid: str, blueprint: dict) -> dict:
+    return blueprints.update(bid, blueprint)
+
+
+@app.post("/api/blueprints/{bid}/build")
+def post_build(bid: str) -> dict:
+    return blueprints.build(bid)
+
+
+@app.get("/api/blueprints/{bid}/field.glb")
+def get_glb(bid: str) -> FileResponse:
+    return FileResponse(blueprints.glb_path(bid), media_type="model/gltf-binary", filename="field.glb")
+
+
+@app.post("/api/blueprints/{bid}/activate")
+def post_activate(bid: str) -> dict:
+    out = blueprints.activate(bid)
+    _plans.clear()
+    return out
+
+
+# ---------- health ----------
+
 @app.get("/api/health")
 def health() -> dict:
-    return {"ok": True, "scenario": SCENARIO.get("_source"), "spacetime": spacetime_sync.status,
-            "lastcall": LASTCALL, "ingest": INGEST}
+    snap = fields.snapshot()
+    return {"ok": True, "scenario": snap.scenario.get("_source"), "blueprint_id": snap.blueprint_id,
+            "field_version": snap.version, "applied_actions": len(snap.applied),
+            "commands": commands.status(), "actuator": os.environ.get("ACTUATOR", "sim"),
+            "spacetime": spacetime_sync.status, "lastcall": LASTCALL, "ingest": INGEST}
 
 
 @app.post("/api/spacetime/sync")
 def spacetime_sync_now() -> dict:
     """Re-push the current state into SpacetimeDB, e.g. after republishing the module."""
-    ok = spacetime_sync.push_state(state_payload(SCENARIO))
+    ok = spacetime_sync.push_state(fields.live_state())
     return {"ok": ok, "spacetime": spacetime_sync.status}
 
 
@@ -136,7 +274,8 @@ def spacetime_sync_now() -> dict:
 
 def lastcall_scenario() -> dict:
     """The flat field shape lastcall/core.py reads: field data plus current readings."""
-    f, st = SCENARIO["field"], state_payload(SCENARIO)
+    snap = fields.snapshot()
+    f, st = snap.scenario["field"], fields.live_state(snap)
     assets = st["assets"]
     return {
         "clock": st["clock"],
@@ -153,13 +292,16 @@ def lastcall_scenario() -> dict:
     }
 
 
+def _lastcall_forecast(actions, inflow_scale):
+    snap = fields.snapshot()
+    return forecast(snap.scenario, list(snap.applied) + list(actions), inflow_scale=inflow_scale,
+                    with_range=False, plant=snap.plant)
+
+
 try:
     from lastcall.router import router as lastcall_router, set_source
 
-    _PLANT = build_plant(SCENARIO)  # the scenario is fixed, so build it once for Last Call's many runs
-    set_source(get_scenario=lastcall_scenario,
-               forecast_fn=lambda actions, inflow_scale: forecast(
-                   SCENARIO, actions, inflow_scale=inflow_scale, with_range=False, plant=_PLANT))
+    set_source(get_scenario=lastcall_scenario, forecast_fn=_lastcall_forecast)
     app.include_router(lastcall_router)
     LASTCALL = "mounted"
 except ImportError:
