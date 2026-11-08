@@ -28,6 +28,9 @@ const web = (port, api) => ({
 
 export default defineConfig({
   testDir: "tests",
+  // Only the browser specs. tests/*.test.mjs are the node checks (npm test); one of them
+  // calls process.exit on import, which ended discovery with 0 tests and exit 0.
+  testMatch: "**/*.spec.js",
   timeout: 120000,
   expect: { timeout: 20000 },
   workers: 1,           // the checks change backend state, in file order

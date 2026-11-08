@@ -81,7 +81,10 @@ if (await up(`${api}/api/health`, 300)) {
   const py = python();
   console.log(`Starting the backend with ${py} ...`);
   run(py, ["-m", "uvicorn", "backend.app.main:app", "--host", "127.0.0.1", "--port", String(API_PORT)],
-    { cwd: ROOT, env: { ...process.env, FREEBOARD_TOKEN: OP, FREEBOARD_PHONE_TOKEN: PH } }, "api");
+    // --lan: pages load from the Wi-Fi IP, but the proxy (changeOrigin) hands the backend
+    // Host 127.0.0.1, so its origin guard (#115) would refuse every write. Allow that IP.
+    { cwd: ROOT, env: { ...process.env, FREEBOARD_TOKEN: OP, FREEBOARD_PHONE_TOKEN: PH,
+      ...(LAN ? { FREEBOARD_ALLOWED_HOSTS: [process.env.FREEBOARD_ALLOWED_HOSTS, host].filter(Boolean).join(",") } : {}) } }, "api");
   backend = await up(`${api}/api/health`, 30000);
   if (!backend) console.log("\nThe backend didn't come up in 30 s (see the [api] lines). The console will run on recorded data.\n  Fix: pip install -r backend/requirements.txt\n");
 }
