@@ -19,6 +19,11 @@ request says "activate": false.
 
 Stored under backend/data/blueprints/<id>/ (gitignored): blueprint.json, record.json, and
 the generator's build/ output.
+
+Activating a blueprint builds every connector it lists, and a network connector starts
+its own thread and connects at once. So a blueprint with more than MAX_CONNECTORS
+connectors, or a connector with more than MAX_CONNECTOR_SIGNALS signals or
+MAX_CONNECTOR_COMMANDS commands, is refused before anything is built.
 """
 from __future__ import annotations
 
@@ -57,6 +62,9 @@ MAX_BYTES = 5_000_000
 KINDS = ("tanks", "pumps", "valves", "wells", "disposal_wells", "trucks", "yards")
 ID_RE = re.compile(r"^bp_[0-9a-f]{12}$")
 DEFAULT_ID = "default"
+MAX_CONNECTORS = 16             # each opcua or sparkplug connector is a thread and a socket
+MAX_CONNECTOR_SIGNALS = 500
+MAX_CONNECTOR_COMMANDS = 200
 
 _lock = threading.RLock()
 _records: dict[str, dict] = {}
@@ -104,6 +112,9 @@ def check_blueprint(bp, path: Path) -> tuple[list[str], list[str], Optional[dict
     warnings: list[str] = []
     if not isinstance(bp, dict):
         return ["A blueprint must be a JSON object."], warnings, None
+    errors += connector_limits(bp)
+    if errors:
+        return errors, warnings, None
 
     mod = _validator_module()
     if mod is None:
@@ -134,6 +145,28 @@ def check_blueprint(bp, path: Path) -> tuple[list[str], list[str], Optional[dict
     except Exception as e:  # noqa: BLE001
         return [f"The forecast couldn't run on it: {e}"], warnings, None
     return [], warnings, scen
+
+
+def connector_limits(bp: dict) -> list[str]:
+    """Errors for a blueprint whose connectors are over the limits above."""
+    conns = bp.get("connectors")
+    if conns is None:
+        return []
+    if not isinstance(conns, list):
+        return ["connectors must be a list."]
+    if len(conns) > MAX_CONNECTORS:
+        return [f"The blueprint lists {len(conns)} connectors. The most it may list is {MAX_CONNECTORS}, "
+                f"since each one connects as soon as the blueprint is activated."]
+    errors = []
+    for i, c in enumerate(conns):
+        if not isinstance(c, dict):
+            continue
+        cid = c.get("id") if isinstance(c.get("id"), str) else f"connectors[{i}]"
+        for key, cap in (("signals", MAX_CONNECTOR_SIGNALS), ("commands", MAX_CONNECTOR_COMMANDS)):
+            items = c.get(key)
+            if isinstance(items, list) and len(items) > cap:
+                errors.append(f"{cid[:40]} lists {len(items)} {key}. The most one connector may list is {cap}.")
+    return errors
 
 
 def _counts(bp: dict) -> dict:

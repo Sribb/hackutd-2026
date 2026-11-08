@@ -7,7 +7,10 @@ anywhere else. The password is random unless given.
 
 Variables (namespace 2, string NodeIds):
 
-    TANK_3.Level, TANK_6.Level        Double, percent; filled slowly, drained while the pump runs
+    TANK_3.Level, TANK_6.Level        Double, percent; the wells fill it at fill_pct_per_s, and
+                                      while its pump runs (TANK_6: with VALVE_D_6 open) the pump
+                                      takes drain_pct_per_s out (by default the same as the fill,
+                                      so a running pump holds its tank flat)
     PUMP_3.Running, PUMP_6.Running    Boolean; follows PUMP_n.Command
     PUMP_3.Flow, PUMP_6.Flow          Double, bbl/hr
     PUMP_3.Command, PUMP_6.Command    Boolean, writable: True starts the pump
@@ -29,6 +32,7 @@ password. In a test:
     fake.set_age("TANK_6.Level", 900)    # stamp its SourceTimestamp 15 minutes ago
     fake.writes                          # [{"node", "name", "value", "variant", "t"}] from clients
     fake.write_delay_s = 3               # answer client writes late (the write still lands)
+    fake.auto_levels = False             # levels move only on fake.step_levels(dt), on your clock
     fake.stop()
 """
 from __future__ import annotations
@@ -120,7 +124,9 @@ class FakeOpcUa:
     """A running fake server on its own thread and asyncio loop."""
 
     def __init__(self, port: Optional[int] = None, workdir: Optional[str] = None, password: Optional[str] = None,
-                 fill_pct_per_s: float = 0.02, tick_s: float = 0.2, write_delay_s: float = 0.0) -> None:
+                 fill_pct_per_s: float = 0.02, tick_s: float = 0.2, write_delay_s: float = 0.0,
+                 drain_pct_per_s: Optional[float] = None, pump_rate: Optional[float] = None, well_rate: Optional[float] = None,
+                 min_level_pct: float = 0.0, auto_levels: bool = True) -> None:
         self.port = port or free_port()
         self.endpoint = f"opc.tcp://127.0.0.1:{self.port}/freeboard/"
         self.workdir = Path(workdir) if workdir else Path(tempfile.mkdtemp(prefix="freeboard-opcua-"))
@@ -128,6 +134,11 @@ class FakeOpcUa:
         self.username = USERNAME
         self.password = password or secrets.token_urlsafe(16)
         self.fill_pct_per_s = fill_pct_per_s
+        self.drain_pct_per_s = fill_pct_per_s if drain_pct_per_s is None else drain_pct_per_s
+        self.pump_rate = PUMP_RATE if pump_rate is None else pump_rate
+        self.well_rate = WELL_RATE if well_rate is None else well_rate
+        self.min_level_pct = min_level_pct      # a running pump holds its tank here (its low level)
+        self.auto_levels = auto_levels          # False: levels move only in step_levels()
         self.tick_s = tick_s
         self.write_delay_s = write_delay_s
         paths = make_certs(self.workdir)
@@ -243,24 +254,37 @@ class FakeOpcUa:
                 except asyncio.TimeoutError:
                     pass
                 now = time.monotonic()
-                self._model(now - last)
+                self._model(now - last if self.auto_levels else 0.0)
                 last = now
                 await self._publish(ua)
 
+    def step_levels(self, dt: float) -> None:
+        """Move the tank levels on by dt (seconds, or whatever unit the rates are in), for
+        a caller that runs the fake on its own clock (auto_levels False)."""
+        self._model(dt)
+
     def _model(self, dt_s: float) -> None:
-        """A slow fill: wells fill the tanks, a running pump drains a little faster than
-        it fills only when the valve is open."""
+        """Pumps and valves follow their commands. Wells fill each tank at fill_pct_per_s;
+        a running pump with its valve open takes drain_pct_per_s out, so a running pump
+        empties its tank and a stopped one lets it fill. A running pump holds its tank at
+        min_level_pct, the way a pump control does at its low level."""
         with self._lock:
             v = self.values
             for n in ("3", "6"):
                 v[f"PUMP_{n}.Running"] = bool(v[f"PUMP_{n}.Command"])
-                v[f"PUMP_{n}.Flow"] = PUMP_RATE if v[f"PUMP_{n}.Running"] else 0.0
+                v[f"PUMP_{n}.Flow"] = self.pump_rate if v[f"PUMP_{n}.Running"] else 0.0
             v["VALVE_D_6.Position"] = bool(v["VALVE_D_6.Command"])
-            v["WELL_1.Flow"] = WELL_RATE * float(v["WELL_1.Choke"])
+            v["WELL_1.Flow"] = self.well_rate * float(v["WELL_1.Choke"])
+            if dt_s <= 0:
+                return
             for n in ("3", "6"):
                 pumping = v[f"PUMP_{n}.Running"] and (n != "6" or v["VALVE_D_6.Position"])
-                rate = self.fill_pct_per_s * (0.5 if pumping else 1.0)
-                v[f"TANK_{n}.Level"] = min(100.0, float(v[f"TANK_{n}.Level"]) + rate * dt_s)
+                level = float(v[f"TANK_{n}.Level"])
+                rate = self.fill_pct_per_s - (self.drain_pct_per_s if pumping else 0.0)
+                new = level + rate * dt_s
+                if pumping and rate < 0:
+                    new = max(new, min(level, self.min_level_pct))
+                v[f"TANK_{n}.Level"] = min(100.0, max(0.0, new))
 
     async def _publish(self, ua) -> None:
         with self._lock:

@@ -87,8 +87,8 @@ class Detector:
             sigs = sorted(s for a, s in stale_now if a == aid)
             if sigs:
                 ages = [t - latest[(aid, s)]["t"] for s in sigs if (aid, s) in latest]
-                age = f"{max(ages):.0f} min" if ages else "since startup"
-                msg = (f"No {', '.join(sigs)} reading from {name(aid)} for {age}. "
+                age = f"for {max(ages):.0f} min" if ages else "since startup"
+                msg = (f"No {', '.join(sigs)} reading from {name(aid)} {age}. "
                        f"Treat it as unknown, not safe.")
                 changed += self._set(aid, "SENSOR_STALE", "WARNING", msg, True, t, clock, confirm=1)
             else:

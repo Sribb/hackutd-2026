@@ -336,7 +336,9 @@ def test_node_death_and_rebirth(broker, edge, make_live):
 
     edge.revive()
     wait_value(lf, "TANK_3", "level_pct", 62.0)
-    wait_for(lambda: all(q["quality"] == "good" for q in c.quality.values()), what="good after rebirth")
+    # Quality turns good as read() hands each value on (here, in the live tick).
+    wait_for(lambda: lf.step(0.01) is not None and all(q["quality"] == "good" for q in c.quality.values()),
+             what="good after rebirth")
     assert edge.bdseq == old_bdseq + 1
 
     # A late NDEATH from the old session (old bdSeq) changes nothing.
@@ -456,7 +458,9 @@ def test_password_from_freeboard_env(make_live, monkeypatch):
     try:
         monkeypatch.setenv("FREEBOARD_CONN_SPB_PASSWORD", "s3cret-pass")
         good = make_live(make_spec(b.port, username="fb", password_env="FREEBOARD_CONN_SPB_PASSWORD"))
-        wait_for(lambda: status_of(good)["status"] == "connected", what="login")
+        # Logged in, though unavailable: no edge node it maps is online on this broker.
+        wait_for(lambda: status_of(good)["detail"].startswith("connected to"), what="login")
+        assert status_of(good)["status"] == "unavailable" and "edge nodes online: none" in status_of(good)["detail"]
         monkeypatch.setenv("FREEBOARD_CONN_SPB_WRONG", "wrong-pass")
         bad = make_live(make_spec(b.port, username="fb", password_env="FREEBOARD_CONN_SPB_WRONG",
                                   client_id="freeboard-wrong"))

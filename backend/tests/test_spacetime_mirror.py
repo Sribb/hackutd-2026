@@ -685,10 +685,11 @@ def test_a_stale_asset_never_shows_its_last_level_or_position(live_app, captured
     app, lv = live_app
     lv.step(1.0)
     # VALVE_D_6 and TANK_1 stop reporting: the live layer calls them stale (UNKNOWN), and
-    # /api/state still carries the valve's last position.
+    # /api/state carries the valve's last position only as last_position.
     lv.detector.stale_keys.update(k for k in lv.latest if k[0] in ("VALVE_D_6", "TANK_1"))
     st = now.state(app)
-    assert st["assets"]["VALVE_D_6"]["stale"] is True and st["assets"]["VALVE_D_6"]["position"] in ("OPEN", "CLOSED")
+    v6 = st["assets"]["VALVE_D_6"]
+    assert v6["stale"] is True and v6["position"] is None and v6["last_position"] in ("OPEN", "CLOSED")
     assert tick(sm.Mirror(), app) is True
     rows = {r["asset_id"]: r for r in batches(captured)[0]["assets"]}
     assert (rows["VALVE_D_6"]["status"], rows["VALVE_D_6"]["position"]) == ("UNKNOWN", "")

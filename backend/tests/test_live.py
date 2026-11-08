@@ -155,6 +155,12 @@ def test_bad_proposal_is_refused():
 
 # ---------- a proposal is sent at most once (two screens, confirm vs reject) ----------
 
+@pytest.fixture(autouse=True)
+def allow_gateway(monkeypatch):
+    """The webhook tests post to gateway.local, which an operator has to allow."""
+    monkeypatch.setenv("FREEBOARD_CONN_ALLOWED_HOSTS", "127.0.0.1,localhost,gateway.local")
+
+
 HOOK_RAW = {"connectors": [{"id": "CONN_HOOK", "kind": "webhook", "config": {"url": "http://gateway.local/cmd"},
                             "signals": [], "commands": [{"asset_id": "VALVE_XO_34", "command": "SET_VALVE",
                                                          "address": "xo34/cmd"}]}]}
@@ -340,9 +346,9 @@ def test_webhook_connector_posts_the_command(monkeypatch):
         seen.append((str(request.url), request.headers.get("authorization"), json.loads(request.content)))
         return httpx.Response(200, json={"ok": True})
 
-    monkeypatch.setenv("HOOK_TOKEN", "s3cret")
+    monkeypatch.setenv("FREEBOARD_CONN_HOOK_TOKEN", "s3cret")
     raw = {"connectors": [{"id": "CONN_HOOK", "kind": "webhook",
-                           "config": {"url": "http://gateway.local/cmd", "token_env": "HOOK_TOKEN"},
+                           "config": {"url": "http://gateway.local/cmd", "token_env": "FREEBOARD_CONN_HOOK_TOKEN"},
                            "signals": [{"asset_id": "VALVE_XO_34", "signal": "position", "address": "xo34/pos"}],
                            "commands": [{"asset_id": "VALVE_XO_34", "command": "SET_VALVE", "address": "xo34/cmd"}]}]}
     live = LiveField(healthy_scenario(), raw)

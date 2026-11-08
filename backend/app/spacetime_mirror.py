@@ -57,7 +57,7 @@ def _env_s(name: str, default: float) -> float:
 MIRROR_S = _env_s("SPACETIME_MIRROR_S", 1.0)
 RESYNC_S = _env_s("SPACETIME_RESYNC_S", 60.0)
 BACKOFF_MAX_S = 15.0
-LEVEL_SLACK_PCT = 0.5   # sensor noise past 0 or 100 that is clamped instead of dropped
+LEVEL_SLACK_PCT = now.LEVEL_SLACK_PCT   # sensor noise past 0 or 100 that is clamped instead of dropped
 MAX_TEXT = 1000         # longer messages, reasons, and results are cut to this length
 
 # The module's rules (backend/spacetime/src/index.ts). test_spacetime_mirror.py checks they match.
@@ -95,15 +95,8 @@ def _text(v, limit: int = MAX_TEXT) -> str:
 def level(v) -> Optional[float]:
     """A tank level as the module takes it, to 0.1 %, or None when it isn't a usable
     percentage: not a number, NaN, infinite, or more than LEVEL_SLACK_PCT past 0 or 100."""
-    if isinstance(v, bool):
-        return None
-    try:
-        x = float(v)
-    except (TypeError, ValueError):
-        return None
-    if not math.isfinite(x) or x < -LEVEL_SLACK_PCT or x > 100.0 + LEVEL_SLACK_PCT:
-        return None
-    return round(min(100.0, max(0.0, x)), 1)
+    x = now.usable_level(v)     # the same rule /api/state and the forecast use
+    return None if x is None else round(x, 1)
 
 
 def _position(v) -> str:

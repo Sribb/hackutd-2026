@@ -31,7 +31,16 @@ Rules this module keeps:
   unchanged value still sends it. While the session is healthy, the last good value of
   each signal is read again on every read(); its age is checked against the device
   timestamp (or its arrival time, when it came with none) each time, so it goes stale
-  on its own.
+  on its own. It is also read again for at most stale_after_min live minutes after it
+  arrived (default 5, the blueprint's usual sensors.stale_after_min; set it to that
+  value or less). max_age_s is wall time, and at FREEBOARD_SPEED 0.25 the default 300 s
+  is 75 live minutes, so without this cap a tag the server stopped updating, still Good
+  and never restamped, would show as fresh through the whole incident. After the cap
+  the signal turns stale (quality "stale") and gives no reading until a new value comes.
+- A good value's quality turns good when read() hands it on, not when it arrives, so an
+  asset never shows the value from before a bad period as fresh while the new one waits.
+- Hosts. The endpoint host must be one an operator allows (FREEBOARD_CONN_ALLOWED_HOSTS,
+  see hosts.py; only this machine when it is not set), or the connector is not built.
 - Session loss. When the keepalive or the watchdog fails, status() turns unavailable
   with the reason, every declared signal turns comm_lost and gives no reading, and
   the thread reconnects with Backoff and subscribes again. Nothing held from before
@@ -56,12 +65,14 @@ from urllib.parse import urlsplit
 from ..fieldmap import FieldMap
 from . import signalmap as sm
 from .base import Connector, Reading
+from .hosts import check_host
 
 POLICIES = ("Basic256Sha256", "Aes128Sha256RsaOaep", "Aes256Sha256RsaPss")
 MODES = ("SignAndEncrypt", "Sign", "None")
 LOCAL_HOSTS = ("127.0.0.1", "localhost", "::1")
 COMMAND_TYPES = ("SET_VALVE", "SET_PUMP", "CHOKE_WELL")
 DEFAULT_MAX_AGE_S = 300.0
+DEFAULT_HOLD_LIVE_MIN = 5.0     # live minutes a held value is read again (detect's default stale window)
 COMMAND_WORDS = {"SET_VALVE": ("OPEN", "CLOSED"), "SET_PUMP": ("ON", "OFF")}
 
 
@@ -121,6 +132,7 @@ class OpcUaConnector(Connector):
                 if not cfg.get(key):
                     raise ValueError(f"security_mode {self.mode} needs config {key} (a FREEBOARD_CONN_ variable "
                                      f"holding a file path)")
+        check_host(self.host, "config endpoint host")
         self.username = cfg.get("username")
         if self.username is not None and (not isinstance(self.username, str) or not self.username):
             raise ValueError("config username must be a non-empty string")
@@ -129,6 +141,7 @@ class OpcUaConnector(Connector):
         self.publish_ms = _positive(cfg, "publish_ms", 500)
         self.timeout_s = _positive(cfg, "timeout_s", 5)
         self.max_age_s = _positive(cfg, "max_age_s", DEFAULT_MAX_AGE_S)
+        self.hold_live_min = _positive(cfg, "stale_after_min", DEFAULT_HOLD_LIVE_MIN)
         self.smap = sm.SignalMap({**spec, "config": {**cfg, "max_age_s": self.max_age_s}})
 
         self.ua, why = sm.import_optional("asyncua", "asyncua")
@@ -145,7 +158,7 @@ class OpcUaConnector(Connector):
         self.inbox = sm.Inbox()
         self.quality: dict[tuple, dict] = {}
         self._lock = threading.Lock()
-        self._held: dict[tuple, tuple] = {}       # (aid, sig) -> (raw, source time as epoch s or None)
+        self._held: dict[tuple, tuple] = {}       # (aid, sig) -> (raw, source epoch s, arrival live min)
         self._stop = threading.Event()
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._client = None                       # set only while a session is up
@@ -174,10 +187,17 @@ class OpcUaConnector(Connector):
             connected = self._client is not None
             for key, value in fresh.items():
                 out.append(self.reading(key[0], key[1], value))
+                self._mark(key, sm.GOOD, "")          # good from the moment it is handed on
             if not connected and not self._subscribing:
                 self._held.clear()
-            for key, (raw, src) in list(self._held.items()):
+            now_min = self._live_min()
+            for key, (raw, src, arrived) in list(self._held.items()):
                 if key in fresh:
+                    continue
+                if now_min - arrived > self.hold_live_min:
+                    self._held.pop(key, None)
+                    self._mark(key, sm.STALE, f"no new value from the server for {now_min - arrived:.1f} live "
+                                              f"minutes (stale_after_min {self.hold_live_min:g})")
                     continue
                 mapped = self.smap.apply(key[0], key[1], raw, age_s=self._age(src))
                 if mapped.good:
@@ -247,6 +267,12 @@ class OpcUaConnector(Connector):
     def _age(src: Optional[float]) -> Optional[float]:
         return None if src is None else time.time() - src
 
+    def _live_min(self) -> float:
+        try:
+            return float(self.now())
+        except Exception:  # noqa: BLE001
+            return 0.0
+
     def _mark(self, key: tuple, quality: str, detail: str) -> None:
         self.quality[key] = {"quality": quality, "detail": detail, "t": round(self.now(), 3)}
 
@@ -280,11 +306,11 @@ class OpcUaConnector(Connector):
                 self.inbox.put(aid, sig, mapped)
                 if mapped.good:
                     # With no timestamp at all, the value is as old as its arrival, so a
-                    # held copy still runs out after max_age_s.
-                    self._held[(aid, sig)] = (raw, time.time() if src is None else src)
+                    # held copy still runs out after max_age_s. Its quality turns good in read().
+                    self._held[(aid, sig)] = (raw, time.time() if src is None else src, self._live_min())
                 else:
                     self._held.pop((aid, sig), None)
-                self._mark((aid, sig), mapped.quality, why if q != sm.GOOD and why else mapped.detail)
+                    self._mark((aid, sig), mapped.quality, why if q != sm.GOOD and why else mapped.detail)
 
     def _lost(self, why: str) -> None:
         with self._lock:

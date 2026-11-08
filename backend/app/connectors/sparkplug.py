@@ -60,6 +60,16 @@ published; the change itself shows in the next DDATA. A QoS 0 publish is never q
 across a reconnect (paho drops it), so a command goes out at most once. If it isn't
 written within timeout_s, send() says uncertain and nobody retries it blindly.
 
+A good value's quality turns good when read() hands the value on, not when it arrives,
+so an asset never shows the value from before a bad period as fresh while the new one
+waits in the inbox. status() is available only while at least one edge node this
+connector maps is born; with every one of them dead or not yet born it says unavailable
+and why, since none of its signals can be read.
+
+The broker host must be one an operator allows (FREEBOARD_CONN_ALLOWED_HOSTS, see
+hosts.py; only this machine when it is not set). Any other host is a ValueError when
+the connector is built, so nothing connects to it and the registry shows why.
+
 Config: host, port (1883), group_id, host_id, client_id (freeboard-<host_id>-<id>),
 username, password_env (a FREEBOARD_CONN_ variable), tls (false), keepalive_s (30),
 timeout_s (5), rebirth_min_interval_s (10), max_age_s (60), signal_map.
@@ -78,6 +88,7 @@ from typing import Any, Callable, Optional
 from ..fieldmap import FieldMap
 from .base import Connector, Reading
 from . import sparkplug_codec as codec
+from .hosts import check_host
 from .signalmap import (BAD, COMM_LOST, GOOD, NULL, STALE, UNCERTAIN, Backoff, Inbox, Mapped, SignalMap,
                         check_env_names, close_later, env_secret, import_optional, normalize,
                         uncertain_result)
@@ -186,6 +197,7 @@ class SparkplugConnector(Connector):
         self.host = cfg.get("host")
         if not isinstance(self.host, str) or not self.host.strip():
             raise ValueError("config host is required (the MQTT broker's host name)")
+        check_host(self.host.strip())
         port = cfg.get("port", 1883)
         if isinstance(port, bool) or not isinstance(port, int) or not 0 < port < 65536:
             raise ValueError(f"config port must be a TCP port number, got {port!r}")
@@ -226,6 +238,7 @@ class SparkplugConnector(Connector):
         self._lock = threading.RLock()
         self._send_lock = threading.Lock()
         self._inbox = Inbox()
+        self._qlock = threading.Lock()      # a value and its quality change together
         self._nodes: dict[str, _Node] = {}
         self._rebirth_at: dict[str, float] = {}
         self._backoff = Backoff(initial_s=1.0, max_s=30.0)
@@ -487,9 +500,11 @@ class SparkplugConnector(Connector):
             return 0.0
 
     def _put(self, aid: str, sig: str, mapped: Mapped) -> None:
-        self._inbox.put(aid, sig, mapped)
-        detail = mapped.detail if not mapped.good else ""
-        self.quality[(aid, sig)] = {"quality": mapped.quality, "detail": detail, "t": self._t()}
+        with self._qlock:
+            self._inbox.put(aid, sig, mapped)
+            if mapped.good:
+                return       # turns good in read(), when the value is handed on
+            self.quality[(aid, sig)] = {"quality": mapped.quality, "detail": mapped.detail, "t": self._t()}
 
     def _mark(self, edge: str, device: Optional[str], quality: str, detail: str) -> None:
         """Every mapped signal of an edge node (device None) or one device gets `quality`."""
@@ -506,7 +521,12 @@ class SparkplugConnector(Connector):
 
     # ---------- the interface ----------
     def read(self) -> list[Reading]:
-        return [self.reading(aid, sig, value) for aid, sig, value in self._inbox.drain()]
+        with self._qlock:
+            items = self._inbox.drain()
+            t = self._t()
+            for aid, sig, _value in items:
+                self.quality[(aid, sig)] = {"quality": GOOD, "detail": "", "t": t}
+        return [self.reading(aid, sig, value) for aid, sig, value in items]
 
     def status(self) -> dict:
         base = {"id": self.id, "kind": self.kind}
@@ -520,7 +540,8 @@ class SparkplugConnector(Connector):
                   f"edge nodes online: {', '.join(born) or 'none'}")
         if waiting:
             detail += f"; waiting for a birth from: {', '.join(waiting)}"
-        return {**base, "available": True, "detail": detail}
+        # Connected to the broker but no mapped edge node alive: none of its signals can be read.
+        return {**base, "available": bool(set(born) & self.edges) or not self.edges, "detail": detail}
 
     def send(self, command: dict) -> dict:
         try:

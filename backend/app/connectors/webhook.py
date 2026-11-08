@@ -12,6 +12,11 @@ Any 2xx counts as delivered.
 Config: url, timeout_s (default 5), token_env (an environment variable holding a
 shared token: sent as "Authorization: Bearer <token>" on commands, and required as
 the X-Freeboard-Token header on pushed readings).
+
+Only FREEBOARD_CONN_ variables can be named in token_env, and url must be http or
+https on a host an operator allows (FREEBOARD_CONN_ALLOWED_HOSTS, see hosts.py). A
+blueprint that breaks either rule gets a ValueError here, so the registry shows the
+connector unavailable and nothing is ever read from another variable or sent elsewhere.
 """
 from __future__ import annotations
 
@@ -23,6 +28,8 @@ import httpx
 
 from ..fieldmap import SIGNALS, FieldMap
 from .base import Connector, Reading
+from .hosts import check_url
+from .signalmap import check_env_names, env_secret
 
 
 class WebhookConnector(Connector):
@@ -31,7 +38,10 @@ class WebhookConnector(Connector):
     def __init__(self, spec: dict, fmap: FieldMap, now: Callable[[], float],
                  transport: Optional[httpx.BaseTransport] = None) -> None:
         super().__init__(spec, fmap, now)
+        check_env_names(self.config)
         self.url = self.config.get("url")
+        if self.url is not None:
+            check_url(self.url)
         self.timeout = float(self.config.get("timeout_s", 5))
         self.transport = transport  # tests inject httpx.MockTransport
         self.by_address = {addr: key for key, addr in self.signals.items() if addr}
@@ -41,7 +51,7 @@ class WebhookConnector(Connector):
 
     # ---- readings pushed in ----
     def authorized(self, token: Optional[str]) -> bool:
-        want = self.secret("token")
+        want = env_secret(self.config, "token")
         if self.config.get("token_env") and not want:
             return False  # a token is configured but missing from the environment: refuse
         return not want or hmac.compare_digest(want, token or "")
@@ -75,7 +85,7 @@ class WebhookConnector(Connector):
         body = {"connector_id": self.id, "command": command.get("type"), "asset_id": command.get("asset_id"),
                 "value": command.get("value"), "target_id": command.get("target_id"), "address": address}
         headers = {}
-        token = self.secret("token")
+        token = env_secret(self.config, "token")
         if token:
             headers["Authorization"] = f"Bearer {token}"
         try:
@@ -91,7 +101,7 @@ class WebhookConnector(Connector):
             return {"ok": False, "detail": f"Couldn't reach {self.id}: {e}"}
 
     def status(self) -> dict:
-        missing_token = bool(self.config.get("token_env")) and not self.secret("token")
+        missing_token = bool(self.config.get("token_env")) and not env_secret(self.config, "token")
         problems = []
         if missing_token:
             problems.append(f"environment variable {self.config['token_env']} is not set")

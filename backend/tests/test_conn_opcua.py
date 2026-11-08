@@ -304,7 +304,8 @@ def test_restamped_static_value_stays_fresh(fake):
     subscription asks for timestamp changes too, so its age is the server's latest stamp."""
     conn = OpcUaConnector(spec_for(fake.endpoint, max_age_s=1.5), None, lambda: 0.0)
     try:
-        wait_for(lambda: conn.quality.get(("PUMP_6", "running"), {}).get("quality") == "good")
+        # Quality turns good when read() hands the value on.
+        wait_for(lambda: conn.read() is not None and conn.quality.get(("PUMP_6", "running"), {}).get("quality") == "good")
         end = time.monotonic() + 3.5            # well past max_age_s; PUMP_6.Running stays True
         while time.monotonic() < end:
             conn.read()

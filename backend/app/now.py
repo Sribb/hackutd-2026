@@ -30,6 +30,14 @@ are the truth, not the simulator:
   UNKNOWN, with a reason naming the connector and the quality.
 - a pump with neither a fresh run nor a fresh flow reading shows UNKNOWN in /api/state,
   never OK.
+- a level that is not a usable percentage (not a number, NaN, infinite, or more than
+  LEVEL_SLACK_PCT past 0 or 100) is no level: the forecast warns about the tank, and
+  /api/state shows it UNKNOWN with the reading as last_level_pct. The SpacetimeDB mirror
+  uses the same rule (usable_level).
+- /api/state never shows a value nobody vouches for as current. When an asset is stale,
+  or one of its signals is stale or not good, its level_pct, running, flow_bbl_hr and
+  position are null, and the last values ride along as last_level_pct, last_running,
+  last_flow_bbl_hr and last_position.
 - these warnings ride in the scenario as `live_assumptions`, so every forecast, plan, and
   Last Call from this moment carries them (build_plant adds them to its warnings).
 - trucks already on the road (the simulator's jobs) arrive, load, and haul on their real
@@ -38,6 +46,7 @@ are the truth, not the simulator:
 from __future__ import annotations
 
 import copy
+import math
 import os
 import threading
 from dataclasses import dataclass
@@ -96,12 +105,29 @@ def live_of(app) -> Optional[object]:
 
 
 GOOD = "good"
+LEVEL_SLACK_PCT = 0.5   # sensor noise past 0 or 100 that is clamped instead of dropped
+SHOWN = ("level_pct", "running", "flow_bbl_hr", "position")   # values /api/state shows as readings
+
+
+def usable_level(v) -> Optional[float]:
+    """A tank level as a percentage, clamped to 0..100, or None when it isn't usable:
+    not a number, NaN, infinite, or more than LEVEL_SLACK_PCT past 0 or 100."""
+    if isinstance(v, bool) or v is None:
+        return None
+    try:
+        x = float(v)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(x) or x < -LEVEL_SLACK_PCT or x > 100.0 + LEVEL_SLACK_PCT:
+        return None
+    return min(100.0, max(0.0, x))
 
 
 def bad_quality(live) -> dict[tuple, dict]:
-    """{(asset_id, signal): {"connector", "quality", "detail"}} for every signal a field
-    connector reports as not good right now (its `quality` dict, #126). Connectors without
-    a quality dict (the simulator, the webhook) report nothing here."""
+    """{(asset_id, signal): {"connector", "quality", "detail", "t"}} for every signal a field
+    connector reports as not good right now (its `quality` dict, #126). `t` is the live
+    minute the connector set that quality, or None. Connectors without a quality dict (the
+    simulator, the webhook) report nothing here."""
     out: dict[tuple, dict] = {}
     for c in getattr(getattr(live, "registry", None), "connectors", None) or []:
         q = getattr(c, "quality", None)
@@ -119,8 +145,10 @@ def bad_quality(live) -> dict[tuple, dict]:
             if quality == GOOD:
                 continue
             detail = str(entry.get("detail") or "") if isinstance(entry, dict) else ""
+            t = entry.get("t") if isinstance(entry, dict) else None
             out[tuple(key)] = {"connector": str(getattr(c, "id", "?")), "quality": str(quality or "unknown"),
-                               "detail": detail}
+                               "detail": detail,
+                               "t": float(t) if isinstance(t, (int, float)) and not isinstance(t, bool) else None}
     return out
 
 
@@ -212,6 +240,13 @@ def live_scenario(live) -> dict:
         for (aid, sig) in bad_quality(live):
             if sig == "level_pct" and aid in levels:
                 levels[aid] = None   # a level its connector doesn't vouch for is no level
+        for aid, lvl in list(levels.items()):
+            if lvl is not None and usable_level(lvl) is None:
+                levels[aid] = None   # NaN, negative, or far past 100: never a level to plan from
+                notes.append(f"{nice(aid)} reads a level that is not a usable percentage ({_shown(lvl)}), "
+                             f"so the forecast has no level for it. Check it in the field.")
+            elif lvl is not None:
+                levels[aid] = usable_level(lvl)
     for w in sc["field"]["wells"]:
         flow = _fresh(live, w["id"], "flow_bbl_hr")
         if flow is None:
@@ -251,6 +286,13 @@ def live_scenario(live) -> dict:
                          f"{tank}. Check it in the field.")
     sc["live_assumptions"] = notes
     return sc
+
+
+def _shown(v) -> str:
+    """A bad reading for a warning: short, and never more than a few characters of text."""
+    if isinstance(v, (int, float)) and not isinstance(v, bool):
+        return f"{v:g}" if math.isfinite(v) else str(v)
+    return repr(v)[:24]
 
 
 def _live_now(live) -> Now:
@@ -316,17 +358,50 @@ def state(app) -> dict:
             if k in la:
                 entry[k] = la[k]
         if "level_pct" in la:
-            # A stale level is not a level: show it as last_level_pct, never as the reading.
-            if la.get("stale"):
-                entry["level_pct"] = None
-                entry["last_level_pct"] = la["level_pct"]
-            else:
-                entry["level_pct"] = la["level_pct"]
+            entry["level_pct"] = la["level_pct"]
+    _unusable_levels(st)
     _unknown_pumps(live, sc, st)
     _mark_quality(live, st)
+    _blank_unvouched(live, st)
     st["clock_source"] = "live"
     st["t"] = lv.get("t")
     return st
+
+
+def _unusable_levels(st: dict) -> None:
+    """A level that is not a usable percentage shows UNKNOWN (ALARM stays ALARM), with the
+    reading as last_level_pct and no level_pct. A usable one is clamped to 0..100."""
+    for aid, entry in st["assets"].items():
+        lvl = entry.get("level_pct")
+        if lvl is None:
+            continue
+        good = usable_level(lvl)
+        if good is not None:
+            entry["level_pct"] = good
+            continue
+        entry["last_level_pct"] = lvl if isinstance(lvl, (int, float)) and not isinstance(lvl, bool) else None
+        entry["level_pct"] = None
+        entry["stale"] = True
+        if entry.get("status") != "ALARM":
+            entry["status"] = "UNKNOWN"
+        note = f"The level reads {_shown(lvl)}, which is not a usable percentage. Treat it as unknown, not safe."
+        old = entry.get("reason")
+        entry["reason"] = f"{old} {note}" if old and note not in old else note
+
+
+def _blank_unvouched(live, st: dict) -> None:
+    """No value nobody vouches for is shown as current. For an asset that is stale, or has
+    a signal that is stale or not good, level_pct, running, flow_bbl_hr and position are
+    null, and the old values move to last_<name>."""
+    bad = bad_quality(live)
+    for aid, entry in st["assets"].items():
+        blank_all = bool(entry.get("stale")) or any(a == aid for a, _ in bad)
+        for k in SHOWN:
+            if k not in entry or entry[k] is None:
+                continue
+            if blank_all or live.detector.is_stale(aid, k):
+                entry.setdefault(f"last_{k}", entry[k])
+                entry[k] = None
 
 
 def _unknown_pumps(live, sc: dict, st: dict) -> None:
@@ -357,11 +432,6 @@ def _mark_quality(live, st: dict) -> None:
             entry["status"] = "UNKNOWN"
         entry["stale"] = True
         entry.setdefault("quality", {})[sig] = q["quality"]
-        if sig == "level_pct" and entry.get("level_pct") is not None:
-            entry["last_level_pct"] = entry["level_pct"]
-            entry["level_pct"] = None
-        elif sig == "position":
-            entry["position"] = None
         detail = f" ({q['detail']})" if q["detail"] else ""
         note = f"{q['connector']} reports {sig} as {q['quality']}{detail}. Treat as unknown, not safe."
         old = entry.get("reason")
