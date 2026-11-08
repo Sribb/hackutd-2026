@@ -189,6 +189,7 @@ export function makeFixCard(box, H) {
     } else {
       sentOnce.delete(id);
       const why = r.status === 401 ? "Wrong PIN. Nothing was sent." : r.status === 403 ? "This device can't do that. Nothing was sent."
+        : r.status === 429 ? "Too many wrong PINs. Nothing was sent. Wait, then hold again."
         : `${typeof out.detail === "string" ? out.detail : `Refused (${r.status}).`} Nothing was sent.`;
       local.set(id, { state: "NOTE", text: why });
     }

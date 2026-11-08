@@ -50,5 +50,9 @@ export async function post(url, body, ms = 15000) {
     if (r.status === 401) { setToken(""); notice("Wrong PIN. Nothing was sent."); }
   }
   if (r.status === 403) notice("This device can't do that. Nothing was sent.");
+  if (r.status === 429) { // #57: a burst of wrong PINs locks out for Retry-After seconds
+    const s = Number(r.headers.get("Retry-After"));
+    notice(`Too many wrong PINs. Nothing was sent. Try again in ${s > 0 ? (s >= 90 ? `${Math.ceil(s / 60)} min` : `${s} s`) : "a minute"}.`);
+  }
   return r;
 }
