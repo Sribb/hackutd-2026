@@ -419,6 +419,15 @@ class Jarvis:
             if lv.get("observed_bbl_hr") is not None:
                 line += f", changing {lv['observed_bbl_hr']:+.0f} barrels an hour"
             line += "."
+            # Why: the tank's own pumps' active alerts, then its forecast shutdown time.
+            causes = [a["message"] for pid in self.live.fmap.pumps_by_tank.get(aid, [])
+                      for a in self.live.detector.active_for(pid)]
+            fc = await self.run_tool("get_forecast", {"actions": []}, {"ui": [], "proposals": []})
+            sd = next((e for e in fc.get("events", [])
+                       if e.get("type") == "SHUTDOWN_LEVEL" and e.get("asset_id") == aid), None)
+            extra = causes[:1] + ([sd["text"]] if sd else [])
+            if extra:
+                line += " " + " ".join(extra)
         elif kind == "pump":
             run = "running" if lv.get("running") else "stopped"
             line = f"{nm} is {run}, moving {lv.get('flow_bbl_hr') or 0:.0f} barrels an hour."

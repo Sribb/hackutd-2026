@@ -276,3 +276,31 @@ def test_live_state_connectors_and_reading_age():
     tank = st["assets"]["TANK_3"]
     assert tank["age_min"] == 0 and tank["last_reading_t"].endswith("+00:00") and tank["stale"] is False
     assert st["assets"]["TRUCK_1"]["age_min"] is None and st["assets"]["TRUCK_1"]["last_reading_t"] is None
+
+
+# ---------- regressions from Ronak's run against the real API (board #6715030068) ----------
+
+def test_tank_rate_turns_positive_after_a_trip():
+    """The observed fill rate is recomputed every tick, so it can't stay at the pre-trip (negative) value."""
+    live = LiveField(healthy_scenario())
+    tick(live, 40)  # 10 sim-minutes of a healthy, draining tank
+    live.registry.sim.inject({"asset_id": "PUMP_3", "type": "TRIP", "reason": "test"})
+    tick(live, 60)  # 15 sim-minutes with the pump stopped
+    rate = live.state()["assets"]["TANK_3"].get("observed_bbl_hr")
+    assert rate is not None and rate > 0, f"Tank 3 should be filling after the trip, got {rate}"
+
+
+def test_jarvis_why_is_tank_rising_names_cause_and_shutdown_time():
+    from backend.app.forecast import forecast
+    from backend.app.jarvis import Jarvis
+    from backend.app.planner import make_plans
+    live = LiveField(healthy_scenario())
+    tick(live, 8)
+    live.registry.sim.inject({"asset_id": "PUMP_3", "type": "TRIP", "reason": "test"})
+    tick(live, 8)
+    jarvis = Jarvis(live, forecast_fn=lambda sc, actions: forecast(sc, actions), plans_fn=lambda sc: make_plans(sc))
+    out = run(jarvis.handle("Why is Tank 3 rising?"))
+    reply = out["reply"]
+    assert out["source"] == "rules"
+    assert "Pump 3" in reply, reply
+    assert "reaches shutdown at" in reply, reply
