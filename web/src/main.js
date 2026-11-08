@@ -696,12 +696,12 @@ function renderWhatif() {
 // Last Call's deadline for a plan: the option with the same commands (type and asset) and
 // the same cost. Plans from /api/plans don't carry expires_clock themselves.
 function deadlineFor(p) {
-  if (p.expires_clock) return { clock: p.expires_clock, hot: p.expires_clock_hot };
+  if (p.expires_clock) return { clock: p.expires_clock, hot: p.expires_clock_hot, min: p.expires_min };
   const k = (xs) => xs.map((a) => `${a.type}:${a.asset_id}`).sort().join("|");
   const want = k(p.actions || []);
   const o = ((data.lc && data.lc.options) || []).find((x) => x.expires_clock && x.cost && p.cost
     && Math.round(x.cost.total_usd) === Math.round(p.cost.total_usd) && k(x.steps || []) === want);
-  return o ? { clock: o.expires_clock, hot: o.expires_clock_hot } : null;
+  return o ? { clock: o.expires_clock, hot: o.expires_clock_hot, min: o.expires_min } : null;
 }
 const firstSentence = (t) => { const m = /^(.+?\.)(\s|$)/.exec(String(t || "")); return m ? m[1] : String(t || ""); };
 let allPlans = false; // the plan list shows the cheapest and the cheapest robust until asked
@@ -737,7 +737,7 @@ function renderPlans() {
     if (!allPlans && !show.has(i)) return "";
     const dl = deadlineFor(p);
     const hold = p.robust === true ? "Holds even if inflow runs 15% high" : p.robust === false ? "Holds at the forecast inflow, not at +15%" : "";
-    const stamp = [dl ? `Start by ${dl.clock}` : "", hold].filter(Boolean).join(" · ");
+    const stamp = [dl ? (passed(dl.min) ? `Start-by time ${dl.clock} has passed: read the plans again` : `Start by ${dl.clock}`) : "", hold].filter(Boolean).join(" · ");
     // An approved plan whose run was cancelled or failed can be approved again.
     const mine = approved && approved.plan.id === p.id && !approved.ended;
     const endedHere = approved && approved.plan.id === p.id && approved.ended;
