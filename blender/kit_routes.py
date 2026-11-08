@@ -12,6 +12,7 @@ radius) for a steel tube.
 import math
 
 import layout as lay
+import siting
 
 HEADER_Y = 56.5                        # field_build.HEADER_Y: the inlet header, pad-local
 PUMP_VALVE = (-0.8, -0.9, 2.05)        # piping.pump_lines, in the pump's frame: the discharge valve
@@ -112,9 +113,11 @@ def pad_lines(f, tid, n, loadout, inlet):
 
 
 def flowlines(f, tid, wells):
-    """field_build.flowlines: each well's line to its tank's inlet header, laid so no two cross.
+    """field_build.flowlines: each well's black HDPE line to its tank's inlet header, laid so no
+    two cross, on timber sleepers off the pad.
 
-    wells is [(well ID, outlet point)].
+    wells is [(well ID, outlet point)]. Returns (pipes, the pad-local polylines the berm leaves
+    gaps for, sleeper boxes).
     """
     lines = []
     for wid, w in wells:
@@ -124,16 +127,69 @@ def flowlines(f, tid, wells):
     c = len(lines)
     spacing = 2.0 if c <= 4 else 1.0
     hxs = [(j - (c - 1) / 2) * spacing for j in range(c)]
-    pipes = []
+    pipes, local, wood = [], [], []
     for j, (lx, wid, w, ly) in enumerate(lines):
         hx, eastward = hxs[j], lx < hxs[j]
         outer = sum(1 for k, l in enumerate(lines)
                     if (l[0] < hxs[k]) == eastward and (l[0] < lx if eastward else l[0] > lx))
         cy = 59.2 + 0.3 * outer
-        pts = [w] + [f.world3(*p) for p in ((lx, ly, 0.12), (lx, cy, 0.12), (hx, cy, 0.12),
-                                            (hx, HEADER_Y + 0.2, 0.12), (hx, HEADER_Y, 0.5))]
-        pipes.append((f"PIPE_{wid}_{tid}", pts, 0.06, 8))
-    return pipes
+        run = ((lx, ly, 0.12), (lx, cy, 0.12), (hx, cy, 0.12), (hx, HEADER_Y + 0.2, 0.12), (hx, HEADER_Y, 0.5))
+        pipes.append((f"PIPE_{wid}_{tid}", [w] + [f.world3(*p) for p in run], 0.06, 8))
+        local.append([(p[0], p[1]) for p in run[:3]])
+        wood += sleepers(f, run[:3])
+    return pipes, local, wood
+
+
+def sleepers(f, run):
+    """field_build.sleepers: timber blocks under a flowline lying on the ground, every 6 m, off
+    the pad. Returns boxes (size, center) in world, square to the world axes like Blender's."""
+    x0, x1, y0, y1 = lay.PAD_RECT
+    out = []
+    for (ax, ay, _), (bx, by, _) in zip(run, run[1:]):
+        length = math.hypot(bx - ax, by - ay)
+        k = int((length - 3.0) / 9.0)
+        for i in range(k):
+            t = (1.5 + 9.0 * (i + 0.5) + (length - 3.0 - 9.0 * k) / 2) / length
+            x, y = ax + (bx - ax) * t, ay + (by - ay) * t
+            if x0 - 1.5 < x < x1 + 1.5 and y0 - 1.5 < y < y1 + 1.5:
+                continue
+            wx, wy = f.world(x, y)
+            along_y = abs(by - ay) > abs(bx - ax)
+            out.append(((0.5, 0.14, 0.4) if along_y else (0.14, 0.5, 0.4), (wx, wy, -0.14)))
+    return out
+
+
+def berm(runs):
+    """field_build.berm: the rows of a pad's berm along each run (siting.berm_runs), pad-local.
+    Returns [rows], each row five (x, y, z) points across the ridge, as Blender's strips."""
+    h, top = siting.BERM["half"], siting.BERM["top"]
+    profile = ((-h, -0.45), (-0.45 * h, 0.02), (0.0, top), (0.45 * h, 0.02), (h, -0.45))
+
+    def unit2(x, y):
+        d = math.hypot(x, y)
+        return (x / d, y / d) if d > 0 else (0.0, 0.0)
+
+    strips = []
+    for run in runs:
+        pts = [tuple(p) for p in run]
+        d0 = unit2(pts[1][0] - pts[0][0], pts[1][1] - pts[0][1])
+        d1 = unit2(pts[-1][0] - pts[-2][0], pts[-1][1] - pts[-2][1])
+        path = ([(pts[0][0] - d0[0] * 1.1, pts[0][1] - d0[1] * 1.1)] + pts
+                + [(pts[-1][0] + d1[0] * 1.1, pts[-1][1] + d1[1] * 1.1)])
+        rows = []
+        for i, p in enumerate(path):
+            a, c = path[max(0, i - 1)], path[min(len(path) - 1, i + 1)]
+            d = unit2(c[0] - a[0], c[1] - a[1])
+            side = (-d[1], d[0])
+            if 0 < i < len(path) - 1:
+                e0, e1 = unit2(p[0] - a[0], p[1] - a[1]), unit2(c[0] - p[0], c[1] - p[1])
+                m = unit2(-e0[1] - e1[1], e0[0] + e1[0])
+                k = max(0.5, m[0] * -e0[1] + m[1] * e0[0])
+                side = (m[0] / k, m[1] / k)
+            low = i in (0, len(path) - 1)
+            rows.append([(p[0] + side[0] * o, p[1] + side[1] * o, -0.45 if low else z) for o, z in profile])
+        strips.append(rows)
+    return strips
 
 
 def support(x, y, z, along, off):
