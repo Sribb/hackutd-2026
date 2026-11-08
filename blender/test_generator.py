@@ -300,6 +300,7 @@ def check_build(label, bp_path, out_dir, expect_level=None, max_seconds=30):
     jct = [n for n in node_names if n.startswith("ROAD_JCT_")]
     ok(all(abs(glb.plan_xy(n)[1]) < 1e-6 and w_end < glb.plan_xy(n)[0] < e_end for n in jct),
        f"{label}: {len(jct)} road junctions sit on the road between its ends")
+    test_parts.check_iot(ok, label, glb, bp)
     return rep, glb
 
 
@@ -330,7 +331,7 @@ def variants(tmp):
     big["valves"].append({"id": "VALVE_XO_10_11", "kind": "CROSSOVER", "connects": ["TANK_10", "TANK_11"]})
     out = {}
     for name, data in (("given", given), ("crossovers", xo), ("max20", big),
-                       ("equipment", test_parts.equipment_blueprint(small))):
+                       ("equipment", test_parts.equipment_blueprint(small)), ("iot", test_parts.iot_blueprint(small))):
         out[name] = os.path.join(tmp, f"{name}.json")
         with open(out[name], "w") as f:
             json.dump(data, f, indent=1)
@@ -383,6 +384,8 @@ def test_builds(tmp):
         ok(list(styles.values()).count("rack") == 4, f"crossovers: far pairs route on the rack {styles}")
     if "equipment" in reports:
         test_parts.check_build(ok, reports["equipment"], glbs["equipment"], load(paths["equipment"]))
+    if "iot" in reports:
+        test_parts.check_iot_variant(ok, reports["iot"], glbs["iot"], load(paths["iot"]))
     return reports
 
 

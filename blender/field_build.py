@@ -12,6 +12,7 @@ import detail_equipment as de
 import detail_site as ds
 import equipment_parts as eq
 import field_parts as fp
+import iot_parts as iot
 import layout as lay
 import piping
 
@@ -137,6 +138,7 @@ def build(collection, bp, L):
         ds.truck_extras(site, t["id"], fp.build_truck(site, t["id"], (*t["pos"], 0.12), math.degrees(t["rot"])))
     for item in L.get("equipment", []):
         eq.build(site, item)
+    iot.build(site, bp, L)
     ds.power(site, L["drops"], L["poles"])
     for name, loc, aim in L["towers"]:
         ds.light_tower(site, name, loc, aim)

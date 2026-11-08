@@ -10,6 +10,26 @@ def valve_base(vid):
     return vid[6:] if vid.startswith("VALVE_") and len(vid) > 6 else vid
 
 
+def sensors(bp):
+    """[(asset ID, [signals], [connector IDs])] for every SENSOR_<asset> node (#46), in blueprint order.
+
+    The assets that connectors[].signals name get one sensor each. With no connectors, every
+    tank (level_pct) and pump (running) gets one, as the simulator reads them.
+    """
+    if not bp.get("connectors"):
+        return [(t["id"], ["level_pct"], []) for t in bp["tanks"]] + [(p["id"], ["running"], []) for p in bp["pumps"]]
+    out = {}
+    for c in bp["connectors"]:
+        for aid, signal in c["signals"]:
+            sig, conns = out.setdefault(aid, ([], []))
+            if isinstance(signal, str) and signal not in sig:
+                sig.append(signal)
+            if c["id"] not in conns:
+                conns.append(c["id"])
+    order = list(asset_kinds(bp))
+    return [(aid, *out[aid]) for aid in sorted((a for a in out if a in order), key=order.index)]
+
+
 def expected(bp):
     """Returns {name: why}. Small labels and signs are left out: the budget may drop them."""
     need = {}
@@ -59,6 +79,11 @@ def expected(bp):
         add("equipment", e["id"])
         if e["model"] is None:
             add("equipment part", f"{e['id']}_label")
+    for aid, _, _ in sensors(bp):
+        add("sensor", f"SENSOR_{aid}", f"SENSOR_{aid}_light")
+    for t in bp["tanks"]:
+        n = suffix(t["id"])
+        add("rtu", f"RTU_PAD_{n}", f"RTU_PAD_{n}_light", f"RTU_PAD_{n}_antenna")
     add("waypoint", "ROAD_END_W", "ROAD_END_E")
     add("camera", "CAM_OVERVIEW")
     if bp["pumps"]:
