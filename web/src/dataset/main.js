@@ -206,6 +206,17 @@ const alertsFor = (facilityId) => liveAlerts().filter((a) => a.facility === faci
 const readers = () => ({
   latest: (a, m) => state.store.latest(a, m, state.at),
   rate: (w) => state.store.mean(w, "water_bpd", state.at, 3600, true),
+  // While the pump is down and the tank fills in a straight line, fit the last 30 min of
+  // level readings instead of trusting one noisy sample. Otherwise the latest reading.
+  level: (tank, pump) => {
+    const st = state.store;
+    for (let k = 0; k < 6; k++) if (st.latest(pump, "status", state.at - k * STEP_S) === 1) return null;
+    const lim = state.network.defaults.tank_limits_pct.shutdown;
+    const raw = st.latest(tank, "level_pct", state.at);
+    if (raw === null || raw >= lim - 0.5) return null; // at the limit the level holds: no line to fit
+    const fit = st.fitAt(tank, "level_pct", state.at, 6);
+    return fit === null || Math.abs(fit - raw) > 2 ? null : fit;
+  },
 });
 const repairH = () => state.ops?.expected_repair_hours?.pump_failure ?? null;
 

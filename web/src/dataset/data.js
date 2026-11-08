@@ -101,6 +101,20 @@ export function makeStore(times, series) {
       }
       return n ? sum / n : null;
     },
+    // Least-squares line through the last n readings at or before t, read at t. For a
+    // level that is rising steadily (pump down) this beats one noisy sample. null if fewer
+    // than 3 readings.
+    fitAt(asset, metric, t = now, n = 6) {
+      const col = series.get(asset + "|" + metric);
+      if (!col) return null;
+      const xs = [], ys = [];
+      for (let i = indexAt(times, t); i >= 0 && xs.length < n; i--) if (!Number.isNaN(col[i])) { xs.push(times[i] - t); ys.push(col[i]); }
+      if (xs.length < 3) return null;
+      const mx = xs.reduce((a, b) => a + b, 0) / xs.length, my = ys.reduce((a, b) => a + b, 0) / ys.length;
+      let sxy = 0, sxx = 0;
+      for (let i = 0; i < xs.length; i++) { sxy += (xs[i] - mx) * (ys[i] - my); sxx += (xs[i] - mx) ** 2; }
+      return sxx ? my - (sxy / sxx) * mx : my;
+    },
     // [[ts, value], ...] between from and to (inclusive), NaN cells skipped.
     range(asset, metric, from = start, to = now) {
       const col = series.get(asset + "|" + metric);

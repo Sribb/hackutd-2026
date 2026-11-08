@@ -138,13 +138,14 @@ export const doNothing = (input) => replay({ ...input, trucks: null, shutIns: []
 // Builds a replay input from the loaded dataset at one moment. `latest(asset, metric)`
 // returns the last reading at or before that moment, or null. Returns null with a reason
 // when something it needs is missing, so the page never invents a number.
-export function inputFor({ network, ops, facilityId, latest, rate, horizonMin, plan }) {
+export function inputFor({ network, ops, facilityId, latest, rate, level: levelOf, horizonMin, plan }) {
   const sys = network.systems.find((s) => s.facilities.some((f) => f.id === facilityId));
   if (!sys) return { error: `${facilityId} is not in network.json.` };
   const fac = sys.facilities.find((f) => f.id === facilityId);
   const sOps = ops.systems?.[sys.id];
   const fOps = sOps?.facilities?.[facilityId];
-  const level = latest(fac.tank.id, "level_pct");
+  // `level` (optional) smooths the tank reading; the raw reading is the fallback.
+  const level = (levelOf && levelOf(fac.tank.id, fac.pump.id)) ?? latest(fac.tank.id, "level_pct");
   if (level === null) return { error: `No ${fac.tank.id} level reading at this time.` };
   const shutdownPct = network.defaults?.tank_limits_pct?.shutdown;
   if (!Number.isFinite(shutdownPct)) return { error: "network.json has no shutdown limit." };
