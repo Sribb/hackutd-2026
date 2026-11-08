@@ -32,11 +32,14 @@ def facing(deg):
     return (PI / 2, 0.0, math.radians(deg) + PI / 2)
 
 
-def label(site, name, text, size, loc, rot, parent=None, mat="M_STEEL_DARK"):
-    """Extruded text converted to a mesh, so it exports to glTF."""
+def label(site, name, text, size, loc, rot, parent=None, mat="M_STEEL_DARK", small=True):
+    """Extruded text converted to a mesh, so it exports to glTF. Small labels can be dropped."""
+    if small and not fp.LOD["small_labels"]:
+        return None
     cu = bpy.data.curves.new(f"{name}_font", "FONT")
-    cu.body, cu.size, cu.extrude = text, size, 0.012
+    cu.body, cu.size, cu.extrude = text, size, 0.0   # flat paint: a quarter of the triangles of extruded text
     cu.align_x, cu.align_y = "CENTER", "CENTER"
+    cu.resolution_u = 3 if small else 6
     tmp = bpy.data.objects.new(f"{name}_tmp", cu)
     site.col.objects.link(tmp)
     bpy.context.view_layer.update()
@@ -60,26 +63,35 @@ def flange(bm, center, direction, r, thick=0.05, segs=12):
 
 
 def bolts(bm, center, axis, r, n=8, size=0.018):
-    """Bolt heads around a flange whose face is normal to axis X, Y or Z."""
+    """Hex bolt heads around a flange whose face is normal to axis X, Y or Z."""
+    if not fp.LOD["bolts"]:
+        return
     c = Vector(center)
     for i in range(n):
         a = 2 * PI * i / n
         off = {"X": (0, r * math.cos(a), r * math.sin(a)), "Y": (r * math.cos(a), 0, r * math.sin(a)),
                "Z": (r * math.cos(a), r * math.sin(a), 0)}[axis]
-        ball(bm, size, c + Vector(off), segs=6)
+        cyl(bm, size * 1.1, size * 2.2, c + Vector(off), axis=axis, segs=6)
+
+
+def id_text(aid):
+    """Painted text for an asset ID: PUMP_3 -> PUMP 3."""
+    return aid.replace("_", " ")
 
 
 def status_light(site, name, parent, loc, r=0.06):
     bm = bmesh.new()
-    cyl(bm, r * 1.3, 0.03, (0, 0, -0.06), segs=12)
-    cyl(bm, r, 0.1, (0, 0, 0), segs=12)
-    ball(bm, r, (0, 0, 0.05), segs=10)
+    cyl(bm, r * 1.3, 0.03, (0, 0, -0.06), segs=8)
+    cyl(bm, r, 0.1, (0, 0, 0), segs=8)
+    ball(bm, r, (0, 0, 0.05), segs=8)
     return site.mesh(name, bm, "M_LAMP", parent, loc=loc)
 
 
-def tank_extras(site, n, root, level=0.55):
-    """Caged ladder, float gauge, level radar, high-level switch, vents, flanges, labels."""
-    tid = f"TANK_{n}"
+def tank_extras(site, tid, root, number, capacity=None, outlets=(fp.OUTLET[0],), xo_angles=(), level=0.55):
+    """Caged ladder, float gauge, level radar, high-level switch, vents, flanges, labels.
+
+    number is the painted tank number (from the ID), capacity the barrels on the shell.
+    """
     k = Kit(site, f"{tid}_detail", root)
     steel, dark, pipe = k["M_STEEL"], k["M_STEEL_DARK"], k["M_PIPE"]
     lad = fp.LADDER
@@ -111,7 +123,8 @@ def tank_extras(site, n, root, level=0.55):
     cyl(dark, 0.16, 0.12, (gh.x, gh.y, H + 0.25), segs=12)
     box(steel, (0.06, 0.2, 0.05), (gh.x + 0.17, gh.y, H + 0.33))
     # flanges on every nozzle, and a load-out nozzle with its valve
-    nozzles = [fp.OUTLET, fp.INLET, (LOADOUT_ANGLE, 0.85)] + ([(0.0, 0.85)] if n == 3 else [(180.0, 0.85)] if n == 4 else [])
+    nozzles = [(a, fp.OUTLET[1]) for a in outlets] + [fp.INLET, (LOADOUT_ANGLE, 0.85)]
+    nozzles += [(a, 0.85) for a in xo_angles]
     for deg, zz in nozzles:
         d = polar(1, deg)
         flange(steel, polar(R + 0.15, deg, zz), d, 0.19)
@@ -144,14 +157,18 @@ def tank_extras(site, n, root, level=0.55):
     tube(sw, polar(R, 160, H - 0.6), polar(R + 0.25, 160, H - 0.6), 0.05, 8)
     box(sw, (0.18, 0.18, 0.22), polar(R + 0.34, 160, H - 0.6))
     site.mesh(f"{tid}_lshh", sw, "M_STEEL_DARK", root)
-    label(site, f"{tid}_label", str(n), 1.7, polar(R + 0.05, LABEL_ANGLE, 3.0), facing(LABEL_ANGLE), root)
-    label(site, f"{tid}_label_cap", "1000 BBL", 0.32, polar(R + 0.1, LABEL_ANGLE, 1.95), facing(LABEL_ANGLE), root)
+    text = number.replace("_", " ")
+    size = min(1.7, 2.4 / (0.6 * len(text)))
+    label(site, f"{tid}_label", text, size, polar(R + 0.05, LABEL_ANGLE, 3.0), facing(LABEL_ANGLE), root,
+          small=False)
+    if capacity:
+        label(site, f"{tid}_label_cap", f"{capacity:g} BBL", 0.32, polar(R + 0.1, LABEL_ANGLE, 1.95),
+              facing(LABEL_ANGLE), root)
     return root.matrix_basis @ polar(fp.NOZZLE_R, LOADOUT_ANGLE, 0.85)
 
 
-def pump_extras(site, n, root):
+def pump_extras(site, pid, root):
     """Anchor bolts, flanges, check valve, motor fins, gauges, bollards, control panel and light."""
-    pid = f"PUMP_{n}"
     k = Kit(site, f"{pid}_detail", root)
     steel, dark = k["M_STEEL"], k["M_STEEL_DARK"]
     for x in (-1.55, -0.5, 0.6, 1.6):
@@ -181,7 +198,7 @@ def pump_extras(site, n, root):
     line(dark, [(1.1, 0.5, 0.95), (1.1, 1.2, 0.95), (0.4, 1.2, 0.95), (0.4, 1.45, 0.95)], 0.025)
     k.done()
     status_light(site, f"{pid}_light", root, (0.1, 1.6, 1.95))
-    label(site, f"{pid}_tag", f"PUMP {n}", 0.11, (0.42, 1.44, 1.62), (PI / 2, 0, 0), root, "M_STEEL_DARK")
+    label(site, f"{pid}_tag", id_text(pid), 0.11, (0.42, 1.44, 1.62), (PI / 2, 0, 0), root, "M_STEEL_DARK")
 
 
 def valve_extras(site, vid, root, tag):
@@ -195,11 +212,16 @@ def valve_extras(site, vid, root, tag):
     label(site, f"{vid}_tag", tag, 0.05, (0.2, -0.008, 0.56), (PI / 2, 0, 0), root)
 
 
-def well_extras(site, num, root):
+def well_extras(site, wid, root):
     """Wellhead tree, wing valve and gauge, crank guard, brake, controller with light, sign."""
-    wid = f"WELL_{num}"
     k = Kit(site, f"{wid}_detail", root)
     st, dk = k["M_STEEL"], k["M_STEEL_DARK"]
+    if not fp.LOD["trim"]:   # keep only the controller that carries the status light
+        tube(st, (1.8, 3.0, 0.12), (1.8, 3.0, 1.9), 0.05, 6)
+        box(st, (0.5, 0.25, 0.6), (1.8, 2.82, 1.45))
+        k.done()
+        status_light(site, f"{wid}_light", root, (1.95, 2.82, 1.88), r=0.045)
+        return
     y = -3.45
     cyl(dk, 0.32, 0.3, (0, y, 0.3), segs=14)
     cyl(dk, 0.26, 0.15, (0, y, 0.52), segs=14)
@@ -212,11 +234,11 @@ def well_extras(site, num, root):
     cyl(st, 0.06, 0.03, (0.15, y, 1.08), axis="Y", segs=10)
     for gx in (-1.3, 1.3):
         for gy in (1.8, 3.2, 4.6):
-            tube(st, (gx, gy, 0.12), (gx, gy, 1.4), 0.03, 6)
+            tube(st, (gx, gy, 0.12), (gx, gy, 1.4), 0.03, 4)
         for gz in (0.8, 1.35):
-            tube(st, (gx, 1.8, gz), (gx, 4.6, gz), 0.022, 6)
+            tube(st, (gx, 1.8, gz), (gx, 4.6, gz), 0.022, 4)
     for gz in (0.8, 1.35):
-        tube(st, (-1.3, 4.6, gz), (1.3, 4.6, gz), 0.022, 6)
+        tube(st, (-1.3, 4.6, gz), (1.3, 4.6, gz), 0.022, 4)
     tube(st, (0.55, 2.0, 0.5), (0.7, 1.7, 1.6), 0.03, 6)
     ball(dk, 0.05, (0.7, 1.7, 1.62), segs=8)
     tube(st, (1.8, 3.0, 0.12), (1.8, 3.0, 1.9), 0.05, 6)
@@ -227,13 +249,12 @@ def well_extras(site, num, root):
     box(st, (0.8, 0.04, 0.36), (-2.0, -5.0, 1.45))
     k.done()
     status_light(site, f"{wid}_light", root, (1.95, 2.82, 1.88), r=0.045)
-    label(site, f"{wid}_sign", f"WELL {num}", 0.12, (-2.0, -5.025, 1.45), (PI / 2, 0, 0), root)
+    label(site, f"{wid}_sign", id_text(wid), 0.12, (-2.0, -5.025, 1.45), (PI / 2, 0, 0), root)
 
 
-def build_loadout(site, n, loc):
+def build_loadout(site, lid, loc, rot_z=0.0):
     """Truck load-out stand: riser, valve, quick-connect, drip bucket, hose rack."""
-    lid = f"LOADOUT_{n}"
-    root = site.empty(lid, loc, size=0.8)
+    root = site.empty(lid, loc, rot_z, size=0.8)
     root["kind"] = "loadout"
     k = Kit(site, lid, root)
     box(k["M_CONCRETE"], (1.8, 1.4, 0.15), (0, 0, 0.075))
