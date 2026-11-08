@@ -64,3 +64,20 @@ The files say "Recorded from the backend" in their warnings, and the badge still
 3. **Hold to build** sends `{"blueprint": ...}` to `POST /api/blueprints` and polls `GET /api/blueprints/{id}` while `status` is `building`. On `ready` or `fallback` the console reopens on `/api/field` and the returned `glb_url`. The clock in the corner counts from the drop, and the shift log records the total.
 
 Without a backend, only a blueprint JSON can be shown, and nothing is built.
+
+## Hand control (#45)
+
+**Hands** (top right of the field) turns on the laptop camera. Everything also works with the mouse.
+
+| Gesture | Does | Mouse |
+|---|---|---|
+| Point (index finger out) | Moves the cursor, highlights what's under it | Hover |
+| Pinch (thumb to index) | Selects it, flies to it, and opens Jarvis on it (`freeboard:jarvis` event) | Click |
+| Open palm, moving | Orbits the camera | Drag |
+| Two hands apart or together | Zooms | Wheel |
+
+MediaPipe Hand Landmarker (`@mediapipe/tasks-vision` 1.1.1, Apache-2.0) runs in the browser. The camera feed never leaves the laptop. The gesture rules follow AirBench (github.com/VARSHITH707/AirBench, MIT): a gesture counts after it holds for 4 frames, a pinch has on/off thresholds so it doesn't flicker, and the cursor is smoothed.
+
+The WASM runtime is served from the npm package at `/mediapipe/wasm`. The hand model loads from Google's model storage. To run with no network, save `hand_landmarker.task` as `web/public/mediapipe/hand_landmarker.task`, and it is used instead.
+
+On this MacBook Air, the model loads in 2.5 s and runs at 8.7 ms a frame, so the 30 fps camera is the limit.

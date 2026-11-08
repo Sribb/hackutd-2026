@@ -9,6 +9,7 @@ import { buildPlaceholder } from "./placeholder.js";
 import { decode, holdButton } from "./fx.js";
 import * as shiftlog from "./shiftlog.js";
 import { mountUpload } from "./upload.js";
+import { mountHands } from "./hands.js";
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
@@ -873,11 +874,15 @@ canvas.addEventListener("pointerup", (e) => {
   if (downAt && Math.hypot(e.clientX - downAt[0], e.clientY - downAt[1]) < 5) select(pick(e));
   downAt = null;
 });
-canvas.addEventListener("pointermove", (e) => {
-  const id = pick(e);
+canvas.addEventListener("pointermove", (e) => hoverAt(e.clientX, e.clientY));
+// Hover at a screen point. The mouse and hand control (hands.js) both come through here.
+function hoverAt(clientX, clientY) {
   const tag = $("hoverTag");
+  if (clientX == null) { tag.hidden = true; canvas.classList.remove("pointing"); return null; }
+  const e = { clientX, clientY };
+  const id = pick(e);
   canvas.classList.toggle("pointing", !!id);
-  if (!id) { tag.hidden = true; return; }
+  if (!id) { tag.hidden = true; return null; }
   const r = canvas.getBoundingClientRect();
   tag.hidden = false;
   tag.style.left = `${e.clientX - r.left}px`;
@@ -888,7 +893,8 @@ canvas.addEventListener("pointermove", (e) => {
   const f = fuses.get(id);
   if (f && f.burn.visible) parts.push(`can help until ${data.lc.assets[id].useful_until_clock}`);
   tag.textContent = parts.join(" · ");
-});
+  return id;
+}
 canvas.addEventListener("pointerleave", () => { $("hoverTag").hidden = true; });
 
 $("time").addEventListener("input", (e) => { tMin = Number(e.target.value); render(); });
@@ -900,6 +906,33 @@ addEventListener("keydown", (e) => {
 
 // ----------------------------------------------------------------- boot ----
 mountUpload();
+// Hand control drives the same hover, select, orbit and zoom the mouse does.
+mountHands({
+  canvas, stage: $("stage"),
+  hoverAt,
+  clickAt(x, y) {
+    const id = pick({ clientX: x, clientY: y });
+    if (!id) return null;
+    select(id, true);
+    // Jarvis (#44) listens for this and opens on the asset.
+    dispatchEvent(new CustomEvent("freeboard:jarvis", { detail: { asset_id: id, from: "pinch" } }));
+    return id;
+  },
+  orbit(dx, dy) {
+    fly = null;
+    const off = camera.position.clone().sub(controls.target);
+    const s = new THREE.Spherical().setFromVector3(off);
+    s.theta -= dx * Math.PI * 1.6;
+    s.phi = Math.max(0.15, Math.min(controls.maxPolarAngle, s.phi - dy * Math.PI));
+    camera.position.copy(controls.target).add(new THREE.Vector3().setFromSpherical(s));
+  },
+  zoom(f) {
+    fly = null;
+    const off = camera.position.clone().sub(controls.target);
+    const len = Math.max(controls.minDistance, Math.min(controls.maxDistance, off.length() * Math.pow(f, 1.5)));
+    camera.position.copy(controls.target).add(off.setLength(len));
+  },
+});
 async function boot() {
   const [f, state, model] = await Promise.all([api.getField(), api.getState(), loadModel()]);
   field = f;
