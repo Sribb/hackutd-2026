@@ -312,6 +312,7 @@ export function mountField3d(host, { onPick, glbUrl } = {}) {
     for (const x of [box.min.x, box.max.x]) for (const y of [box.min.y, box.max.y]) for (const z of [box.min.z, box.max.z]) corners.push(new THREE.Vector3(x, y, z));
     let dist = fit;
     for (let k = 0; k < 4; k++) {
+      camera.lookAt(controls.target); // project from where it will look, not where it looked last
       camera.updateMatrixWorld();
       camera.updateProjectionMatrix();
       let m = 0;
@@ -320,12 +321,13 @@ export function mountField3d(host, { onPick, glbUrl } = {}) {
       dist *= Math.min(1.5, Math.max(0.5, m / 0.9));
       camera.position.copy(controls.target).addScaledVector(dir, dist);
     }
-    controls.maxDistance = Math.max(d, fit) * 3;
+    controls.maxDistance = Math.max(d, fit, dist) * 3;
     controls.minDistance = 8;
-    camera.far = Math.max(d, fit) * 8;
+    camera.far = Math.max(d, fit, dist) * 8;
     camera.updateProjectionMatrix();
-    scene.fog.near = d * 1.4;
-    scene.fog.far = d * 3.5;
+    // Fog starts past the far side of the field as framed, so it only ever fades the ground.
+    scene.fog.near = Math.max(d * 1.4, dist + sphere.radius);
+    scene.fog.far = Math.max(d * 3.5, dist + sphere.radius * 3);
   }
 
   // Text sprites for facility names and levels, redrawn only when the text changes.
