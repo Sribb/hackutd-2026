@@ -3,7 +3,8 @@
 Run from the repo root:
   /Applications/Blender.app/Contents/MacOS/Blender --background --factory-startup \
       --python blender/build_field.py -- [--blueprint PATH.json] [--out DIR] \
-      [--detail full|lite|bare] [--render-dir DIR] [--render-assets ID,ID] [--no-scenery]
+      [--detail full|lite|bare] [--render-dir DIR] [--render-assets ID,ID] [--no-scenery] \
+      [--look fast|full|bake]
 
 The blueprint follows docs/BLUEPRINT.md (format v1); ingest drafts with missing numbers
 build too, since the generator only needs IDs and links.
@@ -11,6 +12,10 @@ build too, since the generator only needs IDs and links.
 After the field, scenery.py dresses it as desert under one hideable SCENERY root, with
 whatever triangle budget is left. --no-scenery builds the plain field: no SCENERY layer,
 and flat ground and road colors instead of the kit's textures.
+
+Last, look.py gives every part its realistic material, UVs and weathering. --look full adds
+baked ambient occlusion (the committed blender/field.glb); fast, the default, skips it;
+bake is full plus the AO_UV map (TEXCOORD_1) an AO texture bake needs.
 
 With no --blueprint it builds scenario/field.json into blender/, the field the team uses
 today. With --blueprint and no --out it writes to blender/out/<blueprint name>/. Every run
@@ -50,10 +55,11 @@ import iot_parts  # noqa: E402
 import field_build  # noqa: E402
 import scenery_parts  # noqa: E402
 import scenery  # noqa: E402
+import look  # noqa: E402
 import optimize  # noqa: E402
 
 for _mod in (blueprint, layout, siting, names, fp, de, ds, piping, equipment_parts, iot_parts, field_build,
-             scenery_parts, scenery, optimize):
+             scenery_parts, scenery, look, optimize):
     importlib.reload(_mod)
 
 ROOT = os.path.dirname(HERE)
@@ -92,9 +98,9 @@ class UsageError(Exception):
 
 def parse_args(argv):
     opts = {"blueprint": None, "out": None, "detail": None, "render_dir": None, "render_assets": None,
-            "scenery": True}
+            "scenery": True, "look": "fast"}
     flags = {"--blueprint": "blueprint", "--out": "out", "--detail": "detail",
-             "--render-dir": "render_dir", "--render-assets": "render_assets"}
+             "--render-dir": "render_dir", "--render-assets": "render_assets", "--look": "look"}
     i = 0
     while i < len(argv):
         if argv[i] == "--no-scenery":
@@ -108,6 +114,8 @@ def parse_args(argv):
         i += 2
     if opts["detail"] not in (None, *LEVELS):
         raise UsageError(f"--detail must be one of {', '.join(LEVELS)}")
+    if opts["look"] not in look.MODES:
+        raise UsageError(f"--look must be one of {', '.join(look.MODES)}")
     return opts
 
 
@@ -352,6 +360,7 @@ def run(opts, src, out_dir, report):
     if report["errors"]:
         return 2
 
+    report["look"] = look.apply(scene, opts["look"], textures=opts["scenery"])
     glb, blend = os.path.join(out_dir, "field.glb"), os.path.join(out_dir, "field.blend")
     kinds, n_objects = Counter(o["kind"] for o in objs if "asset_id" in o.keys()), len(objs)
     del objs                             # optimize.run() removes merged objects
