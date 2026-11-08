@@ -35,7 +35,7 @@ const clockText = (min) => {
 function record() {
   const L0 = liveFeed.live;
   if (typeof L0.t !== "number") return;
-  for (const [id, a] of Object.entries(L0.assets)) {
+  for (const id of Object.keys(L0.assets)) {
     if (!/^TANK_/.test(id)) continue;
     const r = liveFeed.reading(id);
     const v = r && !r.stale && typeof r.level_pct === "number" ? r.level_pct : null;
@@ -45,7 +45,6 @@ function record() {
     list.push({ t: L0.t, v });
     while (list.length && L0.t - list[0].t > KEEP_MIN) list.shift();
     hist.set(id, list);
-    void a;
   }
 }
 
