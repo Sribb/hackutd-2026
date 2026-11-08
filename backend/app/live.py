@@ -13,6 +13,7 @@ JARVIS_CONFIRM=0 lets Jarvis skip the confirm, but only for commands that go to 
 simulator: a command for real equipment always waits for a person.
 
 This layer is additive. GET /api/state and the forecast keep reading the scenario file.
+reload() points it at a newly activated blueprint (live_api installs app.state.live_reload).
 """
 from __future__ import annotations
 
@@ -90,12 +91,14 @@ class LiveField:
         self.paused = False
         self.auto_confirm_sim = os.environ.get("JARVIS_CONFIRM", "1") == "0"
         self._task: Optional[asyncio.Task] = None
+        self.loop: Optional[asyncio.AbstractEventLoop] = None   # the loop start() ran on
         self.ingest(self.registry.read())
 
     # ---------- loop ----------
     def start(self) -> None:
         if self._task is None:
-            self._task = asyncio.get_running_loop().create_task(self._loop())
+            self.loop = asyncio.get_running_loop()
+            self._task = self.loop.create_task(self._loop())
 
     async def stop(self) -> None:
         if self._task:
@@ -132,6 +135,85 @@ class LiveField:
             self.notifier.push(alert)
             if alert["active"] and alert["severity"] == "ALARM":
                 await self.focus(alert["asset_id"], alert["message"], source="detector")
+
+    # ---------- following the active blueprint ----------
+    def reload(self, scenario: dict, raw: Optional[dict] = None) -> dict:
+        """Swap in a newly activated field. Synchronous with no await, so no tick, confirm,
+        or proposal can run between tearing the old field down and building the new one.
+
+        Stops the old connectors and builds the new FieldMap, connector registry, and
+        detector. Keeps the live clock (`t` and the start clock), speed, pause, the hub,
+        and every proposal and alert record (alert ids keep counting). Then:
+          - every active alert resolves, with `resolved_reason` (the new detector raises it
+            again from fresh readings if it still holds);
+          - a PENDING proposal closes as REJECTED by "blueprint", with `result` saying why,
+            when its asset or target is gone, it is no longer valid, or it would now go to
+            a different connector: a person never confirms a command routed somewhere
+            other than where it was proposed;
+          - readings start over from the new connectors.
+        Returns {"assets", "resolved_alerts", "closed_proposals"} for publish_reload()."""
+        start, initial, faults, sensors, specs = start_conditions(scenario, raw)
+        old_det = self.detector
+        self.registry.close()
+        self.scenario = scenario
+        self.fmap = FieldMap.from_scenario(scenario, self.fmap.start_clock)
+        self.registry = Registry(specs, self.fmap, lambda: self.t, initial_pct=initial,
+                                 faults=faults, sensors=sensors)
+        self.detector = Detector(self.fmap, float(sensors.get("stale_after_min", 5)))
+        self.detector._ids, self.detector.alerts = old_det._ids, old_det.alerts
+        present = set(self.fmap.all_ids())
+
+        resolved = []
+        for alert in old_det.active.values():
+            aid = alert["asset_id"]
+            alert.update(active=False, resolved_t=now_iso(), resolved_reason=(
+                f"{name(aid)} is not in the activated blueprint." if aid not in present else
+                "The field was reloaded from a new blueprint. It is checked again from fresh readings."))
+            resolved.append(alert)
+
+        closed = []
+        for p in self.proposals.values():
+            why = self._invalid_after_reload(p, present) if p["status"] == "PENDING" else None
+            if why:
+                p.update(status="REJECTED", decided_t=now_iso(), decided_by="blueprint", result=why)
+                closed.append(p)
+
+        # A confirmed position only still holds for real equipment; the new simulator starts over.
+        def still_holds(aid: str) -> bool:
+            typ = {"valve": "SET_VALVE", "pump": "SET_PUMP"}.get(self.fmap.kind_of(aid) or "")
+            return bool(typ) and self.registry.route({"type": typ, "asset_id": aid}) is not self.registry.sim
+        self.commanded = {aid: c for aid, c in self.commanded.items() if still_holds(aid)}
+        self.latest.clear()
+        self.history.clear()
+        self.ingest(self.registry.read())
+        return {"assets": len(present), "resolved_alerts": resolved, "closed_proposals": closed}
+
+    def _invalid_after_reload(self, p: dict, present: set) -> Optional[str]:
+        a = p["action"]
+        gone = [x for x in (a.get("asset_id"), a.get("target_id")) if x and x not in present]
+        if gone:
+            return f"Closed: {name(gone[0])} is not in the activated blueprint."
+        try:
+            self.clean_action(a)
+        except ActionError as e:
+            return f"Closed: it is no longer valid in the activated blueprint. {e.detail}"
+        conn = self.registry.route(a)
+        if conn.id != p.get("connector_id"):
+            return (f"Closed: in the activated blueprint it would go to {conn.id}, not {p.get('connector_id')}. "
+                    f"Propose it again to send it there.")
+        return None
+
+    async def publish_reload(self, changes: dict) -> None:
+        for p in changes.get("closed_proposals", []):
+            await self.hub.broadcast("proposal", {"proposal": p})
+        for alert in changes.get("resolved_alerts", []):
+            await self.hub.broadcast("alert", {"alert": alert})
+        await self.hub.broadcast("state", {"state": self.state()})
+
+    async def reload_and_publish(self, scenario: dict, raw: Optional[dict] = None) -> dict:
+        changes = self.reload(scenario, raw)
+        await self.publish_reload(changes)
+        return changes
 
     def ingest(self, readings: list[dict]) -> None:
         for r in readings:

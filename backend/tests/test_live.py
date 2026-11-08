@@ -460,3 +460,258 @@ def test_jarvis_why_is_tank_rising_names_cause_and_shutdown_time():
     assert out["source"] == "rules"
     assert "Pump 3" in reply, reply
     assert "reaches shutdown at" in reply, reply
+
+
+# ---------- regressions from Sriyan's IoT run: crossover choice, fix plans, rate sign, reload ----------
+
+def jarvis_for(live: LiveField):
+    from backend.app.forecast import forecast
+    from backend.app.jarvis import Jarvis
+    from backend.app.planner import make_plans
+    return Jarvis(live, forecast_fn=lambda sc, actions: forecast(sc, actions), plans_fn=lambda sc: make_plans(sc))
+
+
+def many_crossovers(levels: dict | None = None, pump_rates: dict | None = None) -> dict:
+    """The placeholder field plus crossovers 1-2, 2-3, and 5-6, with 1-2 listed first,
+    so 'the first crossover' is never the right answer by accident."""
+    sc = healthy_scenario()
+
+    def xo(a: int, b: int) -> dict:
+        return {"id": f"VALVE_XO_{a}{b}", "connects": [f"TANK_{a}", f"TANK_{b}"], "max_bbl_hr": 90, "manual": True}
+
+    sc["field"]["valves"] = [xo(1, 2), xo(2, 3), *sc["field"]["valves"], xo(5, 6)]
+    sc["initial_levels_pct"].update(levels or {})
+    for p in sc["field"]["pumps"]:
+        p["rate_bbl_hr"] = (pump_rates or {}).get(p["id"], p["rate_bbl_hr"])
+    return sc
+
+
+def proposed_valve(out: dict) -> str:
+    (p,) = out["proposals"]
+    assert p["status"] == "PENDING" and p["action"]["type"] == "SET_VALVE" and p["action"]["value"] == "OPEN"
+    return p["action"]["asset_id"]
+
+
+@pytest.mark.parametrize("wording, valve", [
+    ("open the Tank 3 to 4 crossover", "VALVE_XO_34"),
+    ("Open the crossover from tank 3 to 4", "VALVE_XO_34"),
+    ("open the crossover between 3 and 4", "VALVE_XO_34"),
+    ("open the crossover between 5 and 6", "VALVE_XO_56"),
+    ("open the crossover between tanks two and three", "VALVE_XO_23"),
+    ("please open the tank 2 and tank 1 crossover", "VALVE_XO_12"),
+])
+def test_open_the_crossover_picks_the_named_tanks(wording, valve):
+    live = LiveField(many_crossovers())
+    tick(live, 2)
+    out = run(jarvis_for(live).handle(wording))
+    assert out["source"] == "rules"
+    assert proposed_valve(out) == valve, out["reply"]
+
+
+def test_open_the_crossover_follows_the_tripped_pump():
+    live = LiveField(many_crossovers())
+    tick(live, 8)
+    live.registry.sim.inject({"asset_id": "PUMP_3", "type": "TRIP", "reason": "test"})
+    tick(live, 4)
+    assert [a["asset_id"] for a in trips(live.alerts())] == ["PUMP_3"]
+    # Tank 3's neighbors: Tank 2 at 55.5%, Tank 4 at 42%. Tank 4 has more room.
+    assert proposed_valve(run(jarvis_for(live).handle("open the crossover"))) == "VALVE_XO_34"
+
+
+def test_open_the_crossover_prefers_the_neighbor_with_most_headroom():
+    live = LiveField(many_crossovers(levels={"TANK_4": 86.0, "TANK_2": 40.0}))
+    tick(live, 8)
+    live.registry.sim.inject({"asset_id": "PUMP_3", "type": "TRIP", "reason": "test"})
+    tick(live, 4)
+    assert proposed_valve(run(jarvis_for(live).handle("Open the crossover."))) == "VALVE_XO_23"
+
+
+def test_a_busy_disposal_well_is_not_a_pump_trip():
+    """Pumps 4, 5, and 6 all running ask SWD_2 for 660 bbl/hr; it takes 520, so each moves
+    less than its rate. That is the field working, not three tripped pumps (as after the
+    crossover lifts Tank 4 above its pump's low level)."""
+    sc = healthy_scenario()
+    sc["initial_levels_pct"]["TANK_4"] = 86.0
+    live = LiveField(sc)
+    assert trips(tick(live, 60)) == []
+    assert all(live.state()["assets"][p]["status"] == "OK" for p in ("PUMP_4", "PUMP_5", "PUMP_6"))
+
+
+def test_open_the_crossover_without_a_trip_uses_the_earliest_forecast_shutdown():
+    # Pump 5 can't keep up with its wells, so Tank 5 is the first to reach shutdown. No trip alert.
+    live = LiveField(many_crossovers(levels={"TANK_5": 86.0}, pump_rates={"PUMP_5": 100}))
+    tick(live, 4)
+    assert not trips(live.alerts())
+    assert proposed_valve(run(jarvis_for(live).handle("open the crossover"))) == "VALVE_XO_56"
+
+
+def test_open_the_crossover_named_pair_with_none_says_so():
+    live = LiveField(many_crossovers())
+    out = run(jarvis_for(live).handle("open the crossover between tank 1 and 6"))
+    assert out["proposals"] == [] and out["reply"] == "There's no crossover between Tank 1 and Tank 6."
+
+
+def test_open_the_tank_3_to_4_crossover_over_http_without_a_key():
+    """The exact wording 503'd: the asset lookup grabbed 'tank 3' and the rules gave up."""
+    r = client.post("/api/jarvis", json={"message": "open the Tank 3 to 4 crossover"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["source"] == "rules"
+    (p,) = body["proposals"]
+    assert p["action"] == {"type": "SET_VALVE", "asset_id": "VALVE_XO_34", "value": "OPEN"}
+    assert p["status"] == "PENDING"  # waits for a person
+    assert body["ui"][-1]["asset_id"] == "VALVE_XO_34"
+    assert client.post(f"/api/actions/{p['id']}/reject").json()["status"] == "REJECTED"
+
+
+def test_show_the_tank_3_to_4_crossover_describes_the_valve():
+    live = LiveField(many_crossovers())
+    tick(live)
+    out = run(jarvis_for(live).handle("show me the Tank 3 to 4 crossover"))
+    assert out["ui"] == [{"type": "ui", "action": "focus", "asset_id": "VALVE_XO_34"}]
+    assert "crossover is closed" in out["reply"], out["reply"]
+
+
+def test_why_is_tank_rising_and_cheapest_fix_adds_the_plans():
+    from backend.app.planner import make_plans
+    live = LiveField(healthy_scenario())
+    tick(live, 8)
+    live.registry.sim.inject({"asset_id": "PUMP_3", "type": "TRIP", "reason": "test"})
+    tick(live, 8)
+    out = run(jarvis_for(live).handle("Why is Tank 3 rising, and what's my cheapest fix?"))
+    reply = out["reply"]
+    assert out["source"] == "rules"
+    assert "Pump 3" in reply and "reaches shutdown at" in reply, reply  # the why
+    plans = make_plans(live.live_scenario())["plans"]
+    cheapest = plans[0]
+    assert f"Cheapest plan, ${cheapest['cost']['total_usd']:,.0f}: {cheapest['summary']}" in reply, reply
+    robust = next(p for p in plans if p["robust"])
+    assert robust["id"] != cheapest["id"]
+    assert f"Cheapest robust plan, ${robust['cost']['total_usd']:,.0f}: {robust['summary']}" in reply, reply
+    # The camera starts on the tank and ends on the cheapest plan's first step.
+    assert out["ui"][0]["asset_id"] == "TANK_3"
+    assert out["ui"][-1]["asset_id"] == cheapest["actions"][0]["asset_id"]
+    assert out["proposals"] == []  # explaining a plan proposes nothing
+
+
+def test_rate_right_after_a_trip_never_shows_the_draining_sign():
+    """10 minutes of draining, then a trip: the next minutes must not say the rising tank is falling."""
+    live = LiveField(healthy_scenario())
+    tick(live, 40)
+    assert live.state()["assets"]["TANK_3"]["observed_bbl_hr"] < 0
+    live.registry.sim.inject({"asset_id": "PUMP_3", "type": "TRIP", "reason": "test"})
+    for _ in range(16):  # 4 sim-minutes, every tick
+        tick(live)
+        tank = live.state()["assets"]["TANK_3"]
+        assert tank["observed_bbl_hr"] is None or tank["observed_bbl_hr"] > 0, tank
+        assert tank["expected_bbl_hr"] == 188.0, tank  # Wells 9 to 12 in, no pump out
+    reply = run(jarvis_for(live).handle("Why is Tank 3 rising?"))["reply"]
+    assert "changing +" in reply and "changing -" not in reply, reply
+
+
+def test_jarvis_omits_a_rate_that_disagrees_with_the_expected_sign():
+    live = LiveField(healthy_scenario())
+    tick(live, 4)
+    live.detector.rates["TANK_3"] = {"observed_bbl_hr": -26.0, "expected_bbl_hr": 188.0}
+    reply = run(jarvis_for(live).handle("how's tank 3"))["reply"]
+    assert "Tank 3 is at" in reply and "changing" not in reply, reply
+    live.detector.rates["TANK_3"] = {"observed_bbl_hr": 150.0, "expected_bbl_hr": 188.0}
+    assert "changing +150 barrels an hour" in run(jarvis_for(live).handle("how's tank 3"))["reply"]
+
+
+# ---------- the live layer follows the active blueprint ----------
+
+def without_tank_6() -> dict:
+    sc = healthy_scenario()
+    f = sc["field"]
+    f["tanks"] = [t for t in f["tanks"] if t["id"] != "TANK_6"]
+    f["pumps"] = [p for p in f["pumps"] if p["id"] != "PUMP_6"]
+    f["wells"] = [w for w in f["wells"] if w["tank_id"] != "TANK_6"]
+    f["valves"] = [v for v in f["valves"] if v["id"] != "VALVE_D_6"]
+    for tr in f["trucks"]:
+        tr.get("minutes_to", {}).pop("TANK_6", None)
+    sc["initial_levels_pct"].pop("TANK_6", None)
+    return sc
+
+
+def test_reload_follows_a_new_field_and_closes_what_is_gone():
+    live = LiveField(healthy_scenario())
+    closed = []
+    live.registry.close = lambda: closed.append("old")
+    tick(live, 8)
+    live.registry.sim.inject({"asset_id": "PUMP_6", "type": "TRIP", "reason": "test"})
+    tick(live, 4)
+    (alert,) = trips(live.alerts())
+    gone = run(live.propose({"type": "CHOKE_WELL", "asset_id": "WELL_21", "value": 0.5}))
+    kept = run(live.propose({"type": "SEND_TRUCK", "asset_id": "TRUCK_1", "target_id": "TANK_3"}))
+    t, clock = live.t, live.fmap.clock(live.t)
+
+    changes = live.reload(without_tank_6())
+
+    assert closed == ["old"]  # the old connectors were stopped
+    assert live.t == t and live.fmap.clock(live.t) == clock  # the clock carries on
+    st = live.state()
+    assert "TANK_6" not in st["assets"] and "PUMP_6" not in st["assets"] and "TANK_5" in st["assets"]
+    assert alert["active"] is False and "Pump 6 is not in the activated blueprint" in alert["resolved_reason"]
+    assert [a["id"] for a in changes["resolved_alerts"]] == [alert["id"]]
+    assert gone["status"] == "REJECTED" and gone["decided_by"] == "blueprint"
+    assert "Well 21 is not in the activated blueprint" in gone["result"]
+    assert [p["id"] for p in changes["closed_proposals"]] == [gone["id"]]
+    with pytest.raises(ActionError) as e:  # a closed proposal can never be confirmed
+        run(live.confirm(gone["id"]))
+    assert e.value.status == 409
+    # What still exists keeps working, and still only on a person's confirm.
+    assert kept["status"] == "PENDING"
+    assert run(live.confirm(kept["id"], by="test"))["status"] == "CONFIRMED"
+    assert len(live.registry.sim.truck_jobs) == 1
+    tick(live, 8)
+    live.registry.sim.inject({"asset_id": "PUMP_3", "type": "TRIP", "reason": "test"})
+    tick(live, 4)
+    assert [a["asset_id"] for a in trips(live.alerts())] == ["PUMP_3"]
+    ids = [a["id"] for a in live.alerts()]
+    assert len(ids) == len(set(ids))  # alert ids keep counting, never reused
+
+
+def test_reload_closes_a_proposal_that_would_now_go_to_real_equipment():
+    live = LiveField(healthy_scenario())
+    p = valve_open(live)
+    assert p["connector_id"] == "CONN_SIM"
+    live.reload(healthy_scenario(), copy.deepcopy(HOOK_RAW))
+    assert p["status"] == "REJECTED" and "CONN_HOOK" in p["result"] and "Propose it again" in p["result"]
+    assert live.registry.route(p["action"]).id == "CONN_HOOK"
+
+
+def test_live_reload_hook_from_a_worker_thread_runs_on_the_loop_and_broadcasts():
+    """#64's _use_scenario is a sync endpoint, so it calls the hook from a worker thread."""
+    from backend.app.live_api import make_reload
+    live = LiveField(healthy_scenario())
+    jarvis = jarvis_for(live)
+    assert "TANK_6" in jarvis.system
+    sent = []
+
+    async def broadcast(typ, payload):
+        sent.append((typ, threading.get_ident()))
+
+    live.hub.broadcast = broadcast
+    reload = make_reload(live, jarvis)
+
+    async def main():
+        live.start()
+        try:
+            return threading.get_ident(), await asyncio.to_thread(reload, without_tank_6())
+        finally:
+            await live.stop()
+
+    loop_thread, changes = run(main())
+    assert changes["assets"] == len(live.fmap.all_ids())
+    assert "TANK_6" not in live.state()["assets"]
+    assert "TANK_6" not in jarvis.system  # Claude's asset list follows too
+    assert ("state", loop_thread) in sent  # a fresh state went out, from the live loop
+
+
+def test_app_state_live_reload_is_installed():
+    assert callable(app.state.live_reload)
+    before = app.state.live
+    changes = app.state.live_reload(load_scenario())
+    assert app.state.live is before and changes["assets"] == len(before.fmap.all_ids())
+    assert client.get("/api/live/state").json()["assets"]["TANK_3"]["level_pct"] is not None

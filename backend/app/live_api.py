@@ -16,11 +16,12 @@
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
 from pathlib import Path
-from typing import List, Optional, Union
+from typing import Callable, List, Optional, Union
 
 from fastapi import APIRouter, FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -185,11 +186,47 @@ def build_router(live: LiveField, jarvis: Jarvis) -> APIRouter:
     return r
 
 
+def make_reload(live: LiveField, jarvis: Jarvis) -> Callable[[dict], dict]:
+    """A plain function that points the live layer at a newly activated scenario.
+
+    Safe to call from anywhere: from a sync endpoint's worker thread (#64's
+    _use_scenario) it runs the reload on the live loop and waits, so it never interleaves
+    with a tick or a confirm; on the loop itself it reloads at once and schedules the
+    broadcast; with no loop running (tests, scripts) it just reloads."""
+    pending: set = set()
+
+    def reload(scenario: dict) -> dict:
+        raw = _raw(scenario)
+        try:
+            here = asyncio.get_running_loop()
+        except RuntimeError:
+            here = None
+        loop = live.loop
+        if loop is not None and loop.is_running() and here is not loop:
+            changes = asyncio.run_coroutine_threadsafe(live.reload_and_publish(scenario, raw), loop).result(timeout=30)
+        else:
+            changes = live.reload(scenario, raw)
+            if here is not None:
+                task = here.create_task(live.publish_reload(changes))
+                pending.add(task)
+                task.add_done_callback(pending.discard)
+        jarvis.refresh()
+        log.info("live layer reloaded: %d assets, %d alerts resolved, %d proposals closed", changes["assets"],
+                 len(changes["resolved_alerts"]), len(changes["closed_proposals"]))
+        return changes
+
+    return reload
+
+
 def install(app: FastAPI, scenario: dict) -> LiveField:
-    """Mount the live layer. main.py's lifespan starts and stops app.state.live."""
+    """Mount the live layer. main.py's lifespan starts and stops app.state.live.
+
+    app.state.live_reload(scenario) makes the live layer follow a newly activated
+    blueprint (POST /api/blueprints/{id}/activate calls it once #64 wires it in)."""
     live = LiveField(scenario, _raw(scenario))
     jarvis = Jarvis(live, forecast_fn=lambda sc, actions: forecast(sc, actions),
                     plans_fn=lambda sc: make_plans(sc))
+    app.state.live_reload = make_reload(live, jarvis)
     app.include_router(build_router(live, jarvis))
     extra = [o.strip() for o in os.environ.get("CORS_ORIGINS", "").split(",") if o.strip()]
     if extra:  # e.g. a phone or tunnel origin; localhost is already allowed by main.py
