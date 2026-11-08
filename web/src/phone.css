@@ -37,7 +37,10 @@ main { max-width: 560px; margin: 0 auto; padding: max(16px, env(safe-area-inset-
 .ph-confirm.committed { color: var(--good); border-color: var(--good) !important; }
 .ph-done { font-size: 13px; color: var(--ink-2); padding: 4px 0; }
 .ph-done b { font-size: 11px; letter-spacing: .12em; margin-right: 6px; color: var(--good); }
-.ph-done.REJECTED b, .ph-done.FAILED b { color: var(--muted); }
+.ph-done.REJECTED b { color: var(--muted); }
+.ph-done.FAILED b, .ph-done.UNCERTAIN b { color: var(--alarm); }
+.ph-done.SENDING b { color: var(--ink); }
+.ph-done p { margin: 2px 0 0; font-size: 12px; color: var(--alarm); }
 .ph-foot { margin-top: 24px; font-size: 11px; color: var(--muted); word-break: break-all; }
 .ph-alert.resolved { opacity: .45; border-left-color: var(--muted); }
 .ph-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }

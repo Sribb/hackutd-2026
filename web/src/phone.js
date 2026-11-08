@@ -140,6 +140,7 @@ function draw() {
   const done = [...proposals.values()].filter((p) => p.status !== "PENDING").slice(-3).reverse();
   $("phProps").innerHTML = (pend.length ? `<h3>Waiting for you</h3>` : "") + pend.map((p) => `
       <article class="ph-prop">
+        ${p.run_id ? `<div class="ph-asset">Plan run · step ${esc(p.step)}</div>` : ""}
         <h2>${esc(p.text || describe(p.action))}</h2>
         ${p.reason ? `<p>${esc(p.reason)}</p>` : ""}
         <div class="ph-btns">
@@ -147,7 +148,7 @@ function draw() {
           <button class="ph-confirm hold" data-confirm="${esc(p.id)}"><i></i><span>Hold to confirm</span></button>
         </div>
       </article>`).join("")
-    + (done.length ? `<h3>Decided</h3>` + done.map((p) => `<div class="ph-done ${esc(p.status)}"><b>${esc(p.status)}</b> ${esc(p.text || describe(p.action))}${p.decided_by ? ` <span>by ${esc(p.decided_by)}</span>` : ""}</div>`).join("") : "");
+    + (done.length ? `<h3>Decided</h3>` + done.map((p) => `<div class="ph-done ${esc(p.status)}"><b>${esc(DONE_WORD[p.status] || p.status)}</b> ${esc(p.text || describe(p.action))}${p.decided_by ? ` <span>by ${esc(p.decided_by)}</span>` : ""}${p.status === "UNCERTAIN" ? `<p>No answer from the device: it may have moved. Check it in person. Not retried.</p>` : p.status === "FAILED" && p.result ? `<p>${esc(p.result)}</p>` : ""}</div>`).join("") : "");
   $("phAlerts").querySelectorAll("[data-ack]").forEach((b) => { b.onclick = () => ack(b.dataset.ack); });
   // "Show" points every open console at the asset (ws ui focus, #38).
   $("phAlerts").querySelectorAll("[data-show]").forEach((b) => {
@@ -157,6 +158,10 @@ function draw() {
   $("phProps").querySelectorAll("[data-confirm]").forEach((b) => holdButton(b, () => decide(b.dataset.confirm, "confirm"), 1500));
   $("phFoot").innerHTML = `Backend ${esc(BASE)} · no login (demo only)`;
 }
+
+// A sent command is never shown as done until the connector says so (SENDING), and one with no
+// answer (UNCERTAIN) may have moved the device.
+const DONE_WORD = { SENDING: "Sending…", CONFIRMED: "Sent", REJECTED: "Rejected", FAILED: "Failed", UNCERTAIN: "Uncertain" };
 
 // The live clock ("01:48") if the backend sent one, else the time part of the ISO stamp.
 function clockOf(a) {
