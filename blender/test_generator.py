@@ -31,6 +31,7 @@ from glb_read import Glb, touch  # noqa: E402
 import layout  # noqa: E402
 import names  # noqa: E402
 import test_parts  # noqa: E402
+import test_scenery  # noqa: E402
 
 BLENDER = os.environ.get("BLENDER", "/Applications/Blender.app/Contents/MacOS/Blender")
 SAMPLE1 = os.path.join(ROOT, "scenario", "samples", "sample1_pecos_8tank.json")
@@ -301,6 +302,7 @@ def check_build(label, bp_path, out_dir, expect_level=None, max_seconds=30):
     ok(all(abs(glb.plan_xy(n)[1]) < 1e-6 and w_end < glb.plan_xy(n)[0] < e_end for n in jct),
        f"{label}: {len(jct)} road junctions sit on the road between its ends")
     test_parts.check_iot(ok, label, glb, bp)
+    test_scenery.check_build(ok, label, rep, glb)
     return rep, glb
 
 
@@ -425,11 +427,15 @@ def main():
     test_format_v1()
     test_validation()
     test_parts.test_validation(ok, load(os.path.join(HERE, "samples", "small.json")))
+    test_scenery.test_plan(ok, ROOT)
     test_layout()
     if "--quick" not in sys.argv:
         with tempfile.TemporaryDirectory() as tmp:
-            test_builds(tmp)
+            reports = test_builds(tmp)
             test_parts.test_preview(ok, blender, tmp)
+            if "small" in reports:
+                test_scenery.test_plain_and_repeat(ok, blender, tmp, os.path.join(HERE, "samples", "small.json"),
+                                                   reports["small"])
             test_failure(tmp)
         test_tools_check()
     print(f"\n{'FAIL' if FAILS else 'PASS'}: {len(FAILS)} failed")

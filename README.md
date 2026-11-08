@@ -30,7 +30,7 @@ Most teams will build a normal dashboard, and some will add a 3D model to look a
 
 ### The one rule for the 3D
 
-**If the operator can't act on it, it doesn't go in the scene.** Good-looking effects that only show what might happen are out. Exact numbers stay in 2D panels beside the scene.
+**If the operator can't act on it, it doesn't go in the scene.** The one exception is scenery: the desert plants, rocks, and fence live on the hideable `SCENERY` layer and are never clickable. Good-looking effects that only show what might happen are out. Exact numbers stay in 2D panels beside the scene.
 
 | In the scene | What the operator does | What they get |
 |---|---|---|

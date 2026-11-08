@@ -6,9 +6,11 @@ Pure Python (no bpy), so the tests can run it without Blender. Rectangles are pl
 occupied(L) lists everything layout.plan() put down that new things must stay off: the
 road and trunk, driveways, pads with their pump lines, wells and flowlines, disposal
 wells, the yard, crossovers, power drops, and the truck route waypoints. place_equipment()
-puts blueprint equipment (#47) on the first free spot near where it belongs.
+puts blueprint equipment (#47) on the first free spot near where it belongs, and
+plan_scenery() lays out the desert scenery (#88) inside a triangle budget.
 """
 import math
+import random
 
 import layout as lay
 
@@ -181,3 +183,86 @@ def place_equipment(L, bp):
         rects = [e["rect"] for e in L["equipment"]]
         L["ground"] = (min(gx0, min(r[0] for r in rects) - 4), max(gx1, max(r[1] for r in rects) + 4),
                        min(gy0, min(r[2] for r in rects) - 4), max(gy1, max(r[3] for r in rects) + 4))
+
+
+# ---------- scenery (#88) ----------
+
+# name: (triangles each, share of the scatter budget, most allowed, clearance radius in m).
+# grass, rock, boulder, branch, creosote, and mesquite come from the CC0 kit; yucca and
+# prickly_pear are generated (scenery_parts.py). The kit's foliage plants cost thousands of
+# triangles each, so they are few, and the cheap ones carry the look.
+SPECIES = {
+    "grass": (224, 0.22, 400, 0.6), "yucca": (240, 0.14, 120, 1.0), "prickly_pear": (520, 0.13, 70, 1.1),
+    "rock": (800, 0.11, 50, 0.7), "boulder": (1000, 0.06, 16, 1.0), "branch": (500, 0.03, 10, 0.8),
+    "creosote": (7600, 0.14, 3, 1.3), "mesquite": (13400, 0.12, 1, 1.6),
+}
+FENCE_INSET, FENCE_TRIS_M, GUARD_TRIS = 2.0, 11.0, 600
+SCATTER_MAX = 115_000       # most triangles the scatter may use, however much budget is left
+SCATTER_M2 = 1.6            # and at most this many per square meter inside the fence (today's density)
+CELL = 5.0                  # scatter grid
+NEAR = 45.0                 # plants are thicker within this many meters of a pad or well, where close-ups look
+
+
+def plan_scenery(L, budget, seed):
+    """Everything the scenery pass builds, inside budget triangles, deterministic for a seed.
+
+    Returns {"fence": [polylines], "guards": [(x, y)], "stubs": [rects], "sign": (x, y) or None,
+    "scatter": [(species, x, y, rot, scale)], "dropped": [...]}. The fence runs FENCE_INSET
+    inside the ground's edge, with a cattle guard where the lease road leaves at each end.
+    Nothing lands on anything in occupied().
+    """
+    rng = random.Random(f"freeboard-scenery:{seed}")
+    gx0, gx1, gy0, gy1 = L["ground"]
+    x0, x1, y0, y1 = gx0 + FENCE_INSET, gx1 - FENCE_INSET, gy0 + FENCE_INSET, gy1 - FENCE_INSET
+    out = {"fence": [], "guards": [], "stubs": [], "sign": None, "scatter": [], "dropped": []}
+    gap = lay.ROAD_HALF + 1.0
+    fence = [[(x0, gap), (x0, y1), (x1, y1), (x1, gap)], [(x0, -gap), (x0, y0), (x1, y0), (x1, -gap)]]
+    cost = FENCE_TRIS_M * (2 * (x1 - x0) + 2 * (y1 - y0)) + 2 * GUARD_TRIS
+    if budget >= cost + 5000:
+        out["fence"], out["guards"] = fence, [(x0, 0.0), (x1, 0.0)]
+        r0, r1 = L["road"]
+        h = lay.ROAD_HALF
+        out["stubs"] = [(gx0, x0 - 1.4, -h, h), (x0 + 1.4, r0, -h, h), (r1, x1 - 1.4, -h, h), (x1 + 1.4, gx1, -h, h)]
+        budget -= cost
+    else:
+        out["dropped"].append("fence and cattle guards")
+    taken = occupied(L) + [(grow(r, 1.0), "a road stub") for r in out["stubs"]]
+    sign = (x0 + 4.0, -lay.ROAD_HALF - 4.0)
+    if out["fence"] and not clash(around(*sign, 0.8, 0.8), taken):
+        out["sign"] = sign
+        taken.append((around(*sign, 1.0, 1.0), "the lease sign"))
+    budget = min(budget, SCATTER_MAX, SCATTER_M2 * (x1 - x0) * (y1 - y0))
+    if budget < 2000:
+        out["dropped"].append("plants and rocks")
+        return out
+    counts = {k: min(cap, int(share * budget / tris)) for k, (tris, share, cap, _) in SPECIES.items()}
+    tokens = [k for k in SPECIES for _ in range(counts[k])]
+    rng.shuffle(tokens)
+    # A smooth density field gives bare patches and thicker ones, instead of an even sprinkle.
+    waves = [(rng.uniform(0.008, 0.03), rng.uniform(0.008, 0.03), rng.uniform(0, 6.3)) for _ in range(3)]
+    cells = [(x0 + CELL * (i + 0.5), y0 + CELL * (j + 0.5)) for i in range(int((x1 - x0) / CELL))
+             for j in range(int((y1 - y0) / CELL))]
+    rng.shuffle(cells)
+    spots = [p["frame"].world(0.0, lay.TANK_Y) for p in L["pads"]] + [w["pos"] for w in L["wells"]]
+    for cx, cy in cells:
+        if not tokens:
+            break
+        density = 0.5 + sum(math.sin(cx * a + cy * b + p) for a, b, p in waves) / 6
+        if any(abs(cx - sx) < NEAR and abs(cy - sy) < NEAR for sx, sy in spots):
+            density += 0.35
+        if rng.random() > 0.25 + 0.75 * density:
+            continue
+        x, y = cx + rng.uniform(-0.35, 0.35) * CELL, cy + rng.uniform(-0.35, 0.35) * CELL
+        kind = tokens[-1]
+        r = SPECIES[kind][3]
+        if not (x0 + r + 1 < x < x1 - r - 1 and y0 + r + 1 < y < y1 - r - 1) or clash(around(x, y, r, r), taken):
+            continue
+        if any(math.hypot(x - px, y - py) < r + SPECIES[k][3] for k, px, py, *_ in out["scatter"]
+               if abs(x - px) < 4 and abs(y - py) < 4):
+            continue
+        tokens.pop()
+        out["scatter"].append((kind, round(x, 3), round(y, 3), round(rng.uniform(0, 2 * math.pi), 4),
+                               round(rng.uniform(0.8, 1.2), 3)))
+    if tokens:
+        out["dropped"].append(f"{len(tokens)} plants and rocks with no free spot")
+    return out
