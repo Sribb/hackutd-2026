@@ -6,7 +6,7 @@ import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { MeshoptDecoder } from "three/addons/libs/meshopt_decoder.module.js";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { mountSky, DEFAULT_SITE } from "./sky.js";
-import { startWeather, onWeather, hazards, exposure, remoteOnly, summary as wxSummary } from "./weather.js";
+import { startWeather, onWeather, hazards, exposure, remoteOnly, weather, summary as wxSummary } from "./weather.js";
 import * as api from "./api.js";
 import { phoneToken } from "./auth.js";
 import { buildPlaceholder } from "./placeholder.js";
@@ -683,7 +683,10 @@ function renderPlans() {
   // Storm check (weather.js): who each plan sends outside, weighed against the real weather.
   const hz = hazards();
   const safe = hz.length ? remoteOnly(list, field) : null;
-  const wx = `<div class="wx ${hz.length ? "hot" : ""}" title="${esc(hz.map((h) => h.why).join(" "))}"><span class="wx-k">Storm check</span> ${esc(wxSummary())}
+  // Nothing flagged: one line, details on hover. A hazard (or weather not checked) gets the full block.
+  const quiet = !hz.length && weather().status === "ok" && !/not checked|last checked/.test(wxSummary());
+  const wx = quiet ? `<div class="wx quiet" title="${esc(wxSummary())}"><span class="wx-k">Storm check</span> ${weather().drill ? "DRILL · " : ""}no NWS flags, next 4 h</div>`
+    : `<div class="wx ${hz.length ? "hot" : ""}" title="${esc(hz.map((h) => h.why).join(" "))}"><span class="wx-k">Storm check</span> ${esc(wxSummary())}
     ${hz.length ? `<div class="wx-pick">${safe ? `Keeps everyone inside: plan ${safe.i + 1} (${usd(safe.p.cost.total_usd)}), remote only.`
       : storm && storm.plan ? `Keeps everyone inside: ${esc(storm.plan.summary)} ${usd(storm.plan.cost.total_usd)}, checked with the forecast${data.baseline && data.baseline.cost ? ` (doing nothing: ${usd(data.baseline.cost.total_usd)})` : ""}. <button class="link" data-storm>Try it</button>`
       : storm && storm.busy ? "Looking for a plan that keeps everyone inside…"
