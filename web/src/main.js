@@ -1609,6 +1609,8 @@ const ui = layout === "console" ? mountConsole({
   blind: () => (data ? blindTanks() : []),
   // The field as it is now (minute 0, never the slider's forecast), for the monitoring strip (#154).
   liveView: () => (data && fc ? viewAt(0) : {}),
+  // Dataset mode: is this asset in the system the 3D shows? (Always yes on the demo field.)
+  inSystem: (id) => !dataset || !dataset.system || systemOf(field, id) === dataset.system,
   selected: () => selectedId,
   select: (id) => select(id),
   focus: (id) => { if (ids.has(id)) { select(id, true); inspect.pointed(id, "jarvis"); } },
