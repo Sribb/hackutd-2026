@@ -11,7 +11,9 @@ and triangle count stays exactly as built.
    galvanized steel; flowlines from wells become black HDPE. New parts that use the kit
    names get a role automatically, and anything unknown keeps its kit material, restyled.
    M_LAMP, M_BRINE, M_GROUND, M_ROAD, M_WIRE and every material that already carries an
-   image (the scenery kit, the ground and road textures) are left alone.
+   image (the scenery kit, scenery.py's ground, road and pads) are left alone, and so are
+   their UVs and color layers; a mesh on one of those that has none gets box UVs and a
+   white layer, so it never renders black.
 2. UVs: a box projection in each mesh's own frame, in meters, so a tiling texture keeps the
    same real-world size on every part, with an offset per kind of part.
 3. Weathering into the color attribute "Col" (glTF COLOR_0, which three.js multiplies into
@@ -382,6 +384,25 @@ def set_colors(obj, col):
     me.color_attributes.render_color_index = me.color_attributes.find(ATTR)
 
 
+def fill_gaps(obj):
+    """A mesh on someone else's textured material keeps its UVs and color layers. If it has
+    none, it gets box UVs and a white layer for each color attribute the material reads, so
+    the texture tiles and the layer multiplies by 1 instead of reading as black."""
+    me, mat = obj.data, obj.data.materials[0]
+    added = 0
+    if not me.uv_layers:
+        box_uvs(obj, 2.0, (0.0, 0.0))
+        added = 1
+    for node in mat.node_tree.nodes:
+        name = getattr(node, "layer_name", "") if node.type == "VERTEX_COLOR" else (
+            node.attribute_name if node.type == "ATTRIBUTE" and node.attribute_type == "GEOMETRY" else "")
+        if name and name not in me.attributes:
+            attr = me.color_attributes.new(name, "FLOAT_COLOR", "POINT")
+            attr.data.foreach_set("color", np.ones(len(me.vertices) * 4, dtype=np.float32))
+            added = 1
+    return added
+
+
 # ---------- the pass ----------
 
 def apply(scene, mode="fast", textures=True):
@@ -391,24 +412,33 @@ def apply(scene, mode="fast", textures=True):
     t0 = time.time()
     meshes = [o for o in scene.objects if o.type == "MESH" and o.data is not None]
     hdpe = tuple(f"PIPE_{o.name}_" for o in scene.objects if o.get("kind") == "well")
-    made, counts, styled = {}, {}, []
+    made, counts, styled, foreign = {}, {}, [], []
     for obj in meshes:
         me = obj.data
         if me.users > 1 or len(me.materials) != 1:
             continue                     # shared and multi-material kit models keep their own look
         mat = me.materials[0]
-        if mat is None or mat.name in KEEP or (has_image(mat) and mat.name not in made):
-            continue                     # the lamps and level, and anything someone else textured
+        if mat is not None and has_image(mat) and mat.name not in made:
+            foreign.append(obj)          # textured by someone else (scenery.py's ground, road, pads)
+            continue
+        if mat is None or mat.name in KEEP:
+            continue                     # the lamps, the tank level, wire and plants
         base = mat.name.split(".")[0]
         asset = asset_of(obj)
         role = role_for(obj, base, asset.get("kind") if asset else None, hdpe)
         if role is None:
             continue
         if role not in made:
+            theirs = bpy.data.materials.get(role)
+            if theirs is not None and has_image(theirs):
+                me.materials[0] = theirs  # a role someone else already textured: theirs wins
+                foreign.append(obj)
+                continue
             made[role] = build_material(role, textures)
         me.materials[0] = made[role]
         counts[role] = counts.get(role, 0) + 1
         styled.append((obj, role))
+    filled = sum(fill_gaps(obj) for obj in foreign)
     t_roles = time.time()
 
     # one representative per geometry key: it gets the UVs and colors, its copies get the same
@@ -448,7 +478,7 @@ def apply(scene, mode="fast", textures=True):
             set_colors(obj, colors[key])
     t_end = time.time()
     return {"mode": mode, "textures": bool(textures), "materials": dict(sorted(counts.items())),
-            "styled": len(styled), "looks": len(groups),
+            "styled": len(styled), "looks": len(groups), "theirs": len(foreign), "gaps_filled": filled,
             "seconds": {"roles": round(t_roles - t0, 2), "uvs": round(t_uv - t_roles, 2),
                         "weather": round(t_end - t_uv - ao_s, 2), "ao": round(ao_s, 2),
                         "total": round(t_end - t0, 2)}}
