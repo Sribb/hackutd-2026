@@ -1,14 +1,14 @@
 """The live layer (#38): connectors, detection, human-confirmed actions, /ws, Jarvis rules."""
 import asyncio
 import copy
+import importlib
 import json
 
 import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from backend.app.connectors import stubs
-from backend.app.connectors.stubs import MqttConnector
+from backend.app.connectors.mqtt import MqttConnector
 from backend.app.connectors.webhook import WebhookConnector
 from backend.app.fieldmap import FieldMap
 from backend.app.live import ActionError, LiveField
@@ -149,11 +149,11 @@ def test_bad_proposal_is_refused():
 
 # ---------- connectors ----------
 
-def test_mqtt_stub_without_library_is_unavailable(monkeypatch):
+def test_mqtt_without_library_is_unavailable(monkeypatch):
     def missing(mod):
         raise ImportError(f"No module named {mod!r}")
 
-    monkeypatch.setattr(stubs.importlib, "import_module", missing)
+    monkeypatch.setattr(importlib, "import_module", missing)
     raw = {**json.loads(json.dumps({"connectors": [{
         "id": "CONN_SCADA", "kind": "mqtt", "config": {"host": "10.0.0.5", "password_env": "MQTT_PASSWORD"},
         "signals": [{"asset_id": "TANK_3", "signal": "level_pct", "address": "tank3/level"}],

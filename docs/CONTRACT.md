@@ -326,7 +326,8 @@ The live clock starts at the blueprint's `clock_start` and runs at `FREEBOARD_SP
 - `status` is `OK`, `WARNING`, `ALARM`, `OFFLINE`, or `UNKNOWN`. A tank with no fresh level reading is `UNKNOWN`, never `OK`.
 - `stale` is true when the asset's readings are older than `sensors.stale_after_min` (default 5). `age_min` is live minutes since its newest reading (null if never). `last_reading_t` is that reading's ISO time (null if never). Trucks have no sensors, so their age is null.
 - Readings per kind: tanks `level_pct`; pumps `running`, `flow_bbl_hr`; valves `position`; wells and disposal wells `flow_bbl_hr`; trucks `phase` (`IDLE`, `QUEUED`, `EN_ROUTE`, `LOADING`, `TO_DISPOSAL`) and `target_id`. A value is null when nothing has been read.
-- `connectors` always starts with the simulator, `CONN_SIM`. Connector `kind` is `sim`, `webhook`, `mqtt`, `modbus`, or `opcua`; `status` is `connected` or `unavailable`.
+- `connectors` always starts with the simulator, `CONN_SIM`. Connector `kind` is `sim`, `webhook`, `mqtt`, `modbus`, or `opcua`; `status` is `connected` or `unavailable`, and `detail` says why (library missing, can't reach host:port, environment variable not set).
+- An asset with a signal from an `unavailable` connector is `UNKNOWN` at once (an `ALARM` stays `ALARM`), with `stale: true` and a `reason` that starts `Lost the link to CONN_PLC (modbus): ...`. The forecast gets no level for such a tank.
 
 ### Alerts
 
@@ -387,6 +388,20 @@ Response 200:
 - `POST /api/live/readings/{connector_id}` (webhook connectors only) with `{"readings": [{"asset_id", "signal", "value"} | {"address", "value"}]}` → `{"accepted": [...], "rejected": [...]}`. Only signals the blueprint declares for that connector are accepted. If the connector has `token_env`, send the token in `X-Freeboard-Token`.
 - `POST /api/live/sim` with `{speed?, paused?, advance_min?}` → the live clock.
 - `POST /api/live/faults` with `{asset_id, type: TRIP | STUCK_VALVE | SENSOR_STALE | LEAK | REPAIR, reason?, rate_bbl_hr?}` injects a fault into the simulator.
+
+### Connector protocols (#62)
+
+Declared in the blueprint's `connectors` (see [BLUEPRINT.md](BLUEPRINT.md)). Config holds hosts and ports only; a secret is named by a `*_env` key. Every command below is sent **only after a person confirms** it; `JARVIS_CONFIRM=0` never applies to these connectors.
+
+| `kind` | Config | Signal `address` and value | Command `address` and payload |
+|---|---|---|---|
+| `mqtt` (paho-mqtt, MQTT 3.1.1) | `host`, `port` (1883), `topic_prefix` (""), `username`, `password_env`, `tls`, `client_id`, `keepalive_s` (30), `timeout_s` (5) | Topic `topic_prefix + address` (default `ASSET_ID/signal`). Payload is a plain value (`72.4`, `1`, `true`, `ON`, `OPEN`) or JSON (`{"value": 72.4}`) | Topic `topic_prefix + address` (default `ASSET_ID/set`), QoS 1, plain text: `OPEN`/`CLOSED`, `ON`/`OFF`, or the choke fraction (`0.5`). `CONFIRMED` means the broker acknowledged it |
+| `modbus` (pymodbus, Modbus TCP) | `host`, `port` (502), `unit_id` (1), `poll_s` (1), `timeout_s` (2), `bad_value` (65535) | `hr:N`, `ir:N`, `coil:N`, `di:N`, 0-based (a bare `N` is a holding register). A register is unsigned 16-bit; value = `raw * scale` (the signal's `scale`, default 1). `bad_value` means no reading. `running`/`position`: nonzero is running/`OPEN` | `hr:N` or `coil:N`. `SET_VALVE` OPEN 1 / CLOSED 0, `SET_PUMP` ON 1 / OFF 0, `CHOKE_WELL` percent kept 0 to 100 (holding register). `CONFIRMED` means the PLC accepted the write |
+| `opcua` | `endpoint` | not implemented yet: reports `unavailable` | |
+
+Readings are stamped with the live clock when the backend reads them, so a device that stops publishing goes stale after `stale_after_min`. Publish at least that often. Whether a device actually moved shows in its readings: `VALVE_MISMATCH` catches a valve that didn't.
+
+`scenario/samples/sample1_pecos_mqtt_modbus.json` is sample 1 with Tanks 1-4 and Pumps 1-4 on `CONN_SCADA` (mqtt, `127.0.0.1:1883`, prefix `pecos/`) and the rest on `CONN_PLC` (modbus, `127.0.0.1:5020`). `python -m backend.tools.fake_field` serves both on one laptop; see [backend/README.md](../backend/README.md#real-protocols-on-one-laptop-mqtt--modbus-62).
 
 ### `WS /ws`
 
