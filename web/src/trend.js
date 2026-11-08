@@ -1,7 +1,7 @@
 // Past plus future on one line (CF-3), for the selected tank.
 //
 //   solid   the last 60 live minutes of level, kept in this browser from /ws readings
-//           (and GET /api/history when the backend has it, CF-14). A stale period is a gap,
+//           and GET /api/history (CF-14) for what came before. A stale period is a gap,
 //           never a repeated last value.
 //   dashed  the forecast on screen (the what-if result when one is applied), from now on.
 //   band    give or take: the forecast stretched in time so it crosses shutdown at the
@@ -49,18 +49,22 @@ function record() {
   }
 }
 
-// CF-14, when it exists. Tolerant of the exact shape until CONTRACT.md fixes it.
+// CF-14 GET /api/history (CONTRACT.md): timeline rows in the forecast's shape with
+// t_min <= 0 relative to the response's live minute `t`. Null is a stale period (a gap);
+// rows before `since_t_min` are before the live layer started, so they are left out.
 async function backfill(id) {
   if (!base || !historyApi || asked.has(id)) return;
   asked.add(id);
   try {
-    const r = await fetch(`${base}/api/history?asset_id=${encodeURIComponent(id)}&minutes=${PAST_MIN}`);
+    const r = await fetch(`${base}/api/history?minutes=${PAST_MIN}&step_min=1&asset_id=${encodeURIComponent(id)}&signal=level_pct`);
     if (r.status === 404) { historyApi = false; return; }
     if (!r.ok) return;
     const j = await r.json();
-    const rows = j.points || j.readings || (j.series && j.series[id]) || j[id] || [];
-    const got = rows.map((p) => ({ t: Number(p.t ?? p.t_min ?? p.live_t), v: p.level_pct ?? p.value ?? p.v ?? null }))
-      .filter((p) => Number.isFinite(p.t));
+    if (typeof j.t !== "number" || !Array.isArray(j.timeline)) return;
+    const since = typeof j.since_t_min === "number" ? j.since_t_min : -Infinity;
+    const got = j.timeline
+      .filter((row) => row.t_min >= since && row.tanks && id in row.tanks)
+      .map((row) => ({ t: j.t + row.t_min, v: typeof row.tanks[id] === "number" ? row.tanks[id] : null }));
     if (!got.length) return;
     const mine = hist.get(id) || [];
     const first = mine.length ? mine[0].t : Infinity;
