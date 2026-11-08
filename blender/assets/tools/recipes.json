@@ -1,0 +1,260 @@
+{
+  "kit": "HackUTD 2026 CC0 scenery kit for a West Texas (Permian Basin) produced-water field at night",
+  "sources": {
+    "polyhaven": {
+      "name": "Poly Haven",
+      "license": "CC0 1.0",
+      "license_url": "https://creativecommons.org/publicdomain/zero/1.0/",
+      "license_evidence": "https://polyhaven.com/license says: 'Our assets are all licensed as CC0' and links to creativecommons.org/publicdomain/zero/1.0/. Files and authors came from the official API (api.polyhaven.com /files and /info), with every download checked against the API md5."
+    },
+    "ambientcg": {
+      "name": "ambientCG",
+      "license": "CC0 1.0",
+      "license_url": "https://creativecommons.org/publicdomain/zero/1.0/",
+      "license_evidence": "https://docs.ambientcg.com/license/ says: 'All ambientCG assets are provided under the Creative Commons CC0 1.0 Universal License.' The download link came from the official API (ambientcg.com/api/v2/full_json)."
+    },
+    "kenney_nature": {
+      "name": "Kenney Nature Kit 2.1",
+      "license": "CC0 1.0",
+      "license_url": "https://creativecommons.org/publicdomain/zero/1.0/",
+      "license_evidence": "License.txt inside the Nature Kit zip from kenney.nl/assets/nature-kit says: 'License: (Creative Commons Zero, CC0) http://creativecommons.org/publicdomain/zero/1.0/'"
+    },
+    "kenney_car": {
+      "name": "Kenney Car Kit 3.1",
+      "license": "CC0 1.0",
+      "license_url": "https://creativecommons.org/publicdomain/zero/1.0/",
+      "license_evidence": "License.txt inside the Car Kit zip from kenney.nl/assets/car-kit says: 'License: (Creative Commons Zero, CC0) http://creativecommons.org/publicdomain/zero/1.0/'"
+    },
+    "kenney_industrial": {
+      "name": "Kenney City Kit Industrial 2.0",
+      "license": "CC0 1.0",
+      "license_url": "https://creativecommons.org/publicdomain/zero/1.0/",
+      "license_evidence": "License.txt inside the City Kit Industrial zip from kenney.nl/assets/city-kit-industrial says: 'License: (Creative Commons Zero, CC0) http://creativecommons.org/publicdomain/zero/1.0/'"
+    }
+  },
+  "models": [
+    {
+      "id": "SCENERY_mesquite_1", "category": "plants", "out": "scenery/plants/mesquite_1.glb",
+      "source": "polyhaven", "source_url": "https://polyhaven.com/a/searsia_burchellii",
+      "src": "ph/searsia_burchellii/searsia_burchellii.gltf", "objects": ["searsia_burchellii_small_LOD0"],
+      "alpha_map": "ph/searsia_burchellii/textures/searsia_burchellii_alpha_1k.png",
+      "author": "James Ray Cock, Jenelle van Heerden",
+      "fit": ["z", 2.6], "max_tris": 14000, "tex": 1024,
+      "notes": "Stand-in for honey mesquite. Searsia burchellii (an arid-scrub shrub), small variant, scaled up to 2.6 m tall. Leaf cards thinned and enlarged to fit the triangle budget. Leaves use alpha MASK."
+    },
+    {
+      "id": "SCENERY_creosote_1", "category": "plants", "out": "scenery/plants/creosote_1.glb",
+      "source": "polyhaven", "source_url": "https://polyhaven.com/a/shrub_02",
+      "src": "ph/shrub_02/shrub_02.gltf", "objects": ["shrub_02_a"],
+      "alpha_map": "ph/shrub_02/textures/shrub_02_alpha_1k.png",
+      "author": "Rico Cilliers",
+      "max_tris": 8000, "tex": 1024,
+      "notes": "Stand-in for creosote bush: a sparse, dry, twiggy shrub at its scanned size (about 1.7 m tall). Alpha MASK foliage."
+    },
+    {
+      "id": "SCENERY_creosote_2", "category": "plants", "out": "scenery/plants/creosote_2.glb",
+      "source": "polyhaven", "source_url": "https://polyhaven.com/a/shrub_02",
+      "src": "ph/shrub_02/shrub_02.gltf", "objects": ["shrub_02_c"],
+      "alpha_map": "ph/shrub_02/textures/shrub_02_alpha_1k.png",
+      "author": "Rico Cilliers",
+      "max_tris": 8000, "tex": 1024,
+      "notes": "Second creosote stand-in, wider and lower (about 2.2 m wide, 1.2 m tall). Alpha MASK foliage."
+    },
+    {
+      "id": "SCENERY_sage_1", "category": "plants", "out": "scenery/plants/sage_1.glb",
+      "source": "polyhaven", "source_url": "https://polyhaven.com/a/wild_rooibos_bush",
+      "src": "ph/wild_rooibos_bush/wild_rooibos_bush.gltf", "objects": ["wild_rooibos_bush_a"],
+      "alpha_map": "ph/wild_rooibos_bush/textures/wild_rooibos_bush_alpha_1k.png",
+      "author": "James Ray Cock, Jenelle van Heerden",
+      "fit": ["z", 0.9], "max_tris": 8000, "tex": 1024,
+      "notes": "Stand-in for sage or saltbush. Wild rooibos bush (variant a), scaled to 0.9 m tall. Leaf cards thinned to fit the budget. Alpha MASK foliage."
+    },
+    {
+      "id": "SCENERY_sage_2", "category": "plants", "out": "scenery/plants/sage_2.glb",
+      "source": "polyhaven", "source_url": "https://polyhaven.com/a/wild_rooibos_bush",
+      "src": "ph/wild_rooibos_bush/wild_rooibos_bush.gltf", "objects": ["wild_rooibos_bush_b"],
+      "alpha_map": "ph/wild_rooibos_bush/textures/wild_rooibos_bush_alpha_1k.png",
+      "author": "James Ray Cock, Jenelle van Heerden",
+      "fit": ["z", 0.75], "max_tris": 6500, "tex": 1024,
+      "notes": "Smaller sage or saltbush stand-in. Wild rooibos bush (variant b), scaled to 0.75 m tall. Alpha MASK foliage."
+    },
+    {
+      "id": "SCENERY_dry_grass_1", "category": "plants", "out": "scenery/plants/dry_grass_1.glb",
+      "source": "polyhaven", "source_url": "https://polyhaven.com/a/shrub_02",
+      "src": "ph/shrub_02/shrub_02.gltf", "objects": ["shrub_02_d"],
+      "alpha_map": "ph/shrub_02/textures/shrub_02_alpha_1k.png",
+      "author": "Rico Cilliers",
+      "fit": ["z", 0.55], "max_tris": 3000, "tex": 512,
+      "notes": "Dry grass or weed tuft. Shrub 02 (variant d) scaled down to 0.55 m tall and thinned to 3,000 triangles for scattering. Alpha MASK."
+    },
+    {
+      "id": "SCENERY_dry_grass_2", "category": "plants", "out": "scenery/plants/dry_grass_2.glb",
+      "source": "kenney_nature", "source_url": "https://kenney.nl/assets/nature-kit",
+      "src": "kenney_nature/Models/GLTF format/grass_large.glb", "objects": ["grass_large"],
+      "author": "Kenney",
+      "fit": ["z", 0.45], "tint": {"grass": [0.552, 0.402, 0.155]}, "max_tris": 15000, "tex": 512,
+      "notes": "Very cheap low-poly grass clump (grass_large) for mass scatter, recolored from green to dry straw and scaled to 0.45 m tall. Flat color, no textures."
+    },
+    {
+      "id": "SCENERY_dead_branch_1", "category": "plants", "out": "scenery/plants/dead_branch_1.glb",
+      "source": "polyhaven", "source_url": "https://polyhaven.com/a/dry_branches_medium_01",
+      "src": "ph/dry_branches_medium_01/dry_branches_medium_01.gltf", "objects": ["dry_branches_medium_01_a"],
+      "author": "Rico Cilliers",
+      "max_tris": 2500, "tex": 512,
+      "notes": "Fallen dead branch (variant a), about 1.3 m long, decimated to 2,500 triangles."
+    },
+    {
+      "id": "SCENERY_dead_branch_2", "category": "plants", "out": "scenery/plants/dead_branch_2.glb",
+      "source": "polyhaven", "source_url": "https://polyhaven.com/a/dry_branches_medium_01",
+      "src": "ph/dry_branches_medium_01/dry_branches_medium_01.gltf", "objects": ["dry_branches_medium_01_b"],
+      "author": "Rico Cilliers",
+      "max_tris": 2500, "tex": 512,
+      "notes": "Fallen dead branch (variant b), about 1 m long, decimated to 2,500 triangles."
+    },
+    {
+      "id": "SCENERY_rock_1", "category": "rocks", "out": "scenery/rocks/rock_1.glb",
+      "source": "polyhaven", "source_url": "https://polyhaven.com/a/moon_rock_02",
+      "src": "ph/moon_rock_02/moon_rock_02.gltf", "objects": ["moon_rock_02_LOD0"],
+      "author": "Rico Cilliers, Greg Zaal, Jenelle van Heerden",
+      "fit": ["max", 0.9], "max_tris": 4000, "tex": 512,
+      "notes": "Pale rock that reads as caliche or limestone. Scanned at 0.25 m and scaled up to 0.9 m across."
+    },
+    {
+      "id": "SCENERY_rock_2", "category": "rocks", "out": "scenery/rocks/rock_2.glb",
+      "source": "polyhaven", "source_url": "https://polyhaven.com/a/moon_rock_06",
+      "src": "ph/moon_rock_06/moon_rock_06.gltf", "objects": ["moon_rock_06_LOD0"],
+      "author": "Greg Zaal, Jenelle van Heerden, Rico Cilliers",
+      "fit": ["max", 0.6], "max_tris": 3000, "tex": 512,
+      "notes": "Small pale rock. Scanned at 9 cm and scaled up to 0.6 m across, decimated to 3,000 triangles."
+    },
+    {
+      "id": "SCENERY_boulder_1", "category": "rocks", "out": "scenery/rocks/boulder_1.glb",
+      "source": "polyhaven", "source_url": "https://polyhaven.com/a/namaqualand_boulders_01",
+      "src": "ph/namaqualand_boulders_01/namaqualand_boulders_01.gltf", "objects": ["namaqualand_rocks_01_a"],
+      "author": "Greg Zaal, Jenelle van Heerden",
+      "fit": ["max", 1.2], "max_tris": 5000, "tex": 512,
+      "notes": "Tan arid-country boulder (piece a), scaled to 1.2 m across and decimated to 5,000 triangles. Textures at 512 px."
+    },
+    {
+      "id": "SCENERY_boulder_2", "category": "rocks", "out": "scenery/rocks/boulder_2.glb",
+      "source": "polyhaven", "source_url": "https://polyhaven.com/a/namaqualand_boulders_01",
+      "src": "ph/namaqualand_boulders_01/namaqualand_boulders_01.gltf", "objects": ["namaqualand_rocks_01_b"],
+      "author": "Greg Zaal, Jenelle van Heerden",
+      "fit": ["max", 1.5], "max_tris": 5000, "tex": 512,
+      "notes": "Flatter tan boulder (piece b), scaled to 1.5 m across and decimated to 5,000 triangles. Textures at 512 px."
+    },
+    {
+      "id": "SCENERY_fence_rail_1", "category": "fence", "out": "scenery/fence/fence_rail_1.glb",
+      "source": "kenney_nature", "source_url": "https://kenney.nl/assets/nature-kit",
+      "src": "kenney_nature/Models/GLTF format/fence_simple.glb", "objects": ["fence_simple"],
+      "author": "Kenney",
+      "scale": 3.4, "max_tris": 15000, "tex": 512,
+      "notes": "Wooden post-and-rail fence section, scaled 3.4x to about 3.4 m long and 1.2 m tall. Tiles end to end along X. No barbed wire (see gaps)."
+    },
+    {
+      "id": "SCENERY_fence_gate_1", "category": "fence", "out": "scenery/fence/fence_gate_1.glb",
+      "source": "kenney_nature", "source_url": "https://kenney.nl/assets/nature-kit",
+      "src": "kenney_nature/Models/GLTF format/fence_gate.glb", "objects": ["fence_gate", "gate"],
+      "author": "Kenney",
+      "scale": 3.4, "max_tris": 15000, "tex": 512,
+      "notes": "Matching wooden fence section with a swing gate, same 3.4x scale as fence_rail_1, for a lease entrance."
+    },
+    {
+      "id": "SCENERY_oil_drum_1", "category": "props", "out": "scenery/props/oil_drum_1.glb",
+      "source": "polyhaven", "source_url": "https://polyhaven.com/a/barrel_03",
+      "src": "ph/barrel_03/barrel_03.gltf", "objects": ["barrel_03"],
+      "author": "Serhii Khromov",
+      "max_tris": 15000, "tex": 512,
+      "notes": "Blue steel 55-gallon drum at real size (0.93 m tall)."
+    },
+    {
+      "id": "SCENERY_tire_1", "category": "props", "out": "scenery/props/tire_1.glb",
+      "source": "polyhaven", "source_url": "https://polyhaven.com/a/old_tyre",
+      "src": "ph/old_tyre/old_tyre.gltf", "objects": ["old_tyre"],
+      "author": "MP",
+      "max_tris": 15000, "tex": 512,
+      "notes": "Old worn tire at real size (0.6 m), standing upright. Lay it flat for yard clutter."
+    },
+    {
+      "id": "SCENERY_pickup_1", "category": "props", "out": "scenery/props/pickup_1.glb",
+      "source": "kenney_car", "source_url": "https://kenney.nl/assets/car-kit",
+      "src": "kenney_car/Models/GLB format/truck-flat.glb", "objects": ["body", "wheel-front-left", "wheel-front-right", "wheel-back-left", "wheel-back-right"],
+      "author": "Kenney",
+      "fit": ["z", 2.1], "max_tris": 15000, "tex": 512,
+      "notes": "White flatbed pickup (truck-flat), low poly and stylized, scaled to 2.1 m tall. Its cartoon proportions make it about 4.4 m long and 2.4 m wide. Body and wheels joined into one mesh."
+    },
+    {
+      "id": "SCENERY_lease_sign_1", "category": "props", "out": "scenery/props/lease_sign_1.glb",
+      "source": "kenney_nature", "source_url": "https://kenney.nl/assets/nature-kit",
+      "src": "kenney_nature/Models/GLTF format/sign.glb", "objects": ["sign"],
+      "author": "Kenney",
+      "fit": ["z", 1.6], "max_tris": 15000, "tex": 512,
+      "notes": "Wooden board on a post, scaled to 1.6 m tall. Use as a lease or road sign. The board is blank, so lease text can go on top as a decal or a label object."
+    },
+    {
+      "id": "SCENERY_shed_1", "category": "props", "out": "scenery/props/shed_1.glb",
+      "source": "kenney_industrial", "source_url": "https://kenney.nl/assets/city-kit-industrial",
+      "src": "kenney_industrial/Models/GLB format/shipping-container-a.glb", "objects": ["shipping-container-a"],
+      "author": "Kenney",
+      "fit": ["y", 6.06], "max_tris": 15000, "tex": 512,
+      "notes": "Shipping container (conex box), the usual storage shed on a lease. Scaled to a 20 ft container (6.06 m long)."
+    }
+  ],
+  "textures": [
+    {
+      "id": "TEX_ground_dry_soil", "name": "ground_dry_soil", "category": "textures", "main_ground": true, "px": 2048,
+      "source": "polyhaven", "source_url": "https://polyhaven.com/a/dry_ground_rocks", "author": "Rob Tuytel",
+      "maps": {
+        "color": "ph/dry_ground_rocks/dry_ground_rocks_diff_2k.jpg",
+        "normal_gl": "ph/dry_ground_rocks/dry_ground_rocks_nor_gl_2k.jpg",
+        "roughness": "ph/dry_ground_rocks/dry_ground_rocks_rough_2k.jpg"
+      },
+      "notes": "Main ground at 2K: dry tan soil with scattered pebbles. One tile covers 4 m x 4 m. Normal map uses the OpenGL convention (Blender and three.js)."
+    },
+    {
+      "id": "TEX_ground_caliche", "name": "ground_caliche", "category": "textures", "px": 1024,
+      "source": "polyhaven", "source_url": "https://polyhaven.com/a/sandy_gravel", "author": "Charlotte Baglioni",
+      "maps": {
+        "color": "ph/sandy_gravel/sandy_gravel_diff_1k.jpg",
+        "normal_gl": "ph/sandy_gravel/sandy_gravel_nor_gl_1k.jpg",
+        "roughness": "ph/sandy_gravel/sandy_gravel_rough_1k.jpg"
+      },
+      "notes": "Pale, packed sandy gravel that reads as caliche, for pads and lease roads. One tile covers 2.1 m x 2.1 m."
+    },
+    {
+      "id": "TEX_gravel_pad", "name": "gravel_pad", "category": "textures", "px": 1024,
+      "source": "polyhaven", "source_url": "https://polyhaven.com/a/gravel_floor", "author": "Jenelle van Heerden, Matterfield",
+      "maps": {
+        "color": "ph/gravel_floor/gravel_floor_diff_1k.jpg",
+        "normal_gl": "ph/gravel_floor/gravel_floor_nor_gl_1k.jpg",
+        "roughness": "ph/gravel_floor/gravel_floor_rough_1k.jpg"
+      },
+      "notes": "Tan crushed gravel for tank pads. One tile covers 2.25 m x 2.25 m."
+    },
+    {
+      "id": "TEX_dirt_road_tracks", "name": "dirt_road_tracks", "category": "textures", "px": 1024,
+      "source": "ambientcg", "source_url": "https://ambientcg.com/a/Ground017", "author": "ambientCG (Lennart Demes)",
+      "maps": {
+        "color": "acg/Ground017/Ground017_1K-JPG_Color.jpg",
+        "normal_gl": "acg/Ground017/Ground017_1K-JPG_NormalGL.jpg",
+        "roughness": "acg/Ground017/Ground017_1K-JPG_Roughness.jpg"
+      },
+      "notes": "Smooth dirt with tire tracks (ambientCG Ground017) for the lease road. ambientCG lists no physical tile size."
+    }
+  ],
+  "hdris": [
+    {
+      "id": "HDRI_rogland_moonlit_night", "category": "hdri", "out": "hdri/rogland_moonlit_night_2k.hdr",
+      "source": "polyhaven", "source_url": "https://polyhaven.com/a/rogland_moonlit_night", "author": "Greg Zaal",
+      "src": "ph/rogland_moonlit_night/rogland_moonlit_night_2k.hdr",
+      "notes": "2K (2048 x 1024) night HDRI over open arid desert with a bright moon, stars, and the Milky Way. Good for Blender world lighting with a strong moon key light."
+    }
+  ],
+  "gaps": [
+    {"item": "Barbed wire ranch fence (posts with wire strands)", "reason": "No CC0 model on Poly Haven, ambientCG, or Kenney. The kit has a wooden post-and-rail fence instead. Wire strands are easy to generate in the scenery script as thin curves between posts."},
+    {"item": "Yucca and prickly pear", "reason": "No CC0 model on Poly Haven, ambientCG, or Kenney. Kenney's cactus is a saguaro shape that does not grow in Texas, so it was left out."},
+    {"item": "Cattle guard (optional)", "reason": "No CC0 model found on the allowed sources."},
+    {"item": "Pallets and a portable toilet (optional)", "reason": "No CC0 model found on the allowed sources."},
+    {"item": "Source skipped: Quaternius", "reason": "Its packs download through a Google Drive folder, not a direct link, so they were left out under the direct-download, no-login rule."}
+  ]
+}
