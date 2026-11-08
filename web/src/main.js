@@ -66,6 +66,10 @@ moon.position.set(-30, 60, 25);
 moon.castShadow = true;
 moon.shadow.mapSize.set(2048, 2048);
 Object.assign(moon.shadow.camera, { left: -60, right: 60, top: 60, bottom: -60, far: 200 });
+// Shadow acne fix (docs/3D_QUALITY.md, method 1): no cost, removes the rings on pads and
+// the stripes on tank shells. normalBias scales with the shadow box in frame().
+moon.shadow.bias = -0.0005;
+moon.shadow.normalBias = 0.04;
 scene.add(moon);
 
 const ground = new THREE.Mesh(new THREE.PlaneGeometry(400, 400), new THREE.MeshStandardMaterial({ color: 0x15181c, roughness: 1 }));
@@ -1294,6 +1298,7 @@ function frame(root) {
   moon.target.position.copy(center);
   scene.add(moon.target);
   moon.shadow.camera.updateProjectionMatrix();
+  moon.shadow.normalBias = 0.04 * Math.max(1, half / 60); // one shadow texel grows with the box
   // Sit under the model's own ground (if it has one) so the two never z-fight.
   const whole = new THREE.Box3().setFromObject(root);
   ground.position.set(center.x, Math.min(box.min.y, whole.min.y) - Math.max(0.05, half * 0.002), center.z);
@@ -1536,6 +1541,11 @@ async function boot() {
   note.hidden = false;
   note.textContent = model.from === "placeholder" ? "Placeholder geometry until blender/field.glb lands" : `Model: ${model.from}`;
   mountScenery(model.root, note, renderer); // #88 scenery toggle, plus a 45 fps guard (pixels first, then scenery)
+  // Compile every shader behind the loading screen, so the first frames do not stall
+  // (0.4 to 1.6 s measured). Never hold the console longer than 4 s for it.
+  try {
+    await Promise.race([renderer.compileAsync(scene, camera), new Promise((r) => setTimeout(r, 4000))]);
+  } catch (e) { console.warn("compileAsync:", e); }
   $("loading").remove();
   frame(model.root);
   buildFuses();
