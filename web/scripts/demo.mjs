@@ -141,9 +141,14 @@ const frag = ownTokens ? `#k=${OP}&p=${PH}` : "";
 // ?fresh: each demo run starts a new shift log and crew list (a rehearsal's entries stay out).
 // The console drops it from the address bar once loaded, so a reload keeps the log.
 const consoleUrl = `${base}/?fresh${frag}`;
+// The judge flow (#147): /start keeps the #k= token for its tab (it imports auth.js), so the
+// console it opens at the end (?tour=1) can play the replay, approve and hold to confirm.
+const judgeUrl = `${base}/start${frag}`;
 const phoneUrl = `${base}/phone${ownTokens ? `#k=${PH}` : ""}`;
 const qr = LAN || TUNNEL ? await QRCode.toString(phoneUrl, { type: "terminal", small: true }) : "";
 console.log(`
+  Judges    ${judgeUrl}
+            the full judge flow: intro, your field, the tour (same token rules as the console)
   Console   ${consoleUrl}
             open this exact link: the #k= part unlocks control in that tab only
   Phone     ${LAN || TUNNEL ? `scan below, or the Pager button in the console` : "phones need the Wi-Fi: rerun with  npm run demo:lan"}
