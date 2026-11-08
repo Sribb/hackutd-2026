@@ -2,6 +2,9 @@
 import asyncio
 import copy
 import json
+import threading
+import time
+from pathlib import Path
 
 import httpx
 import pytest
@@ -14,6 +17,9 @@ from backend.app.fieldmap import FieldMap
 from backend.app.live import ActionError, LiveField
 from backend.app.main import app
 from backend.app.scenario import load_scenario
+
+
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def run(coro):
@@ -147,6 +153,156 @@ def test_bad_proposal_is_refused():
     assert e.value.status == 422
 
 
+# ---------- a proposal is sent at most once (two screens, confirm vs reject) ----------
+
+HOOK_RAW = {"connectors": [{"id": "CONN_HOOK", "kind": "webhook", "config": {"url": "http://gateway.local/cmd"},
+                            "signals": [], "commands": [{"asset_id": "VALVE_XO_34", "command": "SET_VALVE",
+                                                         "address": "xo34/cmd"}]}]}
+
+
+def hooked_field(statuses_seen: list | None = None):
+    """A field whose crossover valve is on a (slow) webhook, plus the list of commands it got.
+    Every hub broadcast yields to the event loop, like a real socket send."""
+    live = LiveField(healthy_scenario(), copy.deepcopy(HOOK_RAW))
+    sent, lock = [], threading.Lock()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if statuses_seen is not None:
+            statuses_seen.extend(p["status"] for p in live.proposals.values())
+        time.sleep(0.05)  # the equipment takes a moment, so the other request arrives mid-send
+        with lock:
+            sent.append(body)
+        return httpx.Response(200, json={"ok": True})
+
+    live.registry.get("CONN_HOOK").transport = httpx.MockTransport(handler)
+    broadcasts = []
+
+    async def broadcast(typ, payload):
+        if typ == "proposal":
+            broadcasts.append(payload["proposal"]["status"])
+        await asyncio.sleep(0)
+
+    live.hub.broadcast = broadcast
+    return live, sent, broadcasts
+
+
+def valve_open(live):
+    return run(live.propose({"type": "SET_VALVE", "asset_id": "VALVE_XO_34", "value": "OPEN"}))
+
+
+def test_two_concurrent_confirms_send_once():
+    mid_send = []
+    live, sent, broadcasts = hooked_field(mid_send)
+    p = valve_open(live)
+
+    async def both():
+        return await asyncio.gather(live.confirm(p["id"], by="console"), live.confirm(p["id"], by="phone"),
+                                    return_exceptions=True)
+
+    results = run(both())
+    ok = [r for r in results if isinstance(r, dict)]
+    errs = [r for r in results if isinstance(r, ActionError)]
+    assert len(ok) == 1 and len(errs) == 1, results
+    assert errs[0].status == 409
+    assert ok[0]["status"] == "CONFIRMED" and ok[0]["decided_by"] == "console"
+    assert len(sent) == 1
+    assert mid_send == ["SENDING"]  # claimed before the connector was called
+    assert broadcasts == ["PENDING", "SENDING", "CONFIRMED"]  # every screen sees it go out
+
+
+@pytest.mark.parametrize("reject_first", [False, True])
+def test_reject_racing_confirm_never_both(reject_first):
+    live, sent, _ = hooked_field()
+    p = valve_open(live)
+
+    async def race():
+        calls = [live.confirm(p["id"], by="console"), live.reject(p["id"], by="phone")]
+        return await asyncio.gather(*(reversed(calls) if reject_first else calls), return_exceptions=True)
+
+    results = run(race())
+    ok = [r for r in results if isinstance(r, dict)]
+    errs = [r for r in results if isinstance(r, ActionError)]
+    assert len(ok) == 1 and len(errs) == 1 and errs[0].status == 409, results
+    final = live.proposals[p["id"]]["status"]
+    if final == "REJECTED":
+        assert sent == []
+    else:
+        assert final == "CONFIRMED" and len(sent) == 1
+    assert final == ("REJECTED" if reject_first else "CONFIRMED")
+
+
+def test_confirm_after_reject_is_409_and_sends_nothing():
+    live, sent, _ = hooked_field()
+    p = valve_open(live)
+    assert run(live.reject(p["id"]))["status"] == "REJECTED"
+    with pytest.raises(ActionError) as e:
+        run(live.confirm(p["id"]))
+    assert e.value.status == 409
+    assert sent == [] and live.proposals[p["id"]]["status"] == "REJECTED"
+
+
+def test_reject_while_sending_is_409():
+    live, sent, _ = hooked_field()
+    p = valve_open(live)
+
+    async def go():
+        task = asyncio.create_task(live.confirm(p["id"]))
+        await asyncio.sleep(0.01)  # the send is in flight
+        assert live.proposals[p["id"]]["status"] == "SENDING"
+        with pytest.raises(ActionError) as e:
+            await live.reject(p["id"])
+        assert e.value.status == 409
+        return await task
+
+    assert run(go())["status"] == "CONFIRMED" and len(sent) == 1
+
+
+def test_send_that_raises_ends_failed_not_stuck():
+    live, sent, _ = hooked_field()
+
+    def boom(_):
+        raise RuntimeError("socket closed")
+
+    live.registry.get("CONN_HOOK").send = boom
+    p = valve_open(live)
+    done = run(live.confirm(p["id"]))
+    assert done["status"] == "FAILED" and "socket closed" in done["result"]
+    assert "VALVE_XO_34" not in live.commanded
+
+
+def test_auto_confirm_skips_a_proposal_a_person_already_decided(monkeypatch):
+    """JARVIS_CONFIRM=0: if a person rejects while the proposal is being announced, it stays rejected."""
+    monkeypatch.setenv("JARVIS_CONFIRM", "0")
+    live = LiveField(healthy_scenario())
+    assert live.auto_confirm_sim
+
+    async def broadcast(typ, payload):
+        if typ == "proposal" and payload["proposal"]["status"] == "PENDING":
+            await live.reject(payload["proposal"]["id"], by="phone")
+        await asyncio.sleep(0)
+
+    live.hub.broadcast = broadcast
+    p = run(live.propose({"type": "SEND_TRUCK", "asset_id": "TRUCK_1", "target_id": "TANK_3"}, source="jarvis"))
+    assert p["status"] == "REJECTED"
+    assert live.registry.sim.truck_jobs == []
+
+
+def test_auto_confirm_still_confirms_sim_commands(monkeypatch):
+    monkeypatch.setenv("JARVIS_CONFIRM", "0")
+    live = LiveField(healthy_scenario())
+    p = run(live.propose({"type": "SEND_TRUCK", "asset_id": "TRUCK_1", "target_id": "TANK_3"}, source="jarvis"))
+    assert p["status"] == "CONFIRMED" and p["decided_by"] == "JARVIS_CONFIRM=0"
+
+
+def test_auto_confirm_never_sends_to_real_equipment(monkeypatch):
+    monkeypatch.setenv("JARVIS_CONFIRM", "0")
+    live, sent, _ = hooked_field()
+    live.auto_confirm_sim = True
+    p = run(live.propose({"type": "SET_VALVE", "asset_id": "VALVE_XO_34", "value": "OPEN"}, source="jarvis"))
+    assert p["status"] == "PENDING" and sent == []
+
+
 # ---------- connectors ----------
 
 def test_mqtt_stub_without_library_is_unavailable(monkeypatch):
@@ -209,7 +365,7 @@ def test_webhook_connector_posts_the_command(monkeypatch):
 
 
 def test_fieldmap_reads_both_shapes():
-    for path in ("backend/data/scenario.json", "scenario/field.json"):
+    for path in (ROOT / "backend/data/scenario.json", ROOT / "scenario/field.json"):
         m = FieldMap.from_scenario(load_scenario(path))
         assert m.pump_valve["PUMP_3"] == "VALVE_D_3" and m.pump_swd["PUMP_3"]
         assert [x["id"] for x in m.crossovers] == ["VALVE_XO_34"]

@@ -359,10 +359,10 @@ A proposal changes nothing. Only confirm sends it, through the connector that ow
 ```
 
 - `action.type`: `SET_VALVE` (value `OPEN`/`CLOSED`), `SET_PUMP` (`ON`/`OFF`), `CHOKE_WELL` (0 shut in to 1 untouched), `SEND_TRUCK` (value null, plus `target_id`, a tank).
-- `status`: `PENDING`, then `CONFIRMED`, `REJECTED`, or `FAILED` (the connector refused or was unreachable). After a decision the proposal also has `result` (what the connector said), `decided_t`, and `decided_by`.
+- `status`: `PENDING`, then `REJECTED`, or `SENDING` (a person confirmed it and the command is on its way to the connector), then `CONFIRMED` or `FAILED` (the connector refused or was unreachable). A proposal is sent at most once: the first confirm claims it as `SENDING`, so a second confirm (another screen) or a late reject gets 409. After a decision the proposal also has `decided_t` and `decided_by`, and once sent, `result` (what the connector said).
 - `GET /api/actions` → `{"proposals": [proposal]}`.
 - `POST /api/actions` with `{type, asset_id, value, target_id?, reason?}` → a PENDING proposal (422 if the action is invalid).
-- `POST /api/actions/{id}/confirm` and `POST /api/actions/{id}/reject` (optional body `{"by": "name"}`) → the updated proposal. 404 for an unknown id, 409 if it isn't PENDING.
+- `POST /api/actions/{id}/confirm` and `POST /api/actions/{id}/reject` (optional body `{"by": "name"}`) → the updated proposal. 404 for an unknown id, 409 if it isn't PENDING (including while it is SENDING).
 
 ### `POST /api/jarvis`
 
@@ -396,7 +396,7 @@ Connect to `ws://127.0.0.1:8000/ws?role=web` (`role` is `web`, `phone`, `device`
 |---|---|---|
 | `state` | `{"type": "state", "seq": 1, "state": <GET /api/live/state body>}` | On connect, every tick, and after each confirm |
 | `alert` | `{"type": "alert", "seq": 2, "alert": <alert>}` | Raised or resolved |
-| `proposal` | `{"type": "proposal", "seq": 3, "proposal": <proposal>}` | Created, confirmed, rejected, or failed |
+| `proposal` | `{"type": "proposal", "seq": 3, "proposal": <proposal>}` | Created, sending, confirmed, rejected, or failed |
 | `ui` | `{"type": "ui", "seq": 4, "action": "focus", "asset_id": "PUMP_3", "reason": "...", "source": "jarvis"}` | Jarvis, a new ALARM, a proposal, or a phone wants every screen on an asset |
 
 Clients may send `{"type": "ping"}` (answered with `pong`) and `{"type": "ui", "action": "focus", "asset_id": "TANK_3"}` to point every console at an asset.

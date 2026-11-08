@@ -7,7 +7,8 @@ Every tick (TICK_S real seconds, FREEBOARD_SPEED live minutes per real second):
   4. `state`, plus any new or resolved `alert`, goes out over /ws.
 
 Actions: Jarvis or the console *proposes* a command. It is stored PENDING and changes
-nothing. Only POST /api/actions/{id}/confirm sends it through the asset's connector.
+nothing. Only POST /api/actions/{id}/confirm sends it through the asset's connector:
+the proposal is claimed (SENDING) before anything awaits, so it is sent at most once.
 JARVIS_CONFIRM=0 lets Jarvis skip the confirm, but only for commands that go to the
 simulator: a command for real equipment always waits for a person.
 
@@ -266,21 +267,35 @@ class LiveField:
         self.proposals[p["id"]] = p
         await self.hub.broadcast("proposal", {"proposal": p})
         await self.focus(a["asset_id"], f"Waiting for confirmation: {p['text']}", source=source)
-        if self.auto_confirm_sim and source == "jarvis" and conn is self.registry.sim:
+        # The broadcasts above yield, so a person may already have decided it: only
+        # auto-confirm while it is still PENDING (checked and claimed with no await between).
+        if (self.auto_confirm_sim and source == "jarvis" and conn is self.registry.sim
+                and p["status"] == "PENDING"):
             return await self.confirm(p["id"], by="JARVIS_CONFIRM=0")
         return p
 
     async def confirm(self, action_id: str, by: str = "") -> dict:
+        """Send a PENDING proposal through its connector, exactly once.
+
+        The proposal is claimed (status SENDING) before the first await, so a second
+        confirm from another screen, or a reject racing this one, gets 409 instead of
+        sending the command again or after a reject."""
         p = self._pending(action_id)
         a = p["action"]
         conn = self.registry.route(a)
-        if conn is self.registry.sim:
-            res = conn.send(a)
-        else:
-            res = await asyncio.to_thread(conn.send, a)
+        p.update(status="SENDING", decided_t=now_iso(), decided_by=by or None, connector_id=conn.id)
+        # --- no await above this line: the PENDING check and the claim are atomic ---
+        try:
+            await self.hub.broadcast("proposal", {"proposal": p})
+            if conn is self.registry.sim:
+                res = conn.send(a)
+            else:
+                res = await asyncio.to_thread(conn.send, a)
+        except Exception as e:  # noqa: BLE001 - never leave a proposal stuck in SENDING
+            log.exception("sending %s failed", action_id)
+            res = {"ok": False, "detail": f"Send failed: {e}"}
         ok = bool(res.get("ok"))
-        p.update(status="CONFIRMED" if ok else "FAILED", result=res.get("detail", ""),
-                 decided_t=now_iso(), decided_by=by or None, connector_id=conn.id)
+        p.update(status="CONFIRMED" if ok else "FAILED", result=res.get("detail", ""), decided_t=now_iso())
         if ok and a["type"] in ("SET_VALVE", "SET_PUMP"):
             self.commanded[a["asset_id"]] = {"value": a["value"], "t": self.t}
         await self.hub.broadcast("proposal", {"proposal": p})
@@ -290,6 +305,7 @@ class LiveField:
 
     async def reject(self, action_id: str, by: str = "") -> dict:
         p = self._pending(action_id)
+        # Decided before the first await, so a confirm that comes in later gets 409.
         p.update(status="REJECTED", decided_t=now_iso(), decided_by=by or None)
         await self.hub.broadcast("proposal", {"proposal": p})
         return p
