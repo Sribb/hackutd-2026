@@ -18,3 +18,13 @@ def _fresh_auth_throttle():
     auth.THROTTLE.reset()
     yield
     auth.THROTTLE.reset()
+
+
+@pytest.fixture(autouse=True)
+def _legacy_tests_see_no_dataset(request, monkeypatch):
+    """With FREEBOARD_EOG_DIR set, the legacy routes serve the EOG dataset (#153). The legacy
+    tests check the demo scenario, so outside the test_eog_* modules the variable is hidden;
+    the dataset tests read it themselves."""
+    if not request.module.__name__.rsplit(".", 1)[-1].startswith("test_eog"):
+        monkeypatch.delenv("FREEBOARD_EOG_DIR", raising=False)
+    yield

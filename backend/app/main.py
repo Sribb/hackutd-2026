@@ -334,6 +334,16 @@ try:
 except ImportError as e:
     log.warning("Dataset mode not mounted: %s", e)
 
+# Dataset mode on the legacy routes (#153): with FREEBOARD_EOG_DIR set, /api/field, /api/state,
+# /api/forecast, /api/plans, approve and /api/lastcall serve the active dataset (eog/legacy_api.py
+# mounts them in front of the routes here, which answer as before when dataset mode is off).
+try:
+    from .eog import legacy_api as _eog_legacy
+
+    _eog_legacy.install(app)
+except ImportError as e:
+    log.warning("Dataset mode legacy routes not mounted: %s", e)
+
 
 # ---------- Ingest (ingest/, owned by @teameuphoriainv-dot) ----------
 # POST /api/ingest turns an uploaded site plan into blueprint.json. Images and PDFs
