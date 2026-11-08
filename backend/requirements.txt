@@ -5,3 +5,6 @@ pytest==8.3.4
 # For ingest/ (POST /api/ingest), mounted by backend/app/main.py
 anthropic==2.6.0
 python-multipart==0.0.33
+jsonschema==4.25.1
+# For /ws (#38): uvicorn needs a WebSocket library, or /ws returns 404
+websockets==15.0.1

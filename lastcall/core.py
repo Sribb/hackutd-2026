@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import itertools
 import json
+import math
 import time
 from typing import Callable, Dict, List, Optional
 
@@ -110,7 +111,8 @@ def candidate_plans(scenario: dict, at_risk: List[str]) -> List[dict]:
                 how = "shut in" if keep == 0.0 else "choke to half"
                 words.append(f"{how} {_count(nk, 'well')} on {_name(tid)}")
             summary = ("Do nothing" if not words else _sentence(words))
-            plans.append({"actions": actions, "summary": summary, "tank": tid})
+            plans.append({"actions": actions, "summary": summary, "tank": tid,
+                          "levers": (tid, tuple(v["id"] for v in vs), len(ts), nk, keep)})
     for i, p in enumerate(plans):
         p["id"] = f"lc_{i}"
     return plans
@@ -145,24 +147,50 @@ def schedule(plan: dict, start_min: float, delay: Optional[Dict[int, float]] = N
 
 # --------------------------------------------------------------- search ----
 
+LEADERS = 4  # plans re-priced at each probe minute between changes to the live set
+
+
+def _memo(fc: ForecastFn) -> ForecastFn:
+    """Same actions and inflow, same forecast. The searches below ask twice often."""
+    cache: Dict[tuple, dict] = {}
+
+    def run(actions: List[dict], scale: float = 1.0) -> dict:
+        key = (tuple(tuple(sorted(a.items())) for a in actions), scale)
+        if key not in cache:
+            cache[key] = fc(actions, scale)
+        return cache[key]
+    return run
+
+
 def _keeps_running(fc: dict) -> bool:
     return not any(e["type"] == "SHUTDOWN_LEVEL" for e in fc["events"])
 
 
-def _last_ok(test: Callable[[float], bool], hi: float, res: float = 1.0) -> Optional[float]:
-    """Largest t in [0, hi] where test(t) holds, assuming it holds then stops. None if never."""
-    if not test(0):
-        return None
+def _covers(big: tuple, small: tuple) -> bool:
+    """big does everything small does and more: same tank and crossovers, at least as many
+    trucks, and at least as many wells choked at least as hard. More water out never hurts."""
+    return (big[:2] == small[:2] and big[2] >= small[2] and big[3] >= small[3]
+            and (small[3] == 0 or big[4] <= small[4]))
+
+
+def _last_ok(test: Callable[[float], bool], hi: float, lo: Optional[float] = None) -> Optional[float]:
+    """Last whole minute t in [0, hi] where test(t) holds, assuming it holds then stops.
+    hi itself counts when it works. None if it never holds. lo, when given, is a start
+    time already known to work, which only narrows the search: the answer is the same."""
+    if lo is None:
+        if not test(0):
+            return None
+        lo = 0.0
     if test(hi):
         return hi
-    lo = 0.0
-    while hi - lo > res:
-        mid = (lo + hi) / 2
+    good, bad = math.floor(lo), math.ceil(hi)  # test(good) holds, test(bad) fails
+    while bad - good > 1:
+        mid = (good + bad) // 2
         if test(mid):
-            lo = mid
+            good = mid
         else:
-            hi = mid
-    return round(lo, 1)
+            bad = mid
+    return float(good)
 
 
 def last_call(scenario: dict, forecast_fn: Optional[ForecastFn] = None,
@@ -200,28 +228,51 @@ def last_call(scenario: dict, forecast_fn: Optional[ForecastFn] = None,
 
     if forecast_fn is None:
         small = _subset(scenario, set(at_risk))
-        fc = lambda acts, scale=1.0: sim.forecast(small, acts, horizon_minutes, step_minutes, scale)
+        raw_fc = lambda acts, scale=1.0: sim.forecast(small, acts, horizon_minutes, step_minutes, scale)
     else:
-        fc = forecast_fn
+        raw_fc = forecast_fn
+    fc = _memo(raw_fc)
 
     plans = candidate_plans(scenario, at_risk)
 
-    # 1. When does each plan stop keeping every tank running?
-    for p in plans:
-        p["expires_min"] = _last_ok(lambda t: _keeps_running(fc(schedule(p, t), 1.0)), first_hit)
-        p["expires_min_hot"] = _last_ok(lambda t: _keeps_running(fc(schedule(p, t), HOT_INFLOW)), first_hit)
+    # 1. When does each plan stop keeping every tank running? Inflow running hot only
+    #    makes a tank fill faster, so a plan never lasts longer hot than it does normally.
+    #    A plan that does everything a smaller plan does lasts at least as long, so the
+    #    smaller plans go first and their expiries start each search.
+    done: List[dict] = []
+    for p in sorted(plans, key=lambda p: (p["levers"][2] + p["levers"][3], -p["levers"][4])):
+        subs = [q for q in done if _covers(p["levers"], q["levers"])]
+        lo = max((q["expires_min"] for q in subs if q["expires_min"] is not None), default=None)
+        p["expires_min"] = _last_ok(lambda t: _keeps_running(fc(schedule(p, t), 1.0)), first_hit, lo=lo)
         p["cost_now"] = fc(schedule(p, 0), 1.0)["cost"]
+        done.append(p)
 
     alive = [p for p in plans if p["expires_min"] is not None]
+
+    def hot(p: dict) -> Optional[float]:
+        """When the plan stops working if inflow runs 15% hot. Only shown plans need it.
+        Hot inflow only fills tanks faster, so it never outlasts the normal expiry."""
+        if "expires_min_hot" not in p:
+            p["expires_min_hot"] = None if p["expires_min"] is None else _last_ok(
+                lambda t: _keeps_running(fc(schedule(p, t), HOT_INFLOW)), p["expires_min"])
+        return p["expires_min_hot"]
     point_of_no_return = max((p["expires_min"] for p in alive), default=None)
 
     # 2. Cheapest plan for each decision minute, and the cliffs where it jumps.
+    #    Cost moves a little with the start time (fewer truck hours, later chokes), so the
+    #    leaders are re-priced at every probe minute. A plan's last price ranks it: one far
+    #    behind the leaders at the previous probe can't overtake them five minutes later.
+    last_price = {p["id"]: p["cost_now"]["total_usd"] for p in alive}
+
     def best_at(t: float) -> Optional[dict]:
         live = [p for p in alive if p["expires_min"] >= t]
         if not live:
             return None
-        # Cost moves a little with the start time (fewer truck hours, later chokes), so re-price.
-        priced = [(fc(schedule(p, t), 1.0)["cost"]["total_usd"], p) for p in live]
+        pool = sorted(live, key=lambda p: last_price[p["id"]])[:LEADERS]
+        priced = []
+        for p in pool:
+            last_price[p["id"]] = fc(schedule(p, t), 1.0)["cost"]["total_usd"]
+            priced.append((last_price[p["id"]], p))
         return min(priced, key=lambda x: x[0])
 
     # Do nothing from here on: the cost of letting it shut down.
@@ -269,8 +320,8 @@ def last_call(scenario: dict, forecast_fn: Optional[ForecastFn] = None,
             "plan_id": p["id"], "summary": p["summary"],
             "cost": p["cost_now"],
             "expires_min": p["expires_min"], "expires_clock": sim.clock_text(scenario, p["expires_min"]),
-            "expires_min_hot": p["expires_min_hot"],
-            "robust": p["expires_min_hot"] is not None,
+            "expires_min_hot": hot(p),
+            "robust": hot(p) is not None,
             "expires_clock_hot": None if p["expires_min_hot"] is None else sim.clock_text(scenario, p["expires_min_hot"]),
             "steps": steps,
         })
@@ -305,7 +356,7 @@ def last_call(scenario: dict, forecast_fn: Optional[ForecastFn] = None,
             ladder.append({"plan_id": lp["id"], "summary": lp["summary"],
                            "from_min": pt["start_min"], "expires_min": lp["expires_min"],
                            "expires_clock": sim.clock_text(scenario, lp["expires_min"]),
-                           "expires_min_hot": lp["expires_min_hot"],
+                           "expires_min_hot": hot(lp),
                            "usd_at_start": pt["total_usd"],
                            "asset_ids": [a["asset_id"] for a in lp["actions"]],
                            "steps": _steps(lp, scenario)})

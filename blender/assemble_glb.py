@@ -14,11 +14,11 @@ blueprint.py checks the file and layout.py places every asset, as in the Blender
 positions match. Each asset is a copy of its type from blender/kit/ (export_kit.py made it in
 Blender), renamed to its contract name, with its meshes shared between copies. This file
 adds what depends on the field: the ground, the lease road and driveways, the tank numbers,
-each tank's outlet and crossover nozzles, the pipe runs and supports (kit_routes.py, the same
-routes as piping.py), waypoints, and the overview camera. Small tags and signs, the power
-line, and the ground relief are left out.
+each tank's outlet and crossover nozzles, each pad's berm, the pipe runs, supports and
+flowline sleepers (kit_routes.py, the same routes as piping.py and field_build.py),
+waypoints, and the overview camera. Small tags and signs, the power line, and the ground
+relief are left out, and look.py's restyling needs Blender, so parts keep the kit palette.
 """
-import hashlib
 import json
 import math
 import os
@@ -35,16 +35,16 @@ import kit_extras  # noqa: E402
 import kit_routes as routes  # noqa: E402
 import layout as lay  # noqa: E402
 import names  # noqa: E402
-from glb_write import (Mesh, Writer, accessor, add, euler_xyz, gltf_quat, look_at, quat_axis,  # noqa: E402
-                       read_glb, to_gltf)
+import siting  # noqa: E402
+from glb_write import Mesh, Writer, add, euler_xyz, gltf_quat, look_at, quat_axis, read_glb, to_gltf  # noqa: E402
+from kit_extras import Kit  # noqa: E402,F401  (ingest/eog_field.py and the tests load Kit from here)
 from kit_routes import at, polar  # noqa: E402
 
 ROOT = os.path.dirname(HERE)
-KIT_DIR = os.path.join(HERE, "kit")
 DEFAULT_BLUEPRINT = os.path.join(ROOT, "scenario", "field.json")
 GROUND_Z = -0.02          # flat ground just under every slab, pad, and gravel bed
 KIT_OMITS = ["the desert scenery and ground textures", "pump, valve, well, pad and yard tags and signs",
-             "the power line", "ground relief"]
+             "the power line", "ground relief", "the look pass (look.py's materials, UVs and weathering)"]
 
 
 class UsageError(Exception):
@@ -81,49 +81,6 @@ def rot_z(angle):
     return gltf_quat(quat_axis((0, 0, 1), angle))
 
 
-class Kit:
-    """blender/kit/: the manifest, the type glbs (read when first used), and the glyphs."""
-
-    def __init__(self, folder=KIT_DIR):
-        with open(os.path.join(folder, "manifest.json")) as f:
-            self.m = json.load(f)
-        self.folder, self.files, self.glyph_cache = folder, {}, {}
-        self.glyphs = read_glb(os.path.join(folder, self.m["glyphs"]["file"]))
-        self.glyph_index = {nd["name"]: nd["mesh"] for nd in self.glyphs[0]["nodes"] if "mesh" in nd}
-        self.advance = self.m["glyphs"]["advance"]
-
-    def has(self, kind):
-        return kind in self.m["types"]
-
-    def file(self, kind, level):
-        name = self.m["types"][kind]["levels"][level]
-        if name not in self.files:
-            self.files[name] = read_glb(os.path.join(self.folder, name))
-        return name, self.files[name]
-
-    def glyph(self, ch):
-        """(positions, normals, indices) of one character at size 1, or None."""
-        if ch not in self.glyph_cache:
-            g, binary = self.glyphs
-            mi = self.glyph_index.get(f"GLYPH_{ord(ch)}")
-            p = g["meshes"][mi]["primitives"][0] if mi is not None else None
-            self.glyph_cache[ch] = p and (accessor(g, binary, p["attributes"]["POSITION"]),
-                                          accessor(g, binary, p["attributes"]["NORMAL"]),
-                                          accessor(g, binary, p["indices"]))
-        return self.glyph_cache[ch]
-
-    def stale(self):
-        """Builder sources that changed since the kit was exported."""
-        out = []
-        for name, digest in self.m.get("sources", {}).items():
-            path = os.path.join(HERE, name)
-            if os.path.exists(path):
-                with open(path, "rb") as f:
-                    if hashlib.sha256(f.read()).hexdigest()[:16] != digest:
-                        out.append(name)
-        return out
-
-
 class Field:
     """Plans one field as a list of steps, then writes it at a detail level.
 
@@ -131,10 +88,12 @@ class Field:
     triangles at every level are known before anything is written.
     """
 
-    def __init__(self, kit, bp, L):
+    def __init__(self, kit, bp, L, manual=None):
+        """manual is {valve ID: manual?} from kit_extras.valve_modes on the raw blueprint."""
         self.kit, self.bp, self.L, self.t = kit, bp, L, kit.m["types"]
+        self.manual = manual or {}
         self.ops, self.cameras, self.roots, self.iot = [], [], {}, None
-        self.site = {"M_ROAD": Mesh(), "M_CONCRETE": Mesh(), "M_STEEL": Mesh()}
+        self.site = {"M_ROAD": Mesh(), "M_CONCRETE": Mesh(), "M_STEEL": Mesh(), "M_WOOD": Mesh()}
 
     # the plan: each call returns a step number that later steps can name as their parent
 
@@ -217,20 +176,22 @@ class Field:
 
     # generated pieces
 
-    def pipes(self, pipes):
+    def pipes(self, pipes, material="M_PIPE"):
         """One mesh per (name, points, radius, sides), each with its pipe_id."""
         for name, points, radius, segs in pipes:
             m = Mesh()
             m.pipe(points, radius, segs)
-            self.mesh_node(name, m, "M_PIPE", extras={"pipe_id": name})
+            self.mesh_node(name, m, material, extras={"pipe_id": name})
 
-    def supports(self, concrete=(), steel=(), posts=()):
+    def supports(self, concrete=(), steel=(), posts=(), wood=()):
         for size, center in concrete:
             self.site["M_CONCRETE"].box(size, center)
         for size, center in steel:
             self.site["M_STEEL"].box(size, center)
         for a, b, r in posts:
             self.site["M_STEEL"].tube(a, b, r, 8, caps=True)
+        for size, center in wood:
+            self.site["M_WOOD"].box(size, center)
 
     def label(self, name, text, size, loc, rot, parent, material="M_STEEL_DARK", levels=None):
         """detail_equipment.label() from the kit's glyphs. rot is a Blender XYZ Euler."""
@@ -250,7 +211,7 @@ class Field:
         va = self.t["valve_crossover"]["anchors"]
         for x in L["crossovers"]:
             loc, rot = tuple(x["valve"]), x["valve_rot"]
-            self.place("valve_crossover", x["id"], loc, rot, {"asset_id": x["id"], "kind": "valve"})
+            kit_extras.valve(self, "valve_crossover", x["id"], loc, rot)
             pipes, concrete, steel, posts = routes.crossover_lines(
                 x, names.valve_base(x["id"]), [at(loc, rot, va["north"]), at(loc, rot, va["south"])])
             self.pipes(pipes)
@@ -286,7 +247,7 @@ class Field:
             self.empty(name, loc, extras={"kind": "waypoint"})
         self.camera()
         for mat, name in (("M_ROAD", "SITE_road"), ("M_CONCRETE", "SITE_supports_concrete"),
-                          ("M_STEEL", "SITE_supports_steel")):
+                          ("M_STEEL", "SITE_supports_steel"), ("M_WOOD", "SITE_supports_wood")):
             if self.site[mat].tris:
                 self.mesh_node(name, self.site[mat], mat)
         return self
@@ -304,7 +265,7 @@ class Field:
     def pad(self, pad, pumps, wells):
         """field_build.build_pad: pad, tank, pumps and valves, load-out, inlet header, wells."""
         f, tid, n = pad["frame"], pad["tank"], pad["n"]
-        self.place("pad", f"PAD_{n}", (f.x, f.y, 0.0), f.rot)
+        proot = self.place("pad", f"PAD_{n}", (f.x, f.y, 0.0), f.rot)
         consts, anchors = self.t["tank"]["tank"], self.t["tank"]["anchors"]
         tloc = f.world3(0, lay.TANK_Y, lay.PAD_TOP)
         troot = self.place("tank", tid, tloc, f.rot, {"asset_id": tid, "kind": "tank"})
@@ -332,7 +293,7 @@ class Field:
                                                         self.t["valve_discharge"]["anchors"])
             self.place("pump", p["id"], (*p["pos"], lay.PAD_TOP), p["rot"], {"asset_id": p["id"], "kind": "pump"})
             if p["valve"]:
-                self.place("valve_discharge", p["valve"], vloc, p["rot"], {"asset_id": p["valve"], "kind": "valve"})
+                kit_extras.valve(self, "valve_discharge", p["valve"], vloc, p["rot"])
             self.pipes(pipes)
             self.supports(boxes)
             ties.append(tie)
@@ -343,7 +304,10 @@ class Field:
             loc = (*w["pos"], 0.0)
             self.place("well", w["id"], loc, w["rot"], {"asset_id": w["id"], "kind": "well"})
             outs.append((w["id"], at(loc, w["rot"], out_local)))
-        self.pipes(routes.flowlines(f, tid, outs))
+        pipes, lines, wood = routes.flowlines(f, tid, outs)
+        self.pipes(pipes, "M_HDPE")
+        self.supports(wood=wood)
+        kit_extras.berm(self, n, proot, siting.berm_runs(lines, siting.berm_blockers(self.L, pad), f))
         return ties
 
     def camera(self):
@@ -372,8 +336,30 @@ def paths(opts):
     return src, out_dir
 
 
+class Clock:
+    """build_field.Clock: wall seconds per build step, for the report's "timing"."""
+
+    def __init__(self):
+        self.t, self.laps = time.time(), {}
+
+    def lap(self, step):
+        now = time.time()
+        self.laps[step] = round(self.laps.get(step, 0.0) + now - self.t, 4)
+        self.t = now
+
+
 def run(opts, src, out_dir, report, kit=None):
-    """The build itself. Returns the exit code."""
+    """The build itself. Returns the exit code. The report's cpu_seconds is this build's own
+    CPU time, so it stays honest when ingest/eog_field.py builds many fields in one process."""
+    cpu0, clock = time.process_time(), Clock()
+    report["timing"] = clock.laps
+    try:
+        return _run(opts, src, out_dir, report, kit, clock)
+    finally:
+        report["cpu_seconds"] = round(time.process_time() - cpu0, 3)
+
+
+def _run(opts, src, out_dir, report, kit, clock):
     report["blueprint"] = rel(src)
     glb = os.path.join(out_dir, "field.glb")
     if os.path.exists(glb):
@@ -395,18 +381,22 @@ def run(opts, src, out_dir, report, kit=None):
     if bp["connectors"]:
         report["connectors"] = [c["id"] for c in bp["connectors"]]
     report["counts"] = blueprint.counts(bp)
+    clock.lap("plan")
 
     kit = kit or Kit()
     policy = kit.m["detail"]
     order = list(policy["levels"])
-    field = Field(kit, bp, L).plan()
+    clock.lap("kit")
+    field = Field(kit, bp, L, kit_extras.valve_modes(data)).plan()
     # build_field.py's rule: full detail up to 12 tanks, then the first level inside the budget.
     # The plan knows each level's triangles exactly, so the field is written once.
     floor = 0 if len(bp["tanks"]) <= policy["full_detail_max_tanks"] else 1
     level = opts["detail"] or next((lv for lv in order[floor:] if field.triangles(lv) <= policy["budget_triangles"]),
                                    order[-1])
+    clock.lap("field")
     w = field.write(level)
     tris = w.triangles()
+    clock.lap("assemble")
 
     nodes = w.j["nodes"]
     node_names = [nd["name"] for nd in nodes]
@@ -421,8 +411,11 @@ def run(opts, src, out_dir, report, kit=None):
                                    "blender/export_kit.py)" if stale else ""))
     if report["errors"]:
         return 2
+    draws, look, optimize = kit_extras.summary(w.j)
+    clock.lap("checks")
     w.write(glb + ".tmp")
     os.replace(glb + ".tmp", glb)
+    clock.lap("export")
     mb = os.path.getsize(glb) / 1e6
     kinds = Counter(nd["extras"]["kind"] for nd in nodes if "asset_id" in nd.get("extras", {}))
     report.update({
@@ -439,22 +432,26 @@ def run(opts, src, out_dir, report, kit=None):
         **({"iot": field.iot} if field.iot is not None else {}),
         "scenery": {"on": False},        # build_field.py's key since #88: the kit has no scenery layer
         "triangles": tris, "glb_mb": round(mb, 2), "nodes": len(nodes), "objects": len(nodes),
-        "budget": {"triangles": policy["budget_triangles"], "mb": policy["budget_mb"]},
+        "draw_calls": draws, "compressed": False, "look": look, "optimize": optimize,
+        "budget": {"triangles": policy["budget_triangles"], "mb": policy["budget_mb"],
+                   "draw_calls": policy["budget_draw_calls"]},
     })
     report["warnings"].append("built from the model kit without Blender; left out: " + ", ".join(KIT_OMITS))
     if level != "full":
         why = (f"more than {policy['full_detail_max_tanks']} tanks" if floor
                else "full detail would pass the triangle budget") if not opts["detail"] else "--detail was set"
         report["warnings"].append(f"built at {level} detail ({why}); dropped: {', '.join(policy['dropped'][level])}")
-    if tris > policy["budget_triangles"] or mb > policy["budget_mb"]:
-        report["warnings"].append(f"over budget: {tris} triangles and {mb:.1f} MB "
-                                  f"(budget {policy['budget_triangles']} and {policy['budget_mb']:.0f} MB)")
+    if tris > policy["budget_triangles"] or mb > policy["budget_mb"] or draws > policy["budget_draw_calls"]:
+        report["warnings"].append(f"over budget: {tris} triangles, {mb:.1f} MB and {draws} draw calls (budget "
+                                  f"{policy['budget_triangles']}, {policy['budget_mb']:.0f} MB and "
+                                  f"{policy['budget_draw_calls']})")
     stale = kit.stale()
     if stale:
         report["warnings"].append("the model kit is older than " + ", ".join(stale)
                                   + "; rebuild it with blender/export_kit.py")
     if opts["render_dir"]:
         report["warnings"].append("--render-dir needs Blender, so no renders were made")
+    clock.lap("report")
     return 0
 
 
