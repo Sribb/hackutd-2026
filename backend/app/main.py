@@ -340,6 +340,14 @@ try:
 except ImportError as e:
     log.warning("Dataset mode not mounted: %s", e)
 
+# /api/dataset/* (the /dataset page, its 3D) and GET /api/eog/blueprint (#152).
+try:
+    from .eog.dataset_api import router as dataset_router
+
+    app.include_router(dataset_router)
+except ImportError as e:
+    log.warning("Dataset page API not mounted: %s", e)
+
 
 # ---------- Ingest (ingest/, owned by @teameuphoriainv-dot) ----------
 # POST /api/ingest turns an uploaded site plan into blueprint.json. Images and PDFs
