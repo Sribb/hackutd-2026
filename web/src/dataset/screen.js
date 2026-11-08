@@ -235,15 +235,17 @@ export function confidenceAt(x, t, sd, sign, n = 24, since = -Infinity) {
 export const PLAIN = { leak: 5, wear: -25 };
 
 // When a fixed alarm at `level` on the mean of the last n running readings would first go
-// off between `from` and `to` (null if it would not).
+// off between `from` and `to` (null if it would not). Only readings from `from` on count:
+// an earlier problem on the same line must not set off the alarm for this one.
 export function plainAlarmAt(x, from, to, level, n = W) {
-  let s = 0;
+  let s = 0, k = 0;
   for (let i = 0; i < x.length; i++) {
-    s += x[i][1];
-    if (i >= n) s -= x[i - n][1];
     const t = x[i][0];
     if (t > to) break;
-    if (i < n - 1 || t < from) continue;
+    if (t < from) continue;
+    s += x[i][1];
+    if (++k > n) s -= x[i - n][1];
+    if (k < n) continue;
     const m = s / n;
     if (level > 0 ? m > level : m < level) return t;
   }

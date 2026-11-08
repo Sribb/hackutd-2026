@@ -65,21 +65,26 @@ async function pickSource() {
   return { source: files, info };
 }
 
-// The folder to open: the one in the URL; else a folder added since the last visit (the
-// sponsor adds test/ right before judging, and it should open first); else the last one
+// The folder to open: a folder added since the last visit (the sponsor adds test/ right
+// before judging, and it should open first); else the one in the URL; else the last one
 // used; else test/ if there is one; else the first.
 function folderFromUrl(folders) {
   const want = params.get("folder");
-  if (want && folders.includes(want)) return want;
   const testFirst = (list) => list.find((f) => f === "test" || f.endsWith("/test")) || list[0];
+  // Known folders per source, so switching between the backend and the files doesn't make
+  // every folder look new.
+  const kKey = `freeboard.dataset.known:${state.source?.kind || "files"}`;
   let known = null, last = null;
+  try { known = JSON.parse(localStorage.getItem(kKey) || "null"); } catch {} // corrupt: start over
   try {
-    known = JSON.parse(localStorage.getItem("freeboard.dataset.known") || "null");
     last = localStorage.getItem("freeboard.dataset.folder");
-    localStorage.setItem("freeboard.dataset.known", JSON.stringify(folders));
+    localStorage.setItem(kKey, JSON.stringify(folders));
   } catch {}
+  // A new folder wins once, even over the URL: a reload at judging must open test/, and the
+  // page writes ?folder= on every load.
   const added = Array.isArray(known) ? folders.filter((f) => !known.includes(f)) : [];
   if (added.length) return testFirst(added);
+  if (want && folders.includes(want)) return want;
   if (last && folders.includes(last)) return last;
   return testFirst(folders);
 }
@@ -410,7 +415,10 @@ function screenPool() {
     let lead = null;
     if (plainAt !== null) {
       lead = (plainAt - e.seen) / 3600;
-      ev.push(lead > 0 ? `Seen ${durationText(lead)} before ${plainName} (hour average) went off, at ${fmtTime(plainAt, true)} UTC.` : `${plainName[0].toUpperCase()}${plainName.slice(1)} (hour average) went off at the same time.`);
+      const Plain = plainName[0].toUpperCase() + plainName.slice(1);
+      ev.push(lead > 0 ? `Seen ${durationText(lead)} before ${plainName} (hour average) went off, at ${fmtTime(plainAt, true)} UTC.`
+        : lead < 0 ? `${Plain} (hour average) went off first, ${durationText(-lead)} before the screen saw it.`
+        : `${Plain} (hour average) went off at the same time.`);
     } else if (ongoing) {
       lead = (at - e.seen) / 3600; // at least this much, and counting
       ev.push(`${plainName[0].toUpperCase()}${plainName.slice(1)} (hour average) has not gone off yet; the screen saw it ${durationText(lead)} ago.`);
