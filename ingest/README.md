@@ -8,6 +8,17 @@ Turns an uploaded blueprint of an oil field into `blueprint.json`, the same shap
 | CSV equipment list with `kind` and `id` (or `label`) columns | Parsed directly |
 | PNG, JPEG, WebP, GIF, PDF site plan, or any other text | Read by Claude (`claude-opus-5-5`, structured outputs) |
 
+**CSV columns** (any order, case doesn't matter): `kind` and `label` (or `id`) are required. The optional columns are:
+- `tank`: the tank a pump or well feeds
+- `capacity` and `rate`
+- `connects`: labels separated by `;`
+- `shutdown_pct` and `lost_usd_hr`
+- `manual`: `manual` or `remote`, or yes or no
+- `minutes_to`: a truck's drive times, written like `Tank 1:20; Tank 2:25`
+- `x` and `y` in meters
+
+A blank cell is never guessed. It goes on the review list instead.
+
 ## The rules it follows
 
 - **Nothing is invented.** Claude only returns equipment drawn or written on the plan, and a number only when the plan states it. A missing number goes on the review list, because the backend refuses to forecast a tank without its numbers.

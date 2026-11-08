@@ -27,9 +27,11 @@ class FakeClient:
         self.beta = SimpleNamespace(messages=SimpleNamespace(create=create))
 
 
-def item(kind, label, feeds=None, connects=(), cap=None, rate=None, x=None, y=None, conf=0.95):
+def item(kind, label, feeds=None, connects=(), cap=None, rate=None, x=None, y=None, conf=0.95,
+         shutdown=None, lost=None, manual=None):
     return {"kind": kind, "label": label, "feeds_label": feeds, "connects_labels": list(connects), "capacity_bbl": cap,
-            "rate_bbl_hr": rate, "x": x, "y": y, "confidence": conf, "evidence": "drawn on plan"}
+            "rate_bbl_hr": rate, "shutdown_pct": shutdown, "lost_usd_hr": lost, "manual": manual,
+            "x": x, "y": y, "confidence": conf, "evidence": "drawn on plan"}
 
 
 PLAN = {
@@ -85,7 +87,7 @@ def test_review_lists_gaps_guesses_and_low_confidence():
     assert "shutdown_pct" in issues
     assert "nearest tank" in issues
     assert "60% sure" in issues
-    assert "manual or remote" in issues
+    assert "Missing max_bbl_hr, manual." in issues   # the plan's crossover has neither
 
 
 def test_positions_keep_the_drawing_shape():
@@ -126,6 +128,82 @@ def test_csv_is_parsed_without_claude():
     assert {v["id"] for v in bp["valves"]} == {"VALVE_XO_12"}
     assert bp["pumps"][0]["tank_id"] == "TANK_1" and bp["tanks"][0]["x"] == 0.0
     assert result["ok"], result["errors"]
+
+
+def test_crossover_with_a_known_flow_asks_only_for_manual():
+    # Ronak's report: sample 2 gives XO 2-3 150 bbl/hr, but review asked for its flow again.
+    result = ingest_bytes((ROOT / "scenario" / "samples" / "sample2_delaware_4tank.csv").read_bytes(), "s2.csv")
+    xo = next(v for v in result["blueprint"]["valves"] if v["id"] == "VALVE_XO_23")
+    assert xo["max_bbl_hr"] == 150
+    issues = [r["issue"] for r in result["review"] if r["id"] == "VALVE_XO_23"]
+    assert len(issues) == 1 and issues[0].startswith("Missing manual.") and "max_bbl_hr" not in issues[0]
+
+
+def test_truck_minutes_to_goes_on_review():
+    # BLUEPRINT.md gap 1: without this, a truck passes review and then fails on load.
+    result = ingest_bytes((ROOT / "scenario" / "samples" / "sample2_delaware_4tank.csv").read_bytes(), "s2.csv")
+    truck = [r["issue"] for r in result["review"] if r["id"] == "TRUCK_1"]
+    assert len(truck) == 1 and truck[0].startswith("Missing minutes_to.")
+
+
+def test_csv_with_every_number_needs_no_review():
+    csv_text = ("kind,label,tank,capacity,rate,shutdown_pct,lost_usd_hr,manual,minutes_to,connects\n"
+                "tank,Tank 1,,500,,90,,,,\n"
+                "tank,Tank 2,,500,,85,,,,\n"
+                "pump,P-1,Tank 1,,150,,,,,\n"
+                "well,Well 1,Tank 1,,20,,260,,,\n"
+                "crossover,XO 1-2,,,150,,,manual,,Tank 1;Tank 2\n"
+                "swd,SWD 1,,,450,,,,,\n"
+                "discharge,VD-1,,,,,,,,P-1;SWD 1\n"
+                "vacuum_truck,Truck 1,,130,,,,,Tank 1:20; Tank 2:25,\n")
+    result = ingest_bytes(csv_text.encode(), "full.csv")
+    bp = result["blueprint"]
+    assert result["review"] == [] and result["ok"], (result["review"], result["errors"])
+    assert [t["shutdown_pct"] for t in bp["tanks"]] == [90, 85]
+    assert bp["wells"][0]["lost_usd_hr"] == 260
+    assert next(v for v in bp["valves"] if v["kind"] == "CROSSOVER")["manual"] is True
+    assert bp["trucks"][0]["minutes_to"] == {"TANK_1": 20, "TANK_2": 25}
+
+
+def test_csv_remote_crossover_and_unknown_drive_time_label():
+    csv_text = ("kind,label,connects,mode,minutes_to,capacity\n"
+                "tank,Tank 1,,,,500\n"
+                "tank,Tank 2,,,,500\n"
+                "xo,XO,Tank 1;Tank 2,remote,,\n"
+                "truck,Truck 1,,,Tank 9:15,130\n")
+    result = ingest_bytes(csv_text.encode(), "remote.csv")
+    assert next(v for v in result["blueprint"]["valves"])["manual"] is False
+    issues = " ".join(r["issue"] for r in result["review"] if r["id"] == "TRUCK_1")
+    assert "'Tank 9'" in issues and "Missing minutes_to." in issues
+
+
+def test_review_matches_the_blueprint_validator():
+    """Every gap docs/BLUEPRINT.md's validator finds in a draft is on ingest's review list, and only those."""
+    jsonschema = pytest.importorskip("jsonschema")
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("validate_blueprint", ROOT / "scenario" / "validate_blueprint.py")
+    vb = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(vb)
+    validator = jsonschema.Draft202012Validator(json.loads(vb.SCHEMA.read_text()))
+    result = ingest_bytes((ROOT / "scenario" / "samples" / "sample2_delaware_4tank.csv").read_bytes(), "s2.csv")
+    gaps = vb.check(result["blueprint"], validator)
+    assert len(gaps) == len(result["review"]) == 14, gaps
+    asked = sorted(f for r in result["review"] for f in r["issue"].split(".")[0].removeprefix("Missing ").split(", "))
+    found = sorted(g.split("'")[1] for g in gaps)
+    assert asked == found
+
+
+def test_numbers_claude_reads_reach_the_blueprint():
+    plan = {**PLAN, "items": [item("tank", "Tank 3", cap=500, shutdown=90), item("tank", "T-4", cap=500, shutdown=90),
+                              item("well", "W-9", feeds="Tank 3", rate=25, lost=310),
+                              item("crossover_valve", "XO", connects=["Tank 3", "T-4"], rate=150, manual=True)]}
+    result = ingest_bytes(PNG_HEADER, "plan.png", client=FakeClient(plan))
+    bp = result["blueprint"]
+    assert {t["shutdown_pct"] for t in bp["tanks"]} == {90}
+    assert bp["wells"][0]["lost_usd_hr"] == 310
+    xo = bp["valves"][0]
+    assert xo["manual"] is True and xo["max_bbl_hr"] == 150
+    assert not [r for r in result["review"] if r["id"] == "VALVE_XO_34"]
 
 
 def test_validate_catches_duplicates_and_bad_references():

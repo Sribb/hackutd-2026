@@ -8,7 +8,7 @@ the review list, because the backend refuses to forecast a tank it lacks numbers
 import math
 import re
 
-from .schema import DEFAULT_SITE_WIDTH_M, ID_RE, REQUIRED_NUMBERS, REVIEW_CONFIDENCE
+from .schema import CROSSOVER_NEEDS, DEFAULT_SITE_WIDTH_M, ID_RE, REQUIRED_NUMBERS, REVIEW_CONFIDENCE
 
 
 def _number(label):
@@ -77,8 +77,9 @@ def assemble(extraction, *, aspect=0.5, positions="fraction", source=None):
         tank_ids[_key(item.get("label"))] = tid
         tank_items[tid] = item
         asset = {"id": tid, "_ingest": _meta(item)}
-        if item.get("capacity_bbl") is not None:
-            asset["capacity_bbl"] = item["capacity_bbl"]
+        for field in ("capacity_bbl", "shutdown_pct"):
+            if item.get(field) is not None:
+                asset[field] = item[field]
         place(asset, item)
         bp["tanks"].append(asset)
 
@@ -111,6 +112,16 @@ def assemble(extraction, *, aspect=0.5, positions="fraction", source=None):
             for src, dst in fields.items():
                 if item.get(src) is not None:
                     asset[dst] = item[src]
+            if item.get("minutes_to_labels"):
+                minutes_to = {}
+                for label, minutes in item["minutes_to_labels"].items():
+                    tank = find_tank(label)[0]
+                    if tank:
+                        minutes_to[tank] = minutes
+                    else:
+                        flag(aid, item, f"Drive time given for {label!r}, but no tank has that label.")
+                if minutes_to:
+                    asset["minutes_to"] = minutes_to
             place(asset, item)
             bp[key].append(asset)
 
@@ -143,6 +154,8 @@ def assemble(extraction, *, aspect=0.5, positions="fraction", source=None):
             flag(wid, item, "The plan doesn't show which tank this well flows to.")
         if item.get("rate_bbl_hr") is not None:
             asset["water_bbl_hr"] = item["rate_bbl_hr"]
+        if item.get("lost_usd_hr") is not None:
+            asset["lost_usd_hr"] = item["lost_usd_hr"]
         place(asset, item)
         bp["wells"].append(asset)
 
@@ -157,7 +170,8 @@ def assemble(extraction, *, aspect=0.5, positions="fraction", source=None):
         asset = {"id": vid, "kind": "CROSSOVER", "connects": tanks, "_ingest": _meta(item)}
         if item.get("rate_bbl_hr") is not None:
             asset["max_bbl_hr"] = item["rate_bbl_hr"]
-        flag(vid, item, "Is this crossover manual or remote, and what flow can it carry? The plan doesn't say.")
+        if item.get("manual") is not None:
+            asset["manual"] = item["manual"]
         place(asset, item)
         bp["valves"].append(asset)
 
@@ -190,14 +204,18 @@ def missing_numbers(bp):
     out = []
     for kind, fields in REQUIRED_NUMBERS.items():
         for asset in bp.get(kind, []) or []:
-            missing = [f for f in fields if f not in asset]
+            missing = [f for f in fields if asset.get(f) in (None, {})]
             if missing:
+                why = " minutes_to is the drive time from where the truck parks to each tank." if "minutes_to" in missing else ""
                 out.append({"id": asset.get("id"), "label": (asset.get("_ingest") or {}).get("label"),
-                            "issue": f"Missing {', '.join(missing)}. The backend won't forecast it until these are set."})
+                            "issue": f"Missing {', '.join(missing)}. The backend won't forecast it until these are set.{why}"})
+    # The console reads the field names after "Missing", so each crossover asks only for what it lacks.
     for valve in bp.get("valves", []) or []:
-        if valve.get("kind") == "CROSSOVER" and "max_bbl_hr" not in valve:
+        missing = [f for f in CROSSOVER_NEEDS if valve.get(f) is None] if valve.get("kind") == "CROSSOVER" else []
+        if missing:
+            why = " manual is true if someone has to drive out to turn it, false if it's remote." if "manual" in missing else ""
             out.append({"id": valve.get("id"), "label": (valve.get("_ingest") or {}).get("label"),
-                        "issue": "Missing max_bbl_hr for this crossover."})
+                        "issue": f"Missing {', '.join(missing)}.{why}"})
     return out
 
 
