@@ -173,6 +173,7 @@ function idFor(obj) {
     // field.glb puts the ID in glTF extras, which three.js loads into userData.
     if (o.userData && ids.has(o.userData.asset_id)) return o.userData.asset_id;
     if (o.userData && ids.has(o.userData.source_id)) return o.userData.source_id; // dataset mode: the sponsor ID
+    if (dataset && ids.has(`${dataset.system}_${o.name}`)) return `${dataset.system}_${o.name}`; // TRUCK_1 -> S1_TRUCK_1
     if (ids.has(o.name)) return o.name;
     if (/^(PIPE|STOP|ROAD|PAD|SITE|CAM)_/.test(o.name)) return null; // scenery, never an asset
     const m = o.name.match(/^([A-Z]+(?:_[A-Z]+)*_\d+)(?:_.*)?$/);
@@ -229,23 +230,24 @@ function indexModel(root) {
   // Dataset mode: node name -> sponsor ID (extras.source_id), so moving parts follow the asset.
   const src = new Map();
   root.traverse((o) => { if (o.userData && o.userData.source_id) src.set(o.name, o.userData.source_id); });
-  const as = (n) => (n && src.get(n)) || n;
+  const as = (n) => (n && src.get(n)) || (n && dataset && ids.has(`${dataset.system}_${n}`) ? `${dataset.system}_${n}` : n);
   root.traverse((o) => {
     if (/^(STOP|ROAD)_/.test(o.name)) waypoints.set(o.name, o.getWorldPosition(new THREE.Vector3()));
     if (assets.has(o.name)) assets.get(o.name).root = o;
     else if (o.userData && assets.has(o.userData.source_id)) assets.get(o.userData.source_id).root = o;
+    else if (dataset && assets.has(`${dataset.system}_${o.name}`)) assets.get(`${dataset.system}_${o.name}`).root = o;
     // Moving parts from CONTRACT.md "What's in field.glb".
     const m = o.name.match(/^(PUMP_[A-Z0-9]+)_rotor$|^(VALVE_[A-Z0-9_]+?)_wheel$|^(WELL_[A-Z0-9]+)_(beam|crank|pitman|bridle)$/);
     if (m) movers.push({ node: o, id: as(m[1] || m[2] || m[3]), kind: m[1] ? "rotor" : m[2] ? "wheel" : m[4], rest: o.rotation.clone() });
     const g = o.name.match(/^(TANK_[A-Z0-9]+)_gauge$/);
     if (g) movers.push({ node: o, id: as(g[1]), kind: "gauge", rest: o.rotation.clone() });
     const ax = o.name.match(/^(TRUCK_\d+)_axle_\d$/);
-    if (ax) movers.push({ node: o, id: ax[1], kind: "axle", rest: o.rotation.clone() });
+    if (ax) movers.push({ node: o, id: as(ax[1]), kind: "axle", rest: o.rotation.clone() });
   });
   for (const a of assets.values()) if (!a.root) a.root = a.meshes[0] || a.levelMesh;
   buildJacks();
   for (const a of assets.values()) {
-    if (!/^TRUCK_/.test(a.id) || !a.root) continue;
+    if (!/(^|_)TRUCK_\d+$/.test(a.id) || !a.root) continue; // TRUCK_1, or S1_TRUCK_1 in dataset mode
     a.home = { pos: a.root.position.clone(), quat: a.root.quaternion.clone() };
     // The truck's long axis is its forward axis. Used to point it along the road.
     const size = new THREE.Box3().setFromObject(a.root).getSize(new THREE.Vector3());
@@ -1451,8 +1453,13 @@ addEventListener("keydown", (e) => {
 // A QR code for /phone. A judge scans it and their own phone becomes the night pager.
 // Classic has a Pager button in its side panel; the gaia console a "phone" pill on the 3D
 // (#147 item 15). The judges tour opens it with ?pager=1 or window.__pager.open().
+let pagerOpening = false;
 async function openPager() {
-  if (document.querySelector(".pager")) return;
+  if (pagerOpening || document.querySelector(".pager")) return;
+  pagerOpening = true;
+  try { await showPager(); } finally { pagerOpening = false; }
+}
+async function showPager() {
   const gaia = layout === "console";
   // The phone token rides in the fragment, only if this console was opened with one (#104).
   const pt = phoneToken();
