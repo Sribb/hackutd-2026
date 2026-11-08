@@ -79,12 +79,17 @@ def test_writes_need_a_token_and_reads_stay_open(tokens):
                        ("/api/live/sim", {"paused": True}), ("/api/jarvis", {"message": "what's failing"}),
                        ("/api/actions/act_1/confirm", {}), ("/api/actions/act_1/reject", {}),
                        ("/api/alerts/alert_1/ack", {})]:
+        auth.THROTTLE.reset()   # 7 wrong tokens from one client would lock it out (tested below)
         for headers in ({}, h("wrong"), h("")):
             r = c.post(path, json=body, headers=headers)
             assert r.status_code == 401 and r.json() == DENIED, (path, headers, r.text)
     for path in ("/api/live/state", "/api/alerts", "/api/actions", "/api/audit", "/api/live/connectors"):
         assert c.get(path).status_code == 200, path
-    assert live.proposals == {} and len(live.audit) == 0
+    assert live.proposals == {}
+    # Only the wrong tokens are logged (a missing one is the PIN prompt), and never their value.
+    entries = live.audit.entries()
+    assert [e["event"] for e in entries] == ["auth_failed"] * 7
+    assert all("wrong" not in json.dumps(e) for e in entries)
 
 
 def test_confirm_without_token_sends_nothing(tokens):
@@ -192,20 +197,24 @@ def test_audit_lists_the_demo_path_in_order(tokens):
     assert [e["seq"] for e in entries] == list(range(1, len(entries) + 1))
     steps = [(e["event"], e["source"], e["role"], e.get("status")) for e in entries]
     assert steps == [
+        ("fault", "console", "operator", None),
+        *[("sim", "console", "operator", None)] * 4,
         ("acked", "phone", "phone", None),
         ("proposed", "jarvis", "operator", "PENDING"),
         ("confirmed", "phone", "phone", "SENDING"),
         ("result", "phone", "phone", "CONFIRMED"),
     ], steps
-    ack, proposed, confirmed, result = entries
+    fault, sim, ack, proposed, confirmed, result = entries[0], entries[1], *entries[5:]
+    assert fault["asset_id"] == "PUMP_3" and fault["fault"] == "TRIP" and fault["ok"] is True
+    assert fault["reason"] == "demo" and sim["advance_min"] == 0.5
     assert ack["asset_id"] == "PUMP_3" and ack["alert_id"] == trip["id"]
     assert proposed["proposal_id"] == confirmed["proposal_id"] == result["proposal_id"] == p["id"]
     assert proposed["asset_id"] == p["action"]["asset_id"] and confirmed["by"] == "phone"
     assert all(e["clock"] and e["t"].endswith("+00:00") and e["live_t"] is not None for e in entries)
     # A second ack is not a new event; `since` skips what a poller already has.
     c.post(f"/api/alerts/{trip['id']}/ack", headers=h(PH))
-    assert len(c.get("/api/audit").json()["entries"]) == 4
-    assert [e["event"] for e in c.get("/api/audit?since=2").json()["entries"]] == ["confirmed", "result"]
+    assert len(c.get("/api/audit").json()["entries"]) == 9
+    assert [e["event"] for e in c.get("/api/audit?since=7").json()["entries"]] == ["confirmed", "result"]
 
 
 def test_audit_records_reject_and_other_lanes_can_append(tokens):

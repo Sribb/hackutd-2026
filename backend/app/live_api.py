@@ -20,7 +20,13 @@
 Control tokens (#103, auth.py): with FREEBOARD_TOKEN, OPERATOR_PIN, or FREEBOARD_PHONE_TOKEN
 set, every POST here needs X-Freeboard-Token (the webhook readings route keeps its own
 connector token). The phone token may only confirm, reject, ack, shelve, and unshelve. decided_by comes from
-the token's role, never from the body's "by". /ws takes ?token=.
+the token's role, never from the body's "by".
+
+/ws takes its token, best first: the subprotocol "freeboard.<token>" (offer
+["freeboard", "freeboard.<token>"]; the server picks "freeboard"), or a first message
+{"type": "auth", "token": ...} within WS_AUTH_S seconds of connecting (answered with
+{"type": "auth", "ok": true, "role": ...}), or ?token= (kept as a fallback; install()
+redacts it, and X-Freeboard-Token values, from uvicorn's logs).
 """
 from __future__ import annotations
 
@@ -28,6 +34,8 @@ import asyncio
 import json
 import logging
 import os
+import re
+import threading
 from pathlib import Path
 from typing import Callable, List, Optional, Union
 
@@ -44,6 +52,63 @@ from .live import SHELVE_MAX, SHELVE_MIN, ActionError, LiveField
 from .planner import make_plans
 
 log = logging.getLogger("freeboard.live_api")
+
+WS_AUTH_S = 5.0            # a /ws client may send {"type": "auth"} first, within this long
+WS_PROTOCOL = "freeboard"  # subprotocols: "freeboard" (picked) and "freeboard.<token>"
+RELOAD_TIMEOUT_S = 30.0
+
+
+# ---------- keep tokens out of the logs ----------
+
+REDACTED = "[redacted]"
+_TOKEN_PARAM = re.compile(r"(?i)(token=)[^&\s\"'\\]+")
+_TOKEN_HEADER = re.compile(r"(?i)(x-freeboard-token['\"]?\s*[:=,]\s*b?['\"]?)[^'\"\s,;)}\]\\]+")
+_PROTO_HEADER = re.compile(r"(?i)(sec-websocket-protocol['\"]?\s*[:=,]\s*b?['\"]?)([^'\"\r\n]*)")
+_PROTO_TOKEN = re.compile(r"(?i)(freeboard\.)[^\s,'\"]+")
+
+
+def redact(text: str) -> str:
+    """text with every ?token=, X-Freeboard-Token value, and freeboard.<token> subprotocol hidden."""
+    text = _TOKEN_PARAM.sub(lambda m: m.group(1) + REDACTED, text)
+    text = _TOKEN_HEADER.sub(lambda m: m.group(1) + REDACTED, text)
+    return _PROTO_HEADER.sub(lambda m: m.group(1) + _PROTO_TOKEN.sub(lambda n: n.group(1) + REDACTED, m.group(2)),
+                             text)
+
+
+class RedactTokens(logging.Filter):
+    """On uvicorn.access and uvicorn.error: the access line "GET /ws?token=1234" becomes
+    "GET /ws?token=[redacted]". Rewrites only the message and its string arguments (an
+    argument that is not a string is replaced by its redacted text only when it held a
+    token), so uvicorn's own formatters still get the argument shapes they expect."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            if isinstance(record.msg, str):
+                record.msg = redact(record.msg)
+            if isinstance(record.args, tuple):
+                record.args = tuple(self._arg(a) for a in record.args)
+            elif isinstance(record.args, dict):
+                record.args = {k: self._arg(v) for k, v in record.args.items()}
+        except Exception:  # noqa: BLE001 - never lose a log line over redaction
+            pass
+        return True
+
+    @staticmethod
+    def _arg(a):
+        if isinstance(a, str):
+            return redact(a)
+        if isinstance(a, (int, float, bool)) or a is None:
+            return a
+        text = str(a)
+        clean = redact(text)
+        return a if clean == text else clean
+
+
+def install_log_redaction() -> None:
+    for name in ("uvicorn.access", "uvicorn.error"):
+        logger = logging.getLogger(name)
+        if not any(isinstance(f, RedactTokens) for f in logger.filters):
+            logger.addFilter(RedactTokens())
 
 
 class ActionIn(BaseModel):
@@ -131,7 +196,8 @@ def build_router(live: LiveField, jarvis: Jarvis) -> APIRouter:
         return conn.push(body.readings)
 
     @r.post("/api/live/sim")
-    async def sim_controls(body: SimIn, _caller: Caller = OPERATOR) -> dict:
+    async def sim_controls(body: SimIn, caller: Caller = OPERATOR) -> dict:
+        live.audit.append("sim", source=caller.source(), role=caller.role, **body.model_dump(exclude_none=True))
         if body.speed is not None:
             live.speed = body.speed
         if body.paused is not None:
@@ -141,8 +207,11 @@ def build_router(live: LiveField, jarvis: Jarvis) -> APIRouter:
         return {"clock": live.fmap.clock(live.t), "t": round(live.t, 2), "speed": live.speed, "paused": live.paused}
 
     @r.post("/api/live/faults")
-    async def inject_fault(body: FaultIn, _caller: Caller = OPERATOR) -> dict:
-        why = live.registry.sim.inject(body.model_dump(exclude_none=True))
+    async def inject_fault(body: FaultIn, caller: Caller = OPERATOR) -> dict:
+        fault = body.model_dump(exclude_none=True)
+        why = live.registry.sim.inject(dict(fault))
+        live.audit.append("fault", source=caller.source(), role=caller.role, asset_id=fault.pop("asset_id"),
+                          fault=fault.pop("type"), ok=not why, **fault, **({"result": why} if why else {}))
         if why:
             raise HTTPException(422, why)
         return {"ok": True}
@@ -219,19 +288,56 @@ def build_router(live: LiveField, jarvis: Jarvis) -> APIRouter:
 
     @r.websocket("/ws")
     async def ws(websocket: WebSocket, role: str = "web", name: str = "", token: str = "") -> None:
-        ok, caller = auth.ws_caller(token)
-        if not ok:
-            await websocket.accept()
-            await websocket.close(code=1008, reason=auth.DENIED)
+        offered = [s.strip() for s in websocket.headers.get("sec-websocket-protocol", "").split(",") if s.strip()]
+        carried = next((s for s in offered if s.startswith(WS_PROTOCOL + ".")), None)
+        if carried:
+            token = carried[len(WS_PROTOCOL) + 1:]
+        # A browser drops the socket unless the server picks one of the offered subprotocols.
+        picked = WS_PROTOCOL if WS_PROTOCOL in offered else carried
+        ip = auth.client_of(websocket)
+
+        async def refuse(reason: str) -> None:
+            await websocket.accept(subprotocol=picked)
+            await websocket.close(code=1008, reason=reason)
+
+        def verdict(tok: str) -> tuple[Optional[str], Caller]:
+            """(why it is refused or None, caller)."""
+            wait = auth.ws_wait_s(ip) if (tok or "").strip() else 0
+            if wait:
+                return f"Too many wrong PINs. Wait {wait} s.", Caller(None)
+            ok, who = auth.ws_caller(tok, client=ip, audit=live.audit)
+            return (None if ok else auth.DENIED), who
+
+        why, caller = verdict(token)
+        if why:
+            await refuse(why)
             return
         steer = auth.may_steer(caller)
-        client = await live.hub.connect(websocket, role, name)
+        client = await live.hub.connect(websocket, role, name, subprotocol=picked)
+        # Without a token yet, the first message may carry it, within WS_AUTH_S seconds.
+        auth_until = asyncio.get_running_loop().time() + WS_AUTH_S if not token.strip() else None
         try:
             await live.hub.send(client, "state", {"state": live.state()})
             while True:
                 msg = await websocket.receive_json()
                 if not isinstance(msg, dict):
+                    auth_until = None
                     continue
+                if msg.get("type") == "auth":
+                    in_time = auth_until is not None and asyncio.get_running_loop().time() <= auth_until
+                    auth_until = None
+                    if not in_time:
+                        await live.hub.send(client, "auth", {"ok": False, "role": caller.role, "detail": (
+                            f"Send auth as the first message, within {WS_AUTH_S:g} s of connecting.")})
+                        continue
+                    why, caller = verdict(str(msg.get("token") or ""))
+                    if why:
+                        await websocket.close(code=1008, reason=why)
+                        return
+                    steer = auth.may_steer(caller)
+                    await live.hub.send(client, "auth", {"ok": True, "role": caller.role})
+                    continue
+                auth_until = None
                 if msg.get("type") == "ping":
                     await live.hub.send(client, "pong", {})
                 elif steer and msg.get("type") == "ui" and live.fmap.kind_of(str(msg.get("asset_id", ""))):
@@ -245,14 +351,46 @@ def build_router(live: LiveField, jarvis: Jarvis) -> APIRouter:
     return r
 
 
-def make_reload(live: LiveField, jarvis: Jarvis) -> Callable[[dict], dict]:
+class ReloadTimeout(TimeoutError):
+    """The live loop didn't get to the reload in time. It was called off: nothing changed."""
+
+
+def make_reload(live: LiveField, jarvis: Jarvis, timeout_s: float = RELOAD_TIMEOUT_S) -> Callable[[dict], dict]:
     """A plain function that points the live layer at a newly activated scenario.
 
     Safe to call from anywhere: from a sync endpoint's worker thread (#64's
     _use_scenario) it runs the reload on the live loop and waits, so it never interleaves
     with a tick or a confirm; on the loop itself it reloads at once and schedules the
-    broadcast; with no loop running (tests, scripts) it just reloads."""
+    broadcast; with no loop running (tests, scripts) it just reloads.
+
+    From a worker thread it waits up to timeout_s for the loop to start the reload. If the
+    loop hasn't started it by then, the reload is called off (it never applies later) and
+    ReloadTimeout is raised; once it has started, the call returns its changes."""
     pending: set = set()
+
+    def on_loop(scenario: dict, raw: dict, loop: asyncio.AbstractEventLoop) -> dict:
+        gate = threading.Lock()
+        job: dict = {"off": False}
+
+        async def run() -> Optional[dict]:
+            with gate:   # held only while reload() runs: it is synchronous
+                if job["off"]:
+                    return None
+                job["changes"] = live.reload(scenario, raw)
+            await live.publish_reload(job["changes"])
+            return job["changes"]
+
+        fut = asyncio.run_coroutine_threadsafe(run(), loop)
+        try:
+            return fut.result(timeout=timeout_s)
+        except TimeoutError:
+            with gate:
+                if "changes" not in job:
+                    job["off"] = True
+                    fut.cancel()
+                    raise ReloadTimeout(f"The live layer was busy for {timeout_s:g} s, so the field was not "
+                                        f"reloaded. Activate the blueprint again.") from None
+            return job["changes"]   # applied; its broadcast is still going out
 
     def reload(scenario: dict) -> dict:
         raw = _raw(scenario)
@@ -262,7 +400,7 @@ def make_reload(live: LiveField, jarvis: Jarvis) -> Callable[[dict], dict]:
             here = None
         loop = live.loop
         if loop is not None and loop.is_running() and here is not loop:
-            changes = asyncio.run_coroutine_threadsafe(live.reload_and_publish(scenario, raw), loop).result(timeout=30)
+            changes = on_loop(scenario, raw, loop)
         else:
             changes = live.reload(scenario, raw)
             if here is not None:
@@ -282,6 +420,8 @@ def install(app: FastAPI, scenario: dict) -> LiveField:
 
     app.state.live_reload(scenario) makes the live layer follow a newly activated
     blueprint (POST /api/blueprints/{id}/activate calls it once #64 wires it in)."""
+    install_log_redaction()   # /ws?token= and X-Freeboard-Token never reach uvicorn's logs
+    auth.warn_short_pin()
     live = LiveField(scenario, _raw(scenario))
     jarvis = Jarvis(live, forecast_fn=lambda sc, actions: forecast(sc, actions),
                     plans_fn=lambda sc: make_plans(sc))

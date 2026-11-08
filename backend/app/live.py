@@ -12,6 +12,14 @@ the proposal is claimed (SENDING) before anything awaits, so it is sent at most 
 JARVIS_CONFIRM=0 lets Jarvis skip the confirm, but only for commands that go to the
 simulator: a command for real equipment always waits for a person.
 
+A send whose answer never came back (a connector result with `"uncertain": True`, or a
+real connector that raised) is UNCERTAIN, never FAILED: it may have moved the device, so
+nothing sends it again and a person checks the field. A confirm whose command path (the
+connector, its config, the command's address) is not the one it was proposed on is
+refused with 409. A reload between the claim and the send ends the proposal FAILED with
+nothing sent (`generation` counts reloads); a send already under way keeps its result, but
+a reload in between never records it in `commanded`.
+
 Every proposal, decision, send result, alert ack, shelve, and unshelve goes into `audit`
 (audit.py, CF-10), with who did it: `role` (operator or phone, from the control token, see
 auth.py) and `source` (console, phone, jarvis, blueprint, timer).
@@ -33,11 +41,13 @@ import copy
 import itertools
 import logging
 import os
+import threading
 from collections import defaultdict
 from typing import Optional
 
 from .audit import AuditLog
 from .connectors import Registry
+from .connectors.base import UNCERTAIN_DETAIL
 from .connectors.sim import _fraction, _on
 from .detect import Detector, consequence_of, new_history, now_iso
 from .fieldmap import COMMANDS, FieldMap, name
@@ -52,6 +62,7 @@ REPRIORITIZE_MIN = 1.0       # rerun the baseline forecast for priorities at lea
 PRIORITY_HORIZON_MIN = 360   # the forecast's own horizon: past it, an alarm is P3
 MOVED_MIN = 2.0              # a consequence that moves this much is broadcast again
 SHELVE_MIN, SHELVE_MAX = 15, 240   # live minutes an alert may be shelved for (CF-7)
+RELOADED_BEFORE_SEND = "The field was reloaded before it was sent; nothing moved. Propose it again."
 
 
 class ActionError(Exception):
@@ -101,6 +112,9 @@ class LiveField:
         self.history: dict[tuple, object] = defaultdict(new_history)
         self.commanded: dict[str, dict] = {}       # asset id -> {"value", "t"} from confirmed commands
         self.proposals: dict[str, dict] = {}
+        self._paths: dict[str, tuple] = {}         # proposal id -> Registry.path() when it was proposed
+        self.generation = 0                        # +1 on every reload(); a send checks it first
+        self._gen_lock = threading.Lock()          # the generation check (worker thread) vs reload()
         self._ids = itertools.count(1)
         self.hub = hub or Hub()
         self.notifier = Notifier()
@@ -300,6 +314,8 @@ class LiveField:
         Returns {"assets", "resolved_alerts", "closed_proposals"} for publish_reload()."""
         start, initial, faults, sensors, specs = start_conditions(scenario, raw)
         old_det = self.detector
+        with self._gen_lock:   # a claimed proposal that hasn't started sending now never will
+            self.generation += 1
         self.registry.close()
         self.scenario = scenario
         self.fmap = FieldMap.from_scenario(scenario, self.fmap.start_clock)
@@ -353,6 +369,9 @@ class LiveField:
         if conn.id != p.get("connector_id"):
             return (f"Closed: in the activated blueprint it would go to {conn.id}, not {p.get('connector_id')}. "
                     f"Propose it again to send it there.")
+        if self.registry.path(a) != self._paths.get(p["id"]):
+            return (f"Closed: {conn.id} is set up differently in the activated blueprint (its url, address, "
+                    f"or settings changed). Propose it again to send it there.")
         return None
 
     async def publish_reload(self, changes: dict) -> None:
@@ -508,6 +527,7 @@ class LiveField:
              "status": "PENDING", "created_t": now_iso(), "text": describe(a), "source": source,
              "connector_id": conn.id}
         self.proposals[p["id"]] = p
+        self._paths[p["id"]] = self.registry.path(a)
         self._log(p, "proposed", source=source, role=role, reason=p["reason"])
         await self.hub.broadcast("proposal", {"proposal": p})
         await self.focus(a["asset_id"], f"Waiting for confirmation: {p['text']}", source=source)
@@ -525,32 +545,66 @@ class LiveField:
         The proposal is claimed (status SENDING) before the first await, so a second
         confirm from another screen, or a reject racing this one, gets 409 instead of
         sending the command again or after a reject. `by` is stored as `decided_by`; the
-        HTTP route sets it from the caller's token role (auth.py), never from the body."""
+        HTTP route sets it from the caller's token role (auth.py), never from the body.
+
+        The command goes only over the path it was proposed on (409 otherwise), and only if
+        no reload came between the claim and the send (else FAILED, nothing sent)."""
         p = self._pending(action_id)
         a = p["action"]
         conn = self.registry.route(a)
+        if conn.id != p.get("connector_id") or self.registry.path(a) != self._paths.get(p["id"]):
+            raise ActionError(409, f"Proposal {action_id}: the command path changed; propose again.")
+        gen, is_sim = self.generation, conn is self.registry.sim
         p.update(status="SENDING", decided_t=now_iso(), decided_by=by or None, connector_id=conn.id)
         source = source or by or None
         self._log(p, "confirmed", source=source, role=role, by=by or None, **({"auto": auto} if auto else {}))
         # --- no await above this line: the PENDING check and the claim are atomic ---
+        started: list = []   # gets an entry once conn.send() has been called
         try:
             await self.hub.broadcast("proposal", {"proposal": p})
-            if conn is self.registry.sim:
-                res = conn.send(a)
-            else:
-                res = await asyncio.to_thread(conn.send, a)
+            res = await self._send_if_current(conn, a, gen, is_sim, started)
         except Exception as e:  # noqa: BLE001 - never leave a proposal stuck in SENDING
             log.exception("sending %s failed", action_id)
-            res = {"ok": False, "detail": f"Send failed: {e}"}
+            # A real connector that raised inside send() may already have sent it: UNCERTAIN.
+            res = ({"ok": False, "uncertain": True, "detail": f"{conn.id}: sending raised {e}; {UNCERTAIN_DETAIL}."}
+                   if started and not is_sim else {"ok": False, "detail": f"Send failed: {e}"})
+        reloaded = self.generation != gen
+        if res is None:   # the field reloaded before the send started: nothing left
+            res = {"ok": False, "detail": RELOADED_BEFORE_SEND}
         ok = bool(res.get("ok"))
-        p.update(status="CONFIRMED" if ok else "FAILED", result=res.get("detail", ""), decided_t=now_iso())
-        self._log(p, "result", source=source, role=role, by=by or None, result=p["result"])
-        if ok and a["type"] in ("SET_VALVE", "SET_PUMP"):
+        # UNCERTAIN: it left for the device but no acknowledgement came back. It may have
+        # moved, so it is not FAILED (which invites a retry); a person checks the field.
+        status = "CONFIRMED" if ok else "UNCERTAIN" if res.get("uncertain") else "FAILED"
+        p.update(status=status, result=res.get("detail", ""), decided_t=now_iso())
+        self._log(p, "result", source=source, role=role, by=by or None, result=p["result"],
+                  **({"reloaded": True} if reloaded else {}))
+        # After a reload, `commanded` belongs to the new field: never write the old one's result.
+        if ok and not reloaded and a["type"] in ("SET_VALVE", "SET_PUMP"):
             self.commanded[a["asset_id"]] = {"value": a["value"], "t": self.t}
         await self.hub.broadcast("proposal", {"proposal": p})
         await self.focus(a["asset_id"], p["result"], source="action")
         await self.hub.broadcast("state", {"state": self.state()})
         return p
+
+    async def _send_if_current(self, conn, a: dict, gen: int, is_sim: bool, started: list) -> Optional[dict]:
+        """conn.send(a), unless a reload changed the generation first (then None: not sent).
+        The simulator sends on the loop with no await after the check. A real connector sends
+        on a worker thread, which checks under the lock reload() takes to bump the generation;
+        a reload after that check finds the send under way and leaves it to finish."""
+        if is_sim:
+            if self.generation != gen:
+                return None
+            started.append(True)
+            return conn.send(a)
+
+        def go() -> Optional[dict]:
+            with self._gen_lock:
+                if self.generation != gen:
+                    return None
+                started.append(True)
+            return conn.send(a)
+
+        return await asyncio.to_thread(go)
 
     async def reject(self, action_id: str, by: str = "", role: Optional[str] = None,
                      source: Optional[str] = None) -> dict:
