@@ -33,7 +33,7 @@ The web console finds objects by name, so names matter more than anything else h
 5. **Scale:** 1 Blender unit is 1 meter. Apply transforms before exporting, except where an origin has to stay put for rule 4.
 6. **Color:** Model everything in neutral gray and steel. The web console adds status color. Don't paint status into the model.
 7. **Materials:** Use Principled BSDF, because other node setups may not export correctly. Keep textures at 2K or below.
-8. **Budget:** Aim for under 300,000 triangles and under 30 MB so it runs smoothly on a laptop at the expo.
+8. **Budget:** For a field of up to 12 tanks: under 300,000 triangles, under 30 MB, and under 1,500 draw calls, so it runs smoothly on a laptop at the expo. Draw calls cost the most: in the console each one costs about 12 µs of frame time, and every 100,000 triangles cost about 0.7 ms (measured in Chrome on an M5, #97). The build reports `draw_calls`, and `build_field.py` and `blender/test_generator.py` hold the numbers.
 
 **Exporting:** File, Export, glTF 2.0. Use the glTF Binary (`.glb`) format, keep the default +Y Up, and turn Apply Modifiers on. Leave Draco compression off at first.
 
@@ -118,9 +118,19 @@ Positions are plan meters. The lease road runs along x on y = 0, and y points no
                "items": { "boulder": 6, "branch": 6, "creosote": 2, "grass": 110, "lease_sign": 1, "mesquite": 1,
                           "prickly_pear": 28, "rock": 15, "yucca": 65 },
                "dropped": [], "triangles": 114650, "field_triangles": 148435, "images_mb": 9.43 },
-  "triangles": 263085, "glb_mb": 19.0, "nodes": 1013, "seconds": 7.8
+  "triangles": 263085, "glb_mb": 16.03, "nodes": 882, "draw_calls": 772,
+  "optimize": { "meshes_before": 768, "meshes_after": 284, "unshared": 0, "purged": 492,
+                "instanced": { "SCENERY_dry_grass_2_instances": 110, "SCENERY_rock_1_instances": 8, "...": 3 },
+                "instances": 139, "glb_meshes": 284, "instanced_nodes": 8 },
+  "budget": { "triangles": 300000, "mb": 30.0, "draw_calls": 1500 },
+  "timing": { "plan": 0.0, "field": 36.11, "scenery": 64.94, "checks": 0.0, "optimize": 5.23, "export": 7.58, "blend": 0.18, "report": 0.02 },
+  "seconds": 114.07, "cpu_seconds": 19.59
 }
 ```
+
+(That build ran with a load average of 250 on the Mac, so its wall seconds are about 6 times its CPU seconds.)
+
+`blender/optimize.py` runs right before export. It points identical meshes at one copy (24 pumpjacks store each part once), turns repeated scenery kit models into GPU-instanced nodes, and drops unused data. Every node outside `SCENERY` keeps its own node, name, parent and transform, so nothing the console reads by name changes. `triangles` counts every instance. `draw_calls` is one per primitive of each mesh node, which is what three.js draws without shadows (shadows draw each mesh again). `timing` gives the wall seconds of each step, and `seconds` the whole build.
 
 `counts` comes from the blueprint and `kinds` from the built scene. `scenery` says what the desert layer added: its triangles on top of `field_triangles`, the MB of its textures, and anything it `dropped` to stay in the budget. With `--no-scenery` it is `{"on": false}`. `placed` lists which assets had positions in the blueprint and which were placed automatically. When `ok` is false, `errors` says what to fix.
 
@@ -181,9 +191,9 @@ Assets on the south side of the road are turned 180 degrees about Y. Their parts
 - `SITE_*` is the ground, roads, pipe supports, and the power line.
 - `CAM_OVERVIEW` is a camera framing the whole field.
 - Names ending in `_label`, `_sign`, or `_tag` are painted numbers and signs.
-- `SCENERY` is the desert layer (#88): one root Empty with `userData.kind` `scenery`, and every node under it is named `SCENERY_*`. It holds the barbed wire fence along the lease edge (`SCENERY_fence_*`), the cattle guards and road stubs where the lease road leaves (`SCENERY_cattle_guard_*`, `SCENERY_road_*`), a lease sign, and a seeded scatter of plants and rocks: one node per kit model copy, like `SCENERY_grass_12`, `SCENERY_rock_3`, and `SCENERY_mesquite_1`, and one merged mesh per material for the generated plants (`SCENERY_yucca_*`, `SCENERY_prickly_pear_*`). Nothing under it has an asset ID, so it is never clickable. Hide the whole layer with `scene.getObjectByName("SCENERY").visible = false`. It stays off pads, roads, pipe runs, and truck routes, and it is the same on every build of the same blueprint. The ground (`M_GROUND`) and the road (`M_ROAD`) also get the kit's dry soil and dirt road textures; those are not under `SCENERY`.
+- `SCENERY` is the desert layer (#88): one root Empty with `userData.kind` `scenery`, and every node under it is named `SCENERY_*`. It holds the barbed wire fence along the lease edge (`SCENERY_fence_*`), the cattle guards and road stubs where the lease road leaves (`SCENERY_cattle_guard_*`, `SCENERY_road_*`), a lease sign, and a seeded scatter of plants and rocks. Kit models placed more than once are GPU-instanced (`EXT_mesh_gpu_instancing`, #97): one node per model, like `SCENERY_dry_grass_2_instances` and `SCENERY_rock_1_instances`, which three.js loads as one `InstancedMesh` and one draw call for every copy. A model placed once stays a plain node, like `SCENERY_mesquite_1`. The generated plants are one merged mesh per material (`SCENERY_yucca_*`, `SCENERY_prickly_pear_*`). Nothing under it has an asset ID, so it is never clickable. Hide the whole layer with `scene.getObjectByName("SCENERY").visible = false`. It stays off pads, roads, pipe runs, and truck routes, and it is the same on every build of the same blueprint. The ground (`M_GROUND`) and the road (`M_ROAD`) also get the kit's dry soil and dirt road textures; those are not under `SCENERY`.
 
-**Size:** Today's field is about 263,000 triangles and 19 MB with its scenery, or 148,000 triangles and 6.2 MB with `--no-scenery`. The 12-tank sample is about 288,000 triangles and 17 MB. All are inside the 300,000 triangle and 30 MB budget. Scenery only uses what the field leaves: it fills up to 95% of the triangle budget, drops the fence when it can't fit, and builds only the textures when nothing is left. The generator estimates the size before it builds. If a field has more than 12 tanks, or full detail would pass the budget, it drops small detail: bolts, small labels, tags, signs, and containment and fence posts, then wellhead trim if that is still too much. `detail` in the report says what was dropped. Asset nodes, tank numbers (`<tank>_label`), lights, sensors, moving parts, pipes, and waypoints are never dropped.
+**Size:** Today's field is about 263,000 triangles, 16 MB and 772 draw calls with its scenery, or 148,000 triangles and 6.2 MB with `--no-scenery`. The 12-tank sample is about 288,000 triangles, 10 MB and 1,471 draw calls. All are inside the 300,000 triangle, 30 MB and 1,500 draw call budget. Scenery only uses what the field leaves: it fills up to 95% of the triangle budget, drops the fence when it can't fit, and builds only the textures when nothing is left. The generator estimates the size before it builds. If a field has more than 12 tanks, or full detail would pass the budget, it drops small detail: bolts, small labels, tags, signs, and containment and fence posts, then wellhead trim if that is still too much. `detail` in the report says what was dropped. Asset nodes, tank numbers (`<tank>_label`), lights, sensors, moving parts, pipes, and waypoints are never dropped.
 
 **Scale and axes:** Today's field runs 450 m along X, and the report gives `layout.road_m` for any field. In three.js, Y is up and the lease road runs along X near Z = 0, with the first row of tank pads toward negative Z and a second row, if any, toward positive Z.
 

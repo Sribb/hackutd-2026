@@ -2,6 +2,16 @@
   "ok": true,
   "errors": [],
   "warnings": [],
+  "timing": {
+    "plan": 0.0,
+    "field": 36.11,
+    "scenery": 64.94,
+    "checks": 0.0,
+    "optimize": 5.23,
+    "export": 7.58,
+    "blend": 0.18,
+    "report": 0.02
+  },
   "blueprint": "scenario/field.json",
   "name": "Avon field - night shift",
   "counts": {
@@ -141,12 +151,35 @@
     "images_mb": 9.43
   },
   "triangles": 263085,
-  "glb_mb": 19.02,
-  "nodes": 1013,
+  "glb_mb": 16.03,
+  "nodes": 882,
   "objects": 1014,
+  "draw_calls": 772,
+  "optimize": {
+    "meshes_before": 768,
+    "meshes_after": 284,
+    "unshared": 0,
+    "instanced": {
+      "SCENERY_boulder_1_instances": 3,
+      "SCENERY_boulder_2_instances": 3,
+      "SCENERY_creosote_1_instances": 2,
+      "SCENERY_dead_branch_1_instances": 3,
+      "SCENERY_dead_branch_2_instances": 3,
+      "SCENERY_dry_grass_2_instances": 110,
+      "SCENERY_rock_1_instances": 8,
+      "SCENERY_rock_2_instances": 7
+    },
+    "instances": 139,
+    "purged": 492,
+    "seconds": 5.23,
+    "glb_meshes": 284,
+    "instanced_nodes": 8
+  },
   "budget": {
     "triangles": 300000,
-    "mb": 30.0
+    "mb": 30.0,
+    "draw_calls": 1500
   },
-  "seconds": 8.73
+  "seconds": 114.07,
+  "cpu_seconds": 19.59
 }

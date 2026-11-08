@@ -50,14 +50,15 @@ import iot_parts  # noqa: E402
 import field_build  # noqa: E402
 import scenery_parts  # noqa: E402
 import scenery  # noqa: E402
+import optimize  # noqa: E402
 
 for _mod in (blueprint, layout, siting, names, fp, de, ds, piping, equipment_parts, iot_parts, field_build,
-             scenery_parts, scenery):
+             scenery_parts, scenery, optimize):
     importlib.reload(_mod)
 
 ROOT = os.path.dirname(HERE)
 DEFAULT_BLUEPRINT = os.path.join(ROOT, "scenario", "field.json")
-BUDGET_TRIS, BUDGET_MB = 300_000, 30.0
+BUDGET_TRIS, BUDGET_MB, BUDGET_DRAWS = 300_000, 30.0, 1500   # for up to 12 tanks; see CONTRACT.md
 SCENERY_SHARE = 0.95        # scenery fills the triangle budget up to 95%, leaving headroom
 FULL_DETAIL_MAX_TANKS = 12
 LEVELS = {
@@ -162,7 +163,8 @@ def stage(collection, scene, L):
 
 
 def triangles(scene):
-    return sum(len(p.vertices) - 2 for o in scene.objects if o.type == "MESH" for p in o.data.polygons)
+    """Each n-gon is n - 2 triangles, so a mesh has (corners - 2 x faces) of them."""
+    return sum(len(o.data.loops) - 2 * len(o.data.polygons) for o in scene.objects if o.type == "MESH")
 
 
 def build_scene(scene, bp, L, level):
@@ -174,14 +176,16 @@ def build_scene(scene, bp, L, level):
 
 
 def export_glb(path):
+    """Write the glb. GPU instancing turns each SCENERY_*_instances Empty from optimize.py into
+    one EXT_mesh_gpu_instancing node; nothing else in the scene qualifies (see optimize.py)."""
     kwargs = dict(filepath=path, export_format="GLB", use_active_scene=True, export_apply=True,
                   export_extras=True, export_cameras=True, export_lights=False, export_yup=True,
-                  export_animations=False)
+                  export_animations=False, export_gpu_instances=True)
     try:
         bpy.ops.export_scene.gltf(**kwargs)
     except TypeError as exc:
         print("exporter rejected an option, retrying with defaults:", exc)
-        for key in ("use_active_scene", "export_animations", "export_lights", "export_cameras"):
+        for key in ("use_active_scene", "export_animations", "export_lights", "export_cameras", "export_gpu_instances"):
             kwargs.pop(key, None)
         bpy.ops.export_scene.gltf(**kwargs)
 
@@ -195,15 +199,24 @@ def glb_json(path):
     return json.loads(raw[20:20 + n])
 
 
-def glb_nodes(path):
-    return glb_json(path).get("nodes", [])
-
-
-def glb_images_mb(path):
-    """MB of embedded images. The plain field has none, so these are the scenery's textures."""
-    g = glb_json(path)
-    views = g.get("bufferViews", [])
-    return round(sum(views[i["bufferView"]]["byteLength"] for i in g.get("images", []) if "bufferView" in i) / 1e6, 2)
+def glb_summary(g):
+    """What the console has to draw: draw calls (one per primitive of a mesh node, so one per
+    instanced node too), instanced nodes and their copies, meshes, and MB of embedded images
+    (the plain field has none, so these are the scenery's textures)."""
+    views, acc = g.get("bufferViews", []), g.get("accessors", [])
+    draws = copies = 0
+    held = []
+    for nd in g.get("nodes", []):
+        if "mesh" not in nd:
+            continue
+        draws += len(g["meshes"][nd["mesh"]]["primitives"])
+        inst = nd.get("extensions", {}).get("EXT_mesh_gpu_instancing")
+        if inst:
+            held.append(nd.get("name", ""))
+            copies += acc[inst["attributes"]["TRANSLATION"]]["count"]
+    images = sum(views[i["bufferView"]]["byteLength"] for i in g.get("images", []) if "bufferView" in i)
+    return {"draw_calls": draws, "meshes": len(g.get("meshes", [])), "instanced_nodes": len(held),
+            "instances": copies, "images_mb": round(images / 1e6, 2), "instanced": sorted(held)}
 
 
 RENDER_VIEWS = {   # camera and target offsets in the asset's own frame
@@ -246,8 +259,21 @@ def render_checks(scene, out_dir, assets):
     scene.camera = overview
 
 
+class Clock:
+    """Wall seconds per build step, for the report's "timing"."""
+
+    def __init__(self):
+        self.t, self.laps = time.time(), {}
+
+    def lap(self, step):
+        now = time.time()
+        self.laps[step] = round(self.laps.get(step, 0.0) + now - self.t, 2)
+        self.t = now
+
+
 def write_report(report, out_dir, t0):
     report["seconds"] = round(time.time() - t0, 2)
+    report["cpu_seconds"] = round(time.process_time(), 2)
     if out_dir:
         with open(os.path.join(out_dir, "build_report.json"), "w") as f:
             json.dump(report, f, indent=2)
@@ -267,6 +293,8 @@ def paths(opts):
 
 def run(opts, src, out_dir, report):
     """The build itself. Returns the exit code."""
+    clock = Clock()
+    report["timing"] = clock.laps
     report["blueprint"] = rel(src)
     data, errors = blueprint.load(src)
     bp, more, warnings = blueprint.check(data) if data is not None else (None, [], [])
@@ -285,6 +313,7 @@ def run(opts, src, out_dir, report):
     if bp["connectors"]:
         report["connectors"] = [c["id"] for c in bp["connectors"]]
     report["counts"] = blueprint.counts(bp)
+    clock.lap("plan")
 
     order = list(LEVELS)
     if opts["detail"]:
@@ -303,12 +332,14 @@ def run(opts, src, out_dir, report):
         level = order[order.index(level) + 1]
 
     field_tris, want = tris, set(names.expected(bp))
+    clock.lap("field")
     view = {"on": False}
     if opts["scenery"]:
         view = scenery.dress(scene.collection, bp, L, int(BUDGET_TRIS * SCENERY_SHARE) - tris)
         tris = triangles(scene)
         view.update({"triangles": tris - field_tris, "field_triangles": field_tris})
         want.add("SCENERY")
+        clock.lap("scenery")
 
     objs = list(scene.objects)
     dotted = sorted(o.name for o in objs if "." in o.name)
@@ -322,12 +353,22 @@ def run(opts, src, out_dir, report):
         return 2
 
     glb, blend = os.path.join(out_dir, "field.glb"), os.path.join(out_dir, "field.blend")
+    clock.lap("checks")
+    opt = optimize.run(scene, want)      # last step before export: shares meshes, groups scenery copies
+    clock.lap("optimize")
     export_glb(glb)
+    clock.lap("export")
     bpy.ops.wm.save_as_mainfile(filepath=blend, compress=True)
-    nodes = glb_nodes(glb)
+    clock.lap("blend")
+    g = glb_json(glb)
+    nodes, summary = g.get("nodes", []), glb_summary(g)
     gone = sorted(want - {n.get("name") for n in nodes})
     if gone:
         report["errors"].append("field.glb is missing names after export: " + ", ".join(gone[:20]))
+        return 2
+    stray = [n for n in summary["instanced"] if not (n.startswith("SCENERY_") and n.endswith(optimize.GROUP_SUFFIX))]
+    if stray:
+        report["errors"].append("the exporter instanced nodes outside SCENERY: " + ", ".join(stray[:12]))
         return 2
     mb = os.path.getsize(glb) / 1e6
     kinds = Counter(o["kind"] for o in objs if "asset_id" in o.keys())
@@ -341,22 +382,26 @@ def run(opts, src, out_dir, report):
                    "crossovers": {x["id"]: x["style"] for x in L["crossovers"]}},
         "detail": {"level": level, "dropped": DROPPED[level], "passes": passes},
         "iot": {"sensors": len(names.sensors(bp)), "rtus": len(bp["tanks"])},
-        "scenery": dict(view, **({"images_mb": glb_images_mb(glb)} if view["on"] else {})),
+        "scenery": dict(view, **({"images_mb": summary["images_mb"]} if view["on"] else {})),
         "triangles": tris, "glb_mb": round(mb, 2), "nodes": len(nodes), "objects": len(objs),
-        "budget": {"triangles": BUDGET_TRIS, "mb": BUDGET_MB},
+        "draw_calls": summary["draw_calls"],
+        "optimize": dict(opt, glb_meshes=summary["meshes"], instanced_nodes=summary["instanced_nodes"],
+                         instances=summary["instances"]),
+        "budget": {"triangles": BUDGET_TRIS, "mb": BUDGET_MB, "draw_calls": BUDGET_DRAWS},
     })
     if level != "full":
         why = (f"more than {FULL_DETAIL_MAX_TANKS} tanks" if len(bp["tanks"]) > FULL_DETAIL_MAX_TANKS
                else "full detail would pass the triangle budget") if not opts["detail"] else "--detail was set"
         report["warnings"].append(f"built at {level} detail ({why}); dropped: {', '.join(DROPPED[level])}")
-    if tris > BUDGET_TRIS or mb > BUDGET_MB:
-        report["warnings"].append(f"over budget: {tris} triangles and {mb:.1f} MB "
-                                  f"(budget {BUDGET_TRIS} and {BUDGET_MB:.0f} MB)")
+    if tris > BUDGET_TRIS or mb > BUDGET_MB or summary["draw_calls"] > BUDGET_DRAWS:
+        report["warnings"].append(f"over budget: {tris} triangles, {mb:.1f} MB and {summary['draw_calls']} draw calls "
+                                  f"(budget {BUDGET_TRIS}, {BUDGET_MB:.0f} MB and {BUDGET_DRAWS})")
     if opts["render_dir"]:
         assets = (opts["render_assets"] or "").split(",") if opts["render_assets"] else [
             a for a in (bp["tanks"][0]["id"], bp["wells"][0]["id"] if bp["wells"] else None,
                         bp["trucks"][0]["id"] if bp["trucks"] else None, bp["swds"][-1]["id"]) if a]
         render_checks(scene, opts["render_dir"], [a for a in assets if a])
+    clock.lap("report")
     return 0
 
 
