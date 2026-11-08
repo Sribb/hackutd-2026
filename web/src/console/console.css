@@ -186,12 +186,6 @@ body:not(.fb-console) .cs-tb-hot, body:not(.fb-console) .cs-skybtn { display: no
 body.fb-console .timebar .scenery-btn { font: 11px var(--mono); padding: 4px 10px; }
 body.fb-console #twonights { inset: 12px 14px 80px 14px; }
 
-/* ---------------------------------------------------------------- PIN ---- */
-.cs-pin { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; background: rgba(5,5,5,.72); }
-.cs-pin-card { width: min(340px, calc(100vw - 32px)); background: var(--surface); border: 1px solid var(--ink-2); padding: 16px; display: grid; gap: 10px; }
-.cs-pin-card p { margin: 0; font-size: 13px; color: var(--ink-2); }
-.cs-pin-card input { background: var(--bg); color: var(--ink); border: 1px solid var(--line); font: 18px var(--mono); padding: 8px; letter-spacing: .3em; }
-
 @media (max-width: 860px) {
   body.fb-console #app, body.fb-console.cs-open #app { grid-template-columns: 1fr; grid-template-rows: 32px 60vh auto; grid-template-areas: "status" "stage" "side"; height: auto; }
   .cs-side { height: auto; max-height: none; }

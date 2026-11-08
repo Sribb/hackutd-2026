@@ -162,3 +162,26 @@ If the backend can't start, the console still runs on recorded data and says so.
 The desert layer (one `SCENERY` root, about 115k triangles) gets a **Scenery on/off** toggle in the model note. A click is remembered on this browser.
 
 After the field loads, the console measures its own frame rate. Under 45 fps it steps quality down, cheapest visual loss first: pixel density 2x to 1.5x, then 1x, then scenery off. It stops as soon as the field is smooth, and the model note says what changed. A step that doesn't raise the frame rate by 10% is undone and the guard stops, because then the bottleneck is a busy CPU, not pixels or triangles. URL overrides: `?scenery=on|off` and `?quality=full` (skip the guard, for recording video).
+
+## Control token and safety (#104)
+
+- **Token:** the console and the phone read a control token from the URL fragment (`#k=<token>`; the console may also carry `p=<phone token>` for its Pager QR). The token is kept in sessionStorage for that tab and stripped from the address bar, and a fragment never reaches a server or a Referer. Every write sends `X-Freeboard-Token`, and `/ws` gets `?token=`. A 401 opens an operator PIN prompt and retries once. If the backend has no token set, nothing changes.
+- **`npm run demo`:** makes a new operator token and phone token every run and hands both to the backend. It listens on **127.0.0.1 only**. `npm run demo:lan` (also `npm run phone`) opens it to the Wi-Fi for phones. The printed console link carries the operator token. The Pager QR carries only the phone token, which can confirm, reject or acknowledge and nothing else, and the token is never shown as text.
+- **Vite 5.4.21** (patched file-read CVEs). The dev server has `cors: false` and serves nothing outside `web/`. `.env*`, keys, `.git`, `.venv` and sqlite files are denied by name.
+- **Never falsely safe:**
+  - When the backend is configured but down or refusing, the console says so: a full screen at boot, and a BACKEND DOWN badge after. It never swaps in recorded numbers.
+  - Recorded data is used only with no backend, with `?offline`, or for an endpoint the backend doesn't have (404), and it's always badged.
+  - State, the countdown, plans and Last Call refresh every minute and 2 s after any alert.
+  - The handoff note lists tank levels as of the moment it's written, from live readings, and marks stale ones.
+  - Hold-to-confirm needs the full hold, even if the list redraws.
+
+## Alarms, trend, and handoff (CF-1 to CF-4)
+
+- **Alarm list** (`src/alarms.js`, the Alarms card): `GET /api/alerts` plus `/ws` alert events. There is one row per root cause, with related alarms folded under it as "+N related". Rows sort by priority, then by least time to consequence. Ack is one click. Shelve needs a reason and 15 min to 4 h, and the alarm comes back when the shelf ends. Shelving a root never hides the unshelved alarms that follow from it. The card counts alarms in the last 10 min and switches to flood mode over 10. Without `/api/alerts`, the list is derived from the forecast and says so. Other modules can read it with `import { alarms } from "./alarms.js"`.
+- **Trend** (`src/trend.js`, in the Selected card for a tank):
+  - A solid line for the last 60 live minutes, kept in this browser, plus `GET /api/history` when the backend has it.
+  - A dashed line for the forecast on screen.
+  - A give-or-take band from the shutdown event's `t_min_low` and `t_min_high`.
+  - The shutdown line, with the crossing time marked.
+  - A what-if moves only the dashed part. Hover any minute to read its level.
+- **Handoff** has six fixed sections: open alarms, shelved alarms, blind sensors, the approved plan, the next deadline, and the what-ifs tried. Tank levels and the full log come after. `window.__freeboard.handoff()` returns the text.

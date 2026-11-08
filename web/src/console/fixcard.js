@@ -102,6 +102,7 @@ export function makeFixCard(box, H) {
     box.dataset.id = p.id;
     box.dataset.status = st;
     box.className = `cs-fix ${st}`;
+    if (st === "PENDING" && !effects.has(p.id)) loadEffect(p); // marks it loading before the first render
     const eff = effects.get(p.id);
     const html = `<div class="cs-fx-top"><span>FIX</span><span>${esc(sourceOf(p))}</span><b>${esc(st === "DECIDED" ? "409" : st)}</b></div>
       <div class="cs-fx-text">${esc(p.text || "")}</div>
@@ -119,7 +120,6 @@ export function makeFixCard(box, H) {
     const more = box.querySelector("[data-more]");
     if (more) more.onclick = () => { const list = pendingList(); const i = list.findIndex((x) => x.id === p.id); current = list[(i + 1) % list.length].id; draw(); };
     box.querySelectorAll("[data-dismiss]").forEach((b) => { b.onclick = () => fold(p.id, st); });
-    if (st === "PENDING" && !effects.has(p.id)) loadEffect(p);
     if (["CONFIRMED", "REJECTED", "DECIDED"].includes(st) && !foldTimers.has(p.id)) {
       foldTimers.set(p.id, setTimeout(() => fold(p.id, st), st === "CONFIRMED" || st === "DECIDED" ? 5000 : 3000));
     }

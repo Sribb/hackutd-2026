@@ -3,11 +3,13 @@ import "@fontsource/azeret-mono/400.css";
 import "@fontsource/azeret-mono/600.css";
 import * as THREE from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+import { MeshoptDecoder } from "three/addons/libs/meshopt_decoder.module.js";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { mountSky } from "./sky.js";
 import * as api from "./api.js";
+import { phoneToken } from "./auth.js";
 import { buildPlaceholder } from "./placeholder.js";
-import { decode, holdButton } from "./fx.js";
+import { decode, holdButton, isHolding, afterHold } from "./fx.js";
 import * as shiftlog from "./shiftlog.js";
 import { mountUpload } from "./upload.js";
 import { mountHands } from "./hands.js";
@@ -16,14 +18,17 @@ import * as liveFeed from "./live.js";
 import { mountTwoNights } from "./twonights.js";
 import { mountScenery } from "./scenery.js";
 import { mountInspect } from "./inspect.js";
-import { installAuth, wsToken } from "./console/auth.js";
+import { mountAlarms, alarms } from "./alarms.js";
+import { startTrend, trendHtml, wireTrend } from "./trend.js";
+import "./console/auth.js"; // takes ?token= into auth.js (#104) before anything talks to the backend
 import { mountConsole } from "./console/index.js";
 
 // Jarvis console (docs/JARVIS_CONSOLE.md) is the default screen; the old panels stay at ?layout=classic.
 const layout = new URLSearchParams(location.search).get("layout") === "classic" ? "classic" : "console";
-installAuth(); // X-Freeboard-Token on every POST (and the PIN on a 401), before anything talks to the backend
 
 const $ = (id) => document.getElementById(id);
+// Meshopt-compressed glb (#112/#117) loads with no extra files; a plain glb is unaffected.
+const gltfLoader = () => new GLTFLoader().setMeshoptDecoder(MeshoptDecoder);
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
 const usd = (n) => "$" + Math.round(n).toLocaleString("en-US");
 
@@ -80,7 +85,7 @@ async function loadModel() {
   try { built = sessionStorage.getItem("freeboard.glb"); } catch { /* storage blocked */ }
   if (built) {
     try {
-      const gltf = await new GLTFLoader().loadAsync(built);
+      const gltf = await gltfLoader().loadAsync(built);
       return { root: gltf.scene, from: "your uploaded blueprint" };
     } catch {
       try { sessionStorage.removeItem("freeboard.glb"); } catch { /* ignore */ }
@@ -89,7 +94,7 @@ async function loadModel() {
   try {
     const head = await fetch("/field.glb", { method: "HEAD" });
     if (!head.ok) throw new Error("no field.glb");
-    const gltf = await new GLTFLoader().loadAsync("/field.glb");
+    const gltf = await gltfLoader().loadAsync("/field.glb");
     return { root: gltf.scene, from: "blender/field.glb" };
   } catch {
     return { root: buildPlaceholder(), from: "placeholder" };
@@ -302,7 +307,11 @@ function paint(id, status, t) {
     if (status === "OFFLINE") m.material.color.multiplyScalar(0.3);
     else if (COLORS[status]) {
       m.material.color.lerp(COLORS[status], status === "ALARM" ? 0.85 : 0.6);
-      if (m.material.emissive) m.material.emissive.copy(COLORS[status]).multiplyScalar(status === "ALARM" ? 0.5 * pulse : 0.25);
+      // A textured part (#127's look pass) multiplies the diffuse color by the texture and the
+      // weathering, about 25% darker. State must not get quieter with a nicer model, so the
+      // emissive part carries more of it there.
+      const gain = m.material.map ? 1.8 : 1;
+      if (m.material.emissive) m.material.emissive.copy(COLORS[status]).multiplyScalar((status === "ALARM" ? 0.5 * pulse : 0.25) * gain);
     }
     // The trying (TRYING x 0.35) and selected (SELECTED) lifts now come from highlight.js (#86), after paint().
   }
@@ -525,7 +534,8 @@ function renderSelected(view) {
   }
   const tank = tankInfo(selectedId);
   if (tank) {
-    add("Level", s.level_pct != null ? `${s.level_pct.toFixed(1)}%` : null);
+    const age = tMin === 0 ? liveFeed.ageText(selectedId) : null;
+    add("Level", s.level_pct != null ? `${s.level_pct.toFixed(1)}%${tMin === 0 ? ` <span class="age">${age || `snapshot${dataAt && dataAt !== "boot" ? ` ${esc(dataAt)}` : ""}`}</span>` : ` <span class="age">forecast</span>`}` : null);
     add("Shutdown at", `${tank.shutdown_pct}%`);
     add("Capacity", `${tank.capacity_bbl.toLocaleString()} bbl`);
     if (s.level_pct != null) {
@@ -533,6 +543,8 @@ function renderSelected(view) {
       add(room >= 0 ? "Headroom" : "Over shutdown", `${Math.abs(room).toLocaleString()} bbl`);
     }
   }
+  // CF-3: past and forecast on one line. A what-if moves only the dashed part.
+  const trendOpts = tank && { id: selectedId, fc, shutdownPct: tank.shutdown_pct, fcClock: (fc && fc.clock) || data.state.clock, sliderMin: tMin, blind: blindTanks().includes(selectedId) };
   const pump = (field.pumps || []).find((p) => p.id === selectedId);
   if (pump) { add("Tank", nice(pump.tank_id)); add("Rated", `${pump.rate_bbl_hr} bbl/hr`); }
   const valve = (field.valves || []).find((v) => v.id === selectedId);
@@ -563,8 +575,10 @@ function renderSelected(view) {
     ${reason ? `<div class="reason">${esc(reason)}</div>` : ""}
     ${s.trying ? `<div class="reason trying">${esc(s.trying)}</div>` : ""}
     ${rows.length ? `<dl class="kv">${rows.join("")}</dl>` : ""}
+    ${tank ? trendHtml(trendOpts) : ""}
     ${buttons ? `<div class="tries"><div class="kicker">Try a change</div>${buttons}</div>` : ""}`;
   box.querySelectorAll("button.try").forEach((b) => { b.onclick = () => toggle(opts[Number(b.dataset.i)]); });
+  if (tank) wireTrend(box, trendOpts);
   decode(box);
 }
 
@@ -655,7 +669,15 @@ function renderWalk() {
 
 async function startWalk(plan) {
   await setActions(plan.actions.map((a) => ({ ...a })));
-  const res = await api.approve(plan.id);
+  let res;
+  try {
+    res = await api.approve(plan.id);
+  } catch (e) {
+    // Locked (401/403) or backend down: say so where the operator is looking. Nothing was approved.
+    whatifNote = `Not approved: ${e.status === 401 || /401|PIN/.test(e.message) ? "control is locked. Enter the operator PIN, or open the console with its #k= link." : e.message}`;
+    renderAll();
+    return;
+  }
   walk = { plan, steps: res.steps || [], radio: res.radio_script || "", i: 0 };
   approved = { plan, steps: walk.steps, done: 0, at: shiftlog.clockNow() };
   shiftlog.add("approve", `APPROVED ${plan.summary} (${usd(plan.cost.total_usd)})${plan.expires_clock ? `, start by ${plan.expires_clock}` : ""}.`);
@@ -693,7 +715,7 @@ function renderTanks(view) {
       <span class="name">${nice(t.id)}</span>
       <div class="bar"><div class="fill ${s.status}" style="width:${pct == null ? 0 : Math.min(100, pct)}%"></div>
         <div class="stop" style="left:${t.shutdown_pct}%"></div></div>
-      <span class="pct">${pct == null ? "no data" : pct.toFixed(1) + "%"}</span></div>`;
+      <span class="pct ${s.status === "UNKNOWN" ? "stale" : ""}">${pct == null ? "no data" : `${s.status === "UNKNOWN" ? "last " : ""}${pct.toFixed(1)}%`}${tMin === 0 && liveFeed.ageText(t.id) ? `<small class="age">${liveFeed.ageText(t.id)}</small>` : ""}</span></div>`;
   }).join("");
   const blind = (field.tanks || []).filter((t) => (view[t.id] || {}).status === "UNKNOWN");
   if (blind.length) {
@@ -717,7 +739,9 @@ function renderMarks() {
 
 function renderSources() {
   const fakes = Object.entries(api.sources).filter(([, v]) => v === "fake").map(([k]) => k);
+  const down = Object.entries(api.sources).filter(([, v]) => v === "down").map(([k]) => k);
   const src = $("source");
+  if (down.length) { src.textContent = `BACKEND DOWN · ${down.join(", ")}`; src.className = "badge down"; src.title = "These calls failed. Their last values are not refreshed."; return; }
   if (!fakes.length) { src.textContent = "LIVE API"; src.className = "badge"; src.title = ""; return; }
   const all = fakes.length === Object.keys(api.sources).length;
   src.textContent = all ? "FAKE DATA" : `LIVE · ${fakes.length} FAKE`;
@@ -803,34 +827,89 @@ function saveHandoff() {
   a.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
+// CF-4: fixed sections in a fixed order, so the next crew always finds the same thing in
+// the same place, and nothing in it is typed by hand:
+//   1 open alarms by priority   2 shelved alarms   3 blind sensors   4 the approved plan
+//   5 the next deadline         6 the what-ifs tried
+// then the tank levels and the full shift log.
 function handoffText() {
   const L = [];
+  const head = (n, title) => L.push("", `${n}. ${title}`);
   const inc = data.state.incident;
   const base = shutdownOf(data.baseline);
-  L.push("FREEBOARD SHIFT HANDOFF", `Written ${shiftlog.clockNow()} for the next crew.`, "");
-  L.push("INCIDENT");
-  if (inc) L.push(inc.summary);
+  const nowView = viewAt(0);
+  L.push("FREEBOARD SHIFT HANDOFF", `Written ${shiftlog.clockNow()} for the next crew.`);
+  if (inc) L.push(`Incident: ${inc.summary}`);
   if (base) L.push(`If nothing changes: ${nice(base.asset_id)} reaches shutdown at ${clockAt(base.t_min)}, and ${(field.wells || []).filter((w) => w.tank_id === base.asset_id).length} wells go down with it.`);
-  const lc = data.lc;
-  if (lc && lc.options && lc.options.length) {
-    L.push(`Last Call: the cheapest plan (${usd(lc.options[0].cost.total_usd)}) only works if started by ${lc.options[0].expires_clock}.`);
-    if (lc.point_of_no_return) L.push(`After ${lc.point_of_no_return.clock}, nothing keeps every well online.`);
+
+  const roots = alarms.roots();
+  const open = roots.filter((a) => !a.shelved), shelf = roots.filter((a) => a.shelved);
+  const src = alarms.derived() ? " (derived from the forecast: no alerts feed)" : "";
+  const cons = (a) => {
+    const m = alarms.minutesLeft(a);
+    return a.consequence_clock && a.consequence_asset_id
+      ? ` ${nice(a.consequence_asset_id)} shuts in at ${a.consequence_clock}${m != null ? (m > 0 ? ` (${m} min)` : " (now)") : ""}.`
+      : a.consequence ? ` ${a.consequence}` : "";
+  };
+
+  head(1, `OPEN ALARMS${src}`);
+  if (!open.length) L.push(blindTanks().length ? "  None, but some tanks have no reading (see 3). Not all clear." : "  None.");
+  for (const a of open) {
+    L.push(`  ${a.priority || a.severity}  ${nice(a.asset_id || "")}: ${a.message}${cons(a)}`);
+    const tags = [a.related_count ? `+${a.related_count} related` : "", a.acked ? `acked${a.acked_by ? ` by ${a.acked_by}` : ""}` : "NOT ACKED", a.usd_at_risk ? `${usd(a.usd_at_risk)} at risk` : ""].filter(Boolean);
+    L.push(`      ${tags.join(" · ")}`);
   }
-  L.push("", "PLAN");
-  if (!approved) L.push("No plan approved yet.");
+
+  head(2, "SHELVED ALARMS");
+  if (!shelf.length) L.push("  None.");
+  for (const a of shelf) {
+    const left = alarms.shelfLeft(a);
+    L.push(`  ${a.priority || a.severity}  ${nice(a.asset_id || "")}: ${a.message}${cons(a)}`);
+    L.push(`      Shelved${a.shelved_by ? ` by ${a.shelved_by}` : ""}: "${a.shelve_reason || "no reason recorded"}". Back${a.shelved_until ? ` at ${a.shelved_until}` : ""}${left != null ? ` (${left} min left)` : ""}.`);
+    if (typeof a.consequence_t === "number" && typeof a.shelved_until_t === "number" && a.consequence_t < a.shelved_until_t) L.push(`      WARNING: the shutdown at ${a.consequence_clock} comes before this shelf ends.`);
+  }
+
+  head(3, "BLIND SENSORS");
+  const blindIds = Object.keys(nowView).filter((id) => nowView[id] && (nowView[id].status === "UNKNOWN" || nowView[id].status === "NO_DATA"));
+  for (const id of blindTanks()) if (!blindIds.includes(id)) blindIds.push(id);
+  if (!blindIds.length) L.push("  None. Every monitored asset has a fresh reading.");
+  for (const id of blindIds) {
+    const age = liveFeed.staleMinutes(id);
+    L.push(`  ${nice(id)}: no fresh reading${age != null ? ` for ${age} min` : ""}. Check it in person; Freeboard can't vouch for it.`);
+  }
+
+  head(4, "APPROVED PLAN");
+  if (!approved) L.push("  No plan approved yet.");
   else {
-    L.push(`Approved ${approved.at}: ${approved.plan.summary} (${usd(approved.plan.cost.total_usd)}).`);
-    approved.steps.forEach((s, i) => L.push(`  [${i < approved.done ? "x" : " "}] ${s.text}`));
+    L.push(`  Approved ${approved.at}: ${approved.plan.summary} (${usd(approved.plan.cost.total_usd)}).`);
+    approved.steps.forEach((s, i) => L.push(`  [${i < approved.done ? "x" : " "}] ${i < approved.done ? "done   " : "pending"}  ${s.text}`));
   }
-  L.push("", "FORECAST ON SCREEN");
+
+  head(5, "NEXT DEADLINE");
+  const lc = data.lc;
+  if (approved) L.push(approved.done >= approved.steps.length ? "  Every step of the approved plan is done." : `  Finish the approved plan: ${approved.steps.length - approved.done} step${approved.steps.length - approved.done === 1 ? "" : "s"} still pending.`);
+  if (lc && lc.options && lc.options.length) {
+    L.push(`  Last Call: the cheapest plan (${usd(lc.options[0].cost.total_usd)}) only works if started by ${lc.options[0].expires_clock}.`);
+    if (lc.point_of_no_return) L.push(`  After ${lc.point_of_no_return.clock}, nothing keeps every well online.`);
+  } else if (lc && lc.status) L.push(`  Last Call: ${lc.headline || lc.status}.`);
+  else L.push("  No Last Call deadline on hand.");
   const now = shutdownOf(fc);
-  L.push(actions.length ? `With ${actions.map(describe).join(" + ")}:` : "No changes applied:");
-  L.push(now ? `${nice(now.asset_id)} reaches shutdown at ${clockAt(now.t_min)}.` : noShutdownText(blindTanks()));
+  L.push(`  On screen${actions.length ? ` (with ${actions.map(describe).join(" + ")})` : ""}: ${now ? `${nice(now.asset_id)} reaches shutdown at ${clockAt(now.t_min)}.` : noShutdownText(blindTanks())}`);
+
+  head(6, "WHAT-IFS TRIED");
+  const tried = shiftlog.entries().filter((e) => e.kind === "whatif");
+  if (!tried.length) L.push("  None.");
+  for (const e of tried) L.push(`  ${e.at.padStart(8)}  ${e.text}`);
+
+  // Levels as they read right now (live readings win over the boot snapshot), stamped,
+  // so the next crew never acts on a number that was stale when it was written (#104).
+  L.push("", `TANK LEVELS as of ${shiftlog.clockNow()}${liveFeed.live.available ? (liveFeed.live.lostSince ? " (live feed LOST: last known values)" : " (live)") : ` (snapshot from ${dataAt})`}`);
   for (const t of field.tanks || []) {
-    const s = (data.state.assets || {})[t.id];
-    L.push(s && s.level_pct != null ? `  ${nice(t.id)}: ${s.level_pct.toFixed(1)}% (shutdown ${t.shutdown_pct}%)` : `  ${nice(t.id)}: NO READING. Not safe until checked.`);
+    const s = nowView[t.id] || {};
+    if (s.status === "UNKNOWN") L.push(`  ${nice(t.id)}: NO FRESH READING${s.level_pct != null ? ` (last ${s.level_pct.toFixed(1)}%)` : ""}. Not safe until checked.`);
+    else L.push(s.level_pct != null ? `  ${nice(t.id)}: ${s.level_pct.toFixed(1)}% (shutdown ${t.shutdown_pct}%)` : `  ${nice(t.id)}: NO READING. Not safe until checked.`);
   }
-  L.push("", "LOG");
+  L.push("", "FULL SHIFT LOG");
   for (const e of shiftlog.entries()) L.push(`${e.at.padStart(8)}  ${e.text}`);
   const fakes = Object.entries(api.sources).filter(([, v]) => v === "fake").map(([k]) => k);
   L.push("", fakes.length ? `Data: fake for ${fakes.join(", ")}.` : "Data: live API.");
@@ -994,7 +1073,9 @@ function mountPager() {
   btn.textContent = "Pager";
   document.querySelector(".brand-row").appendChild(btn);
   btn.onclick = async () => {
-    const url = import.meta.env.VITE_PHONE_URL || `${location.origin}/phone`;
+    // The phone token rides in the fragment, only if this console was opened with one (#104).
+    const pt = phoneToken();
+    const url = (import.meta.env.VITE_PHONE_URL || `${location.origin}/phone`) + (pt ? `#k=${encodeURIComponent(pt)}` : "");
     const QR = (await import("qrcode")).default;
     const svg = await QR.toString(url, { type: "svg", margin: 1, color: { dark: "#e8e2d6", light: "#050505" } });
     const local = /^(127\.0\.0\.1|localhost)$/.test(new URL(url).hostname);
@@ -1003,9 +1084,10 @@ function mountPager() {
     box.innerHTML = `<div class="pager-card"><div class="kicker">The night pager</div>
       <div class="pager-qr">${svg}</div>
       <p>Scan with a phone on this Wi-Fi. It buzzes on every alert, and a fix can be confirmed from it with a press and hold.</p>
-      <code>${esc(url)}</code>
+      <code>${esc(url.split("#")[0])}</code>
       ${local ? `<p class="note">This address only works on this laptop. Start with <b>npm run demo</b> to get a Wi-Fi address.</p>` : ""}
-      <p class="muted">No login: anyone on the Wi-Fi can confirm. Demo only.</p>
+      ${pt ? `<p class="muted">This QR carries a phone token (never shown as text): that phone can confirm, reject and acknowledge, nothing else.</p>`
+        : `<p class="muted">No control token: anyone on this network can confirm. Start with npm run demo to get one.</p>`}
       <button>Close</button></div>`;
     box.onclick = (e) => { if (e.target === box || e.target.tagName === "BUTTON") box.remove(); };
     document.body.appendChild(box);
@@ -1013,8 +1095,35 @@ function mountPager() {
 }
 
 // ----------------------------------------------------------------- boot ----
-if (api.usingBackend) liveFeed.start(api.BASE, "web", wsToken);
+if (api.usingBackend) liveFeed.start(api.BASE); // live.js sends the auth.js token in the first /ws message
+startTrend(api.usingBackend ? api.BASE : "");
 liveFeed.on("state", () => { if (data) { renderFeed(); render(); } });
+
+// #104: the countdown, plans and Last Call were read once at boot and went stale as the
+// night moved. Re-read them every minute, and soon after any alert. A failed read leaves
+// the old values on screen under a BACKEND DOWN badge, never recorded ones.
+let dataAt = "boot";
+let refreshing = null;
+async function refreshData() {
+  if (!data || !api.usingBackend || refreshing) return;
+  refreshing = (async () => {
+    try {
+      const [state, baseline, lc, plans] = await Promise.all([api.getState(), api.forecast([]), api.lastCall(), api.plans()]);
+      Object.assign(data, { state, baseline, lc, plans });
+      if (!actions.length && !document.body.classList.contains("two-nights")) fc = baseline;
+      dataAt = shiftlog.clockNow();
+    } catch (e) {
+      console.warn("refresh", e.message);
+    } finally {
+      refreshing = null;
+      if (isHolding()) afterHold(renderAll); // never swap a hold button out from under a finger
+      else renderAll();
+    }
+  })();
+}
+setInterval(refreshData, 60000);
+let alertKick = 0;
+liveFeed.on("alert", () => { clearTimeout(alertKick); alertKick = setTimeout(refreshData, 2000); });
 liveFeed.on("feed", () => { if (data) { renderFeed(); render(); } });
 mountUpload();
 mountPager();
@@ -1125,6 +1234,7 @@ async function boot() {
   const [baseline, lc, plans] = await Promise.all([api.forecast([]), api.lastCall(), api.plans()]);
   data = { field, state, baseline, lc, plans };
   shiftlog.start(state.clock || "00:00", (state.incident && state.incident.summary) || "");
+  shiftlog.followClock(() => (liveFeed.live.available && !liveFeed.live.lostSince ? liveFeed.live : null));
   let built = null;
   try { built = JSON.parse(sessionStorage.getItem("freeboard.built") || "null"); sessionStorage.removeItem("freeboard.built"); } catch { /* ignore */ }
   if (built) shiftlog.add("open", `Field "${built.name}" built from an uploaded blueprint in ${built.secs} s${built.status === "fallback" ? `, on the standard model (${built.note})` : ""}.`);
@@ -1152,7 +1262,21 @@ async function boot() {
   inspect.ready(model.root);
   if (ui) ui.ready(model.root);
   renderAll();
-  window.__freeboard = { assets, select, viewAt: (t) => viewAt(t), missing, setActions, get actions() { return actions; } };
+  // CF-1 alarm list: all of it lives in alarms.js. These hooks are its only door in.
+  mountAlarms($("alarms"), {
+    base: api.usingBackend ? api.BASE : "",
+    incident: () => data.state.incident,
+    firstShutdown: () => shutdownOf(data.baseline),
+    blindTanks,
+    nice,
+    usd,
+    clockAt,
+    startClock: () => data.state.clock || "",
+    clockIn: (m) => shiftlog.clockNow(false, m),
+    select: (id) => select(id, true),
+    log: (text) => { shiftlog.add("alarm", text); renderLog(); },
+  });
+  window.__freeboard = { assets, select, viewAt: (t) => viewAt(t), missing, setActions, get actions() { return actions; }, handoff: () => handoffText() };
 }
 
 const clock = new THREE.Clock();
@@ -1183,6 +1307,18 @@ renderer.setAnimationLoop(() => {
 
 boot().catch((e) => {
   const l = $("loading");
-  if (l) l.textContent = `Failed to start: ${e.message}`;
   console.error(e);
+  if (!l) return;
+  if (e instanceof api.BackendDown) {
+    // #104: never fall back to recorded numbers when a backend was asked for and failed.
+    l.classList.add("down");
+    $("clock").textContent = "--:--"; // no field clock without a backend
+    l.innerHTML = `<b>FREEBOARD</b><span class="down-head">The backend isn't answering</span>
+      <span>${esc(e.message)} at ${esc(api.BASE)}</span>
+      <span>Nothing on this screen would be live, so the console shows nothing rather than guess.</span>
+      <span class="down-btns"><button type="button" data-retry>Retry</button><a href="?offline">Open the recorded demo instead (clearly marked)</a></span>`;
+    l.querySelector("[data-retry]").onclick = () => location.reload();
+    return;
+  }
+  l.textContent = `Failed to start: ${e.message}`;
 });

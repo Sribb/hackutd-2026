@@ -15,7 +15,7 @@ import * as liveFeed from "../live.js";
 import * as shiftlog from "../shiftlog.js";
 import { highlight } from "../highlight.js";
 import { holdButton } from "../fx.js";
-import { authHeaders, onNotice } from "./auth.js";
+import { post as authPost } from "./auth.js";
 import { makeStream, esc } from "./stream.js";
 import { makeFixCard } from "./fixcard.js";
 import { mountStatusLine } from "./statusline.js";
@@ -120,21 +120,10 @@ export function mountConsole(H) {
     return H.view || (window.__console3d && window.__console3d.view) || stub;
   }
 
-  onNotice((text) => {
-    stream.line("note", text, { cls: "warn" });
-    if (!open) unread = true;
-  });
-
   // --------------------------------------------------------- helpers ----
   function nowMin() { return toMin(liveFeed.live.clock) ?? toMin(H.clockNow()); }
   function nowClock() { return liveFeed.live.clock ? clock12(toMin(liveFeed.live.clock)) : H.clockNow(); }
-  async function post(path, body, ms = 15000) {
-    const ctl = new AbortController();
-    const timer = setTimeout(() => ctl.abort(), ms);
-    try {
-      return await fetch(`${BASE}${path}`, { method: "POST", headers: authHeaders({ "Content-Type": "application/json" }), body: JSON.stringify(body ?? {}), signal: ctl.signal });
-    } finally { clearTimeout(timer); }
-  }
+  function post(path, body, ms = 15000) { return authPost(`${BASE}${path}`, body, ms); }
   async function getJson(path) {
     const r = await fetch(`${BASE}${path}`);
     if (!r.ok) throw Object.assign(new Error(`HTTP ${r.status}`), { status: r.status });

@@ -63,11 +63,18 @@ function phoneRoute() {
   };
 }
 
+const SECRET_FILES = [".env", ".env.*", "*.{pem,key,crt,p12}", "**/.git/**", "**/.venv/**", "**/*.sqlite*"];
+
 export default defineConfig({
+  preview: { cors: false },
   plugins: [fieldGlb(), mediapipeWasm(), phoneRoute()],
   server: {
     host: "127.0.0.1",
     port: 5173,
+    // #104: no cross-origin reads of the dev server, and it serves nothing outside web/
+    // (Vite's own client and node_modules excepted). Secrets are denied by name even inside it.
+    cors: false,
+    fs: { strict: true, allow: [__dirname], deny: SECRET_FILES },
     // npm run demo sets FREEBOARD_PROXY so the page, /api and /ws share one origin.
     proxy: process.env.FREEBOARD_PROXY ? {
       "/api": { target: process.env.FREEBOARD_PROXY, changeOrigin: true },

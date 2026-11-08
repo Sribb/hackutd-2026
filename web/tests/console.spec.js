@@ -214,7 +214,7 @@ test("7. with OPERATOR_PIN: hold, PIN prompt, wrong PIN says nothing was sent an
   const card = page.locator("#csFix");
   await expect(card).toHaveAttribute("data-id", p.id);
   await holdOn(page, card.locator("[data-hold]"), 1700);
-  const pin = page.locator("#csPin");
+  const pin = page.locator(".pin-ask input");
   await expect(pin).toBeVisible();
   await pin.fill("0000");
   await pin.press("Enter");

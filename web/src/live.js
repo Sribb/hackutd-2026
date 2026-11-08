@@ -7,15 +7,13 @@
 // Rules: a stale reading is UNKNOWN (never OK, never a stale alarm passed off as current). If the feed drops, every value we hold is
 // marked stale and the UI says "live feed lost". Nothing freezes silently.
 
+import { wsUrl, token } from "./auth.js";
 let base = "";
 let role = "web";
-// The console passes auth.wsToken. The token goes in the FIRST message on the socket,
-// {"type":"auth","token":...}, never in the URL, so it can't land in an access log. Only if the
-// server refuses the socket for want of a token (close 1008 or 4401) does the next try fall
-// back to ?token= (older backends that only read the query).
-let tokenOf = () => "";
-let tokenInQuery = false;
 let ws = null, tries = 0, pollTimer = 0, lostTimer = 0;
+let heard = false;       // this socket delivered a message
+let queryToken = false;  // fall back to /ws?token= (a backend without first-message auth)
+let authed = false, authTimer = 0;
 const subs = new Map(); // type -> Set(fn)
 
 export const live = {
@@ -23,6 +21,7 @@ export const live = {
   connected: false,     // /ws open
   lostSince: null,      // Date.now() when the feed was lost, else null
   clock: null,
+  t: null,              // live minute from the backend, when it sends one
   assets: {},           // ID -> { status, level_pct, running, position, stale, seenAt }
   connectors: [],       // [{ id, kind, status }]
 };
@@ -38,11 +37,10 @@ function emit(type, msg) {
   }
 }
 
-export function start(apiBase, as = "web", token = null) {
+export function start(apiBase, as = "web") {
   if (base || !apiBase) return;
   base = apiBase.replace(/\/$/, "");
   role = as;
-  if (typeof token === "function") tokenOf = token;
   poll();
   connect();
 }
@@ -51,6 +49,8 @@ function mergeState(s) {
   if (!s) return;
   const now = Date.now();
   if (s.clock) live.clock = s.clock;
+  if (typeof s.t === "number") live.t = s.t;
+  if (typeof s.speed === "number" && s.speed > 0) live.speed = s.speed; // live minutes (CF-7 consequence_t / shelved_until_t use it)
   for (const [id, a] of Object.entries(s.assets || {})) {
     const prev = live.assets[id] || {};
     const staleNow = a.stale === true || (typeof a.stale === "number" && a.stale > 0);
@@ -58,7 +58,7 @@ function mergeState(s) {
     const staleSince = staleNow ? (prev.staleSince || now) : null;
     // The last status that came from a fresh reading, for "last known: ALARM".
     const lastKnown = !staleNow && a.status && a.status !== "UNKNOWN" ? a.status : prev.last_known || null;
-    live.assets[id] = { ...prev, ...a, staleSince, last_known: lastKnown, seenAt: staleNow ? (prev.seenAt || now) : now };
+    live.assets[id] = { ...prev, ...a, staleSince, last_known: lastKnown, seenAt: staleNow ? (prev.seenAt || now) : now, recvAt: now };
     if (!staleNow) delete live.assets[id].stale;
   }
   if (Array.isArray(s.connectors)) live.connectors = s.connectors;
@@ -93,24 +93,40 @@ async function healthConnectors() {
 
 function connect() {
   try {
-    const t = tokenOf();
-    const q = t && tokenInQuery ? `&token=${encodeURIComponent(t)}` : "";
-    ws = new WebSocket(base.replace(/^http/, "ws") + `/ws?role=${role}${q}`);
+    // The token goes in the first message, not the URL, so it never lands in a server log
+    // (#57). A backend that predates that never answers {type: "auth"}; then this tab falls
+    // back to ?token= for the rest of the visit (see onopen).
+    const url = base.replace(/^http/, "ws") + `/ws?role=${role}`;
+    ws = new WebSocket(queryToken ? wsUrl(url) : url);
+    heard = false;
+    authed = false;
   } catch {
     return retry();
   }
   ws.onopen = () => {
-    const t = tokenOf();
-    if (t && !tokenInQuery) { try { ws.send(JSON.stringify({ type: "auth", token: t })); } catch { /* the reconnect sends it again */ } }
     tries = 0;
+    const t = token();
+    if (t && !queryToken) {
+      try { ws.send(JSON.stringify({ type: "auth", token: t })); } catch { /* closing */ }
+      // No {type: "auth", ok: true} within 1.5 s: this backend ignores first-message auth and
+      // treats us as read-only. Reconnect with ?token= for the rest of the visit.
+      const me = ws;
+      clearTimeout(authTimer);
+      authTimer = setTimeout(() => { if (ws === me && !authed) { queryToken = true; try { me.close(); } catch { /* gone */ } } }, 1500);
+    }
     live.connected = true;
     markLost(false);
     emit("feed", live);
   };
   ws.onmessage = (m) => {
+    heard = true;
     let msg;
     try { msg = JSON.parse(m.data); } catch { return; }
-    if (msg.type === "state") {
+    if (msg.type === "auth") {
+      authed = msg.ok !== false;
+      if (!authed) queryToken = false; // a wrong token: the URL wouldn't help either
+      emit("auth", msg);
+    } else if (msg.type === "state") {
       mergeState(msg.state || msg);
       emit("state", live);
     } else {
@@ -119,7 +135,7 @@ function connect() {
   };
   ws.onclose = (ev) => {
     ws = null;
-    if (ev && (ev.code === 1008 || ev.code === 4401) && tokenOf() && !tokenInQuery) tokenInQuery = true;
+    if (!heard && !queryToken && token() && [1008, 4001, 4003, 4401, 4403].includes(ev && ev.code)) queryToken = true;
     const was = live.connected;
     live.connected = false;
     // A brief blip is normal. After 4 s without the socket, say the feed is lost.
@@ -180,6 +196,20 @@ export function reading(id) {
     } else out.status = "UNKNOWN";
   }
   return out;
+}
+
+// CF-6: how old this asset's reading is, as "12 s ago" or "4 min ago", on the field clock.
+// From the backend's age_min when it sends one, counted on between messages. Null without
+// a live layer (the panel then says where the number came from instead).
+export function ageText(id) {
+  const a = live.assets[id];
+  if (!a || !live.available) return null;
+  let min;
+  if (typeof a.age_min === "number" && !live.lostSince) min = a.age_min + ((Date.now() - (a.recvAt || Date.now())) / 60000) * (live.speed || 1);
+  else min = staleMinutes(id);
+  if (min == null) return null;
+  if (min < 1) { const sec = Math.round((min * 60) / 5) * 5; return sec < 5 ? "just now" : `${sec} s ago`; }
+  return min < 90 ? `${Math.round(min)} min ago` : `${Math.round(min / 60)} h ago`;
 }
 
 export function connectorBadge() {
