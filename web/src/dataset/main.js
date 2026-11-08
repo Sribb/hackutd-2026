@@ -12,7 +12,7 @@ import { apiSource, fileSource, assetIndex, checkDataset, STEP_S } from "./data.
 import { lineChart, fmtTime } from "./chart.js";
 import { replay, doNothing, inputFor, planFromActions, planToActions, cheapestJoint, money, revenuePerHour } from "./plan.js";
 import { normAlerts, sortAlerts, actionLines, handoffText, durationText, categoryOf, trucksInUse } from "./alerts.js";
-import { screenDataset, screenAt, screenSeries, recentMean, faultRuns, LEAK, WEAR } from "./screen.js";
+import { screenDataset, screenAt, screenSeries, recentMean, faultRuns, noiseSd, confidenceAt, WEAR } from "./screen.js";
 
 const $ = (id) => document.getElementById(id);
 // A peak just under the limit must not print as the limit: 91.96% is "91.9%", not "92.0%".
@@ -366,10 +366,13 @@ function screenPool() {
     ev.push(e.afterGap && e.from
       ? `The pump was off from ${fmtTime(e.from, true)} to ${fmtTime(e.onset, true)} UTC; it started in that window and showed at the first reading after.`
       : `Started about ${fmtTime(e.onset, true)} UTC, fitted from the readings. First seen ${fmtTime(e.seen, true)} UTC.`);
+    const sig = e.category === "pipeline_leak" ? ser.lost : ser.excess;
+    const conf = confidenceAt(sig, ongoing ? at : e.seen, noiseSd(sig, e.onset), e.category === "pipeline_leak" ? 1 : -1, 24, e.onset);
+    if (conf) ev.push(`Confidence ${Math.round(conf.share * 100)}%: ${conf.k} of the ${conf.n} latest running readings since it started sit outside this ${e.category === "pipeline_leak" ? "line" : "pump"}'s normal noise (±${e.category === "pipeline_leak" ? pct1(conf.band) : `${Math.round(conf.band)} psi`}).`);
     if (pumpOff) ev.push("The pump is not running now, so these are its last running readings.");
     if (!ongoing) ev.push(e.endedByFault ? `Ended when the pump failed at ${fmtTime(e.end, true)} UTC (a separate pump failure).` : `Back to normal by ${fmtTime(e.end, true)} UTC.`);
     list.push({ ...blank, id: `screen:${e.category}:${e.asset}:${e.onset}`, screened: true, category: e.category, status: e.status,
-      system: e.system, facility: e.facility, asset: e.asset, onset: e.onset, end: e.end, evidence: ev,
+      system: e.system, facility: e.facility, asset: e.asset, onset: e.onset, end: e.end, evidence: ev, confidence: conf ? conf.share : null,
       actions: [{ type: "field_inspection", asset_id: e.asset }] });
   }
   // Pump failures that ended by `at`, from the status signal (ongoing ones are fault rows).
@@ -1043,7 +1046,7 @@ function screenEventsJson() {
     event_id: `GAIA-${String(i + 1).padStart(3, "0")}`,
     system_id: a.system, facility_id: a.facility, asset_id: a.asset, category: a.category, status: a.status,
     onset_ts: iso(a.onset), onset_unix: a.onset, end_ts: a.status === "resolved" ? iso(a.end) : null, end_unix: a.status === "resolved" ? a.end : null,
-    confidence: null,
+    confidence: a.confidence === null ? null : Math.round(a.confidence * 100) / 100,
     evidence: [...a.evidence, "Screened from the readings by gaia's dataset page; the backend's detection did not run."],
     ...(a.category === "pump_failure" && a.status === "ongoing" ? {
       level_pct: a.levelPct === null ? null : Math.round(a.levelPct * 10) / 10,

@@ -18,7 +18,9 @@ const STEP_S = 300;
 const W = 12; // one hour of running readings
 const BACK_S = 36 * 3600; // how far back the onset fit looks
 export const LEAK = { enter: 1.2, leave: 0.5, stepMin: 0.8 }; // % of pump flow
-export const WEAR = { enter: -12, leave: -4, healthy: 150 }; // psi against disposal + 150
+// Wear is slow, so it is judged over two hours: 7 psi down over 24 running readings shows
+// 2 to 6 hours sooner than 12 psi over one hour, with no false alarm in the history folders.
+export const WEAR = { enter: -7, leave: -4, healthy: 150, win: 24 }; // psi against disposal + 150
 
 const mean = (a, i, n) => { let s = 0; for (let k = i - n + 1; k <= i; k++) s += a[k][1]; return s / n; };
 
@@ -66,39 +68,39 @@ export function fitOnset(x, iDet, step, stepMin = 0) {
 // x: [[ts, value]] while the pump runs, in time order. Returns
 // [{ onset, seen, end, endSeen, afterGap, from, peak }] where seen/endSeen are the reading
 // times that showed the start and the end (null while it goes on).
-export function scan(x, { enter, leave, step, stepMin, faults = [] }) {
+export function scan(x, { enter, leave, step, stepMin, faults = [], win = W }) {
   const out = [];
   let on = null;
-  let i = W - 1;
+  let i = win - 1;
   while (i < x.length) {
     const t = x[i][0];
     if (!on) {
-      if (enter(mean(x, i, W))) {
+      if (enter(mean(x, i, win))) {
         const f = fitOnset(x, i, step, stepMin);
-        on = { onset: f.onset, seen: t, end: null, endSeen: null, afterGap: f.afterGap, from: f.from, peak: 0, atSeen: mean(x, i, W) };
+        on = { onset: f.onset, seen: t, end: null, endSeen: null, afterGap: f.afterGap, from: f.from, peak: 0, atSeen: mean(x, i, win) };
       }
       i++;
       continue;
     }
     const v = x[i][1];
     if (Math.abs(v) > Math.abs(on.peak)) on.peak = v;
-    const fault = faults.find((ft) => ft >= on.seen - W * STEP_S && ft <= t);
+    const fault = faults.find((ft) => ft >= on.seen - win * STEP_S && ft <= t);
     if (fault !== undefined) {
       on.end = on.endSeen = fault;
-      out.push(on); on = null; i += W; continue;
+      out.push(on); on = null; i += win; continue;
     }
     if (i >= 2 && leave(mean(x, i, 3))) {
       const j = i - 2; // the first of the three healthy readings
       on.end = x[j][0] - x[j - 1][0] <= STEP_S ? x[j - 1][0] + STEP_S : x[j][0];
       on.endAfterGap = x[j][0] - x[j - 1][0] > 2 * STEP_S;
       on.endSeen = t;
-      out.push(on); on = null; i += W; continue;
+      out.push(on); on = null; i += win; continue;
     }
     i++;
   }
   if (on) {
     // The pump can fail after its last running reading: that ends the wear too.
-    const fault = faults.find((ft) => ft >= on.seen - W * STEP_S);
+    const fault = faults.find((ft) => ft >= on.seen - win * STEP_S);
     if (fault !== undefined) on.end = on.endSeen = fault;
     out.push(on);
   }
@@ -137,7 +139,7 @@ export function screenDataset(network, store) {
       }
       if (Number.isFinite(disp)) {
         const exc = r.press.map(([t, v]) => [t, v - disp - WEAR.healthy]);
-        for (const e of scan(exc, { enter: (m) => m < WEAR.enter, leave: (m) => m > WEAR.leave, step: false, faults: r.faults })) {
+        for (const e of scan(exc, { enter: (m) => m < WEAR.enter, leave: (m) => m > WEAR.leave, step: false, faults: r.faults, win: WEAR.win })) {
           out.push({ ...e, category: "pump_degradation", system: s.id, facility: f.id, asset: f.pump.id, healthyPsi: disp + WEAR.healthy, endedByFault: r.faults.includes(e.end) });
         }
       }
@@ -185,4 +187,31 @@ export function faultRuns(store, pumpId) {
 export function screenSeries(store, f, disposalPsi) {
   const r = running(store, f);
   return { lost: r.lost, excess: Number.isFinite(disposalPsi) ? r.press.map(([t, v]) => [t, v - disposalPsi - WEAR.healthy]) : [], flow: r.flow };
+}
+
+// Healthy noise of one signal: a robust standard deviation (1.4826 x median absolute
+// deviation) of the running readings before `before`, so a problem never widens its own
+// band. null with fewer than 24 readings.
+export function noiseSd(x, before, n = 2000) {
+  let hi = x.length - 1;
+  while (hi >= 0 && x[hi][0] >= before) hi--;
+  const v = [];
+  for (let k = hi; k >= 0 && v.length < n; k--) v.push(x[k][1]);
+  if (v.length < 24) return null;
+  const med = (a) => { const b = [...a].sort((p, q) => p - q); const m = b.length >> 1; return b.length % 2 ? b[m] : (b[m - 1] + b[m]) / 2; };
+  const m = med(v);
+  return 1.4826 * med(v.map((y) => Math.abs(y - m))) || null;
+}
+
+// Confidence that something is really wrong, in words an operator can check: the share of
+// the last n running readings at or before t that sit outside normal noise (2 sd) on the
+// problem's side. A problem that is just starting reads low and climbs as it grows.
+export function confidenceAt(x, t, sd, sign, n = 24, since = -Infinity) {
+  if (!sd) return null;
+  let hi = x.length - 1;
+  while (hi >= 0 && x[hi][0] > t) hi--;
+  let k = 0, m = 0;
+  // Only readings since the onset count: the healthy ones before it say nothing either way.
+  for (let j = hi; j >= 0 && m < n && x[j][0] >= since; j--, m++) if (sign * x[j][1] > 2 * sd) k++;
+  return m < 3 ? null : { share: k / m, k, n: m, band: 2 * sd };
 }
