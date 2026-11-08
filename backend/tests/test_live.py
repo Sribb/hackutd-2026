@@ -264,7 +264,8 @@ def test_reject_while_sending_is_409():
     assert run(go())["status"] == "CONFIRMED" and len(sent) == 1
 
 
-def test_send_that_raises_ends_failed_not_stuck():
+def test_send_that_raises_ends_uncertain_not_stuck():
+    """A real connector that raised may already have sent it: UNCERTAIN, never FAILED."""
     live, sent, _ = hooked_field()
 
     def boom(_):
@@ -273,8 +274,20 @@ def test_send_that_raises_ends_failed_not_stuck():
     live.registry.get("CONN_HOOK").send = boom
     p = valve_open(live)
     done = run(live.confirm(p["id"]))
-    assert done["status"] == "FAILED" and "socket closed" in done["result"]
+    assert done["status"] == "UNCERTAIN" and "socket closed" in done["result"]
+    assert "check the field" in done["result"]
     assert "VALVE_XO_34" not in live.commanded
+
+
+def test_simulator_send_that_raises_is_failed():
+    live = LiveField(healthy_scenario())
+
+    def boom(_):
+        raise RuntimeError("bug")
+
+    live.registry.sim.send = boom
+    p = run(live.propose({"type": "SEND_TRUCK", "asset_id": "TRUCK_1", "target_id": "TANK_3"}))
+    assert run(live.confirm(p["id"]))["status"] == "FAILED"
 
 
 def test_auto_confirm_skips_a_proposal_a_person_already_decided(monkeypatch):

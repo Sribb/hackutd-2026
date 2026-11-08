@@ -15,6 +15,7 @@ import itertools
 import json
 from dataclasses import dataclass, field
 import time
+from typing import Optional
 
 from fastapi import WebSocket
 
@@ -36,8 +37,9 @@ class Hub:
         self._ids = itertools.count(1)
         self.seq = 0
 
-    async def connect(self, ws: WebSocket, role: str = "web", name: str = "") -> Client:
-        await ws.accept()
+    async def connect(self, ws: WebSocket, role: str = "web", name: str = "",
+                      subprotocol: Optional[str] = None) -> Client:
+        await ws.accept(subprotocol=subprotocol)
         role = role if role in ROLES else "other"
         c = Client(id=f"c{next(self._ids)}", ws=ws, role=role, name=name or role)
         self.clients[c.id] = c

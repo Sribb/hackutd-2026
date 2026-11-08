@@ -10,6 +10,12 @@ A connector is where live signals come from and where confirmed commands go.
 never raise out of read(), send(), or status(): a broken device shows up as stale
 readings and an "unavailable" status, never as a crashed console.
 
+A send() result may also carry `"uncertain": True`: the command left for the device but
+its answer never came back (the webhook's POST went out and then the read timed out or
+the connection reset). The live layer records that as UNCERTAIN, never FAILED, and
+nothing sends it again: a person checks the field first. Only a failure before anything
+left (no connection) is a plain FAILED.
+
 Secrets never live in the blueprint. A config key ending in `_env` names an
 environment variable, and `secret()` reads it.
 """
@@ -21,6 +27,7 @@ from typing import Callable, Optional
 from ..fieldmap import FieldMap
 
 Reading = dict  # {"asset_id": str, "signal": str, "value": float | bool | str, "t": float}
+UNCERTAIN_DETAIL = "sent; delivery not confirmed — check the field before retrying"
 
 
 class Connector:

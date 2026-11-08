@@ -8,6 +8,7 @@ import datetime as dt
 import json
 import logging
 import math
+import re
 import socket
 import threading
 import time
@@ -342,6 +343,23 @@ def test_the_log_filter_masks_tokens_in_uvicorn_records():
     assert all(log_redact._FILTER in logging.getLogger(n).filters for n in log_redact.LOGGERS)
 
 
+def test_both_log_filters_in_either_order_never_show_the_token():
+    """After the merge with main, 126's log_redact and the live layer's own filter
+    (live_api.RedactTokens) both sit on uvicorn's loggers. In either order the token is gone
+    and the rest of the line stays."""
+    from backend.app import live_api
+    for first, second in ((log_redact.RedactTokens(), live_api.RedactTokens()),
+                          (live_api.RedactTokens(), log_redact.RedactTokens())):
+        rec = logging.LogRecord("uvicorn.error", logging.INFO, __file__, 1, '%s - "WebSocket %s" [accepted]',
+                                ("('127.0.0.1', 5000)", "/ws?role=web&token=s3cret-operator-token"), None)
+        first.filter(rec)
+        second.filter(rec)
+        line = rec.getMessage()
+        assert "s3cret" not in line and re.search(r"/ws\?role=web&token=(\*\*\*|\[redacted\])\" \[accepted\]", line), line
+    assert any(isinstance(f, live_api.RedactTokens) for f in logging.getLogger("uvicorn.error").filters)
+    assert log_redact._FILTER in logging.getLogger("uvicorn.error").filters
+
+
 def _free_port():
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
@@ -405,7 +423,9 @@ def test_a_ws_token_never_reaches_uvicorns_log():
         for n in ("uvicorn.error", "uvicorn.access"):
             logging.getLogger(n).removeHandler(grab)
     text = "\n".join(lines)
-    assert "WebSocket /ws?role=web&token=***" in text, text
+    # main's live layer puts its own filter on the same loggers (live_api.install_log_redaction,
+    # mask "[redacted]"). Whichever filter runs last picks the mask; either way the token is gone.
+    assert re.search(r"WebSocket /ws\?role=web&token=(\*\*\*|\[redacted\])", text), text
     assert "good-token-123" not in text and "WRONG999" not in text, text
 
 

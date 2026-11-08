@@ -8,6 +8,7 @@ the simulator (which models the truck).
 """
 from __future__ import annotations
 
+import json
 from typing import Callable, Optional
 
 from ..fieldmap import FieldMap
@@ -58,6 +59,16 @@ class Registry:
                 if (command.get("asset_id"), command.get("type")) in c.commands:
                     return c
         return self.sim
+
+    def path(self, command: dict) -> tuple:
+        """What a command would go out over: the connector's id and kind, its config, and the
+        command's address. Equal paths send the same command to the same place. The simulator
+        is one path whatever its config: it moves no equipment."""
+        c = self.route(command)
+        if c is self.sim:
+            return (c.id, c.kind)
+        return (c.id, c.kind, json.dumps(c.config, sort_keys=True, default=str),
+                json.dumps(c.commands.get((command.get("asset_id"), command.get("type"))), default=str))
 
     def advance(self, dt_min: float) -> None:
         for c in self.connectors:

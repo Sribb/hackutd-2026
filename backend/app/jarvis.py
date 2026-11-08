@@ -12,6 +12,13 @@ JARVIS_MODE: auto (default: rules first, Claude for the rest), rules, or llm.
 
 Jarvis never changes equipment. propose_action stores a PENDING proposal; a person
 confirms it with POST /api/actions/{id}/confirm. Every number comes from a tool result.
+
+CF-11: every number says where it came from and how old it is. A reading carries its age
+("Tank 3 is at 71% (reading 20 s old)"), a forecast or plan its run time ("The forecast at
+1:52 AM says ..."). An asset with no current reading gets "I have no current reading for
+Tank 5, so I can't say it's safe." and nothing that sounds like a level. "What's failing?"
+leads with the P1 root cause and its clock (CF-7's priority and root_id), then "N related
+alarms" instead of every row.
 """
 from __future__ import annotations
 
@@ -23,6 +30,7 @@ import re
 from typing import Any, Callable, Optional
 
 from .fieldmap import name
+from .forecast import clock_at
 from .live import ActionError, LiveField
 
 log = logging.getLogger("freeboard.jarvis")
@@ -42,6 +50,37 @@ NOT_TANK_WORDS = {"well", "wells", "pump", "pumps", "truck", "trucks", "valve", 
 ASKS_FIX = re.compile(r"\bplans?\b|cheapest|\bfix(es)?\b|what should|what do (we|i) do|recommend")
 HELP = ("I can show and explain assets, report what's failing, give the time to shutdown, find the "
         "cheapest plan, and propose fixes like 'open the crossover' or 'send truck 1 to tank 3'.")
+PRIORITY_RANK = {"P1": 0, "P2": 1, "P3": 2}
+KIND_WORDS = {"PUMP_TRIP": "trip", "TANK_HIGH": "high level", "TANK_HIGH_HIGH": "high-high",
+              "VALVE_MISMATCH": "position mismatch", "SENSOR_STALE": "stale reading"}
+
+
+def age_text(age_min: Optional[float]) -> str:
+    """Live minutes -> '20 s', '7 min', '2.5 h'."""
+    if age_min is None:
+        return "unknown"
+    s = max(0.0, float(age_min) * 60.0)
+    if s < 59.5:
+        return f"{s:.0f} s"
+    if age_min < 119.5:
+        return f"{age_min:.0f} min"
+    return f"{age_min / 60.0:.1f} h"
+
+
+def no_current_reading(nm: str, kind: str = "tank", many: bool = False) -> str:
+    """The one sentence for an asset Jarvis can't see (CF-11). Never a level, never 'safe'."""
+    it = "they're" if many else "it's"
+    if kind == "tank":
+        return f"I have no current reading for {nm}, so I can't say {it} safe."
+    return f"I have no current reading for {nm}, so I can't say what {it} doing."
+
+
+def and_list(items: list[str]) -> str:
+    return items[0] if len(items) == 1 else ", ".join(items[:-1]) + " and " + items[-1]
+
+
+def n_of(n: int, word: str) -> str:
+    return f"{n} {word}" + ("" if n == 1 else "s")
 
 
 class JarvisUnavailable(Exception):
@@ -90,6 +129,16 @@ TOOLS = [
                                                           "description": "Minutes from now; null means now"}}}}}},
     },
     {
+        "name": "list_alerts",
+        "description": "Open alerts grouped under their root cause, most urgent first: each group's root alert "
+                       "with its priority (P1 = shutdown within 60 min), the clock it was raised, the forecast "
+                       "consequence and when, and how many related alarms fold under it. When a group's root is "
+                       "shelved, its most urgent unshelved alarm heads the group and `shelved_root` names the "
+                       "shelved one. Also the tanks with no current reading. Changes nothing.",
+        "strict": True,
+        "input_schema": {"type": "object", "additionalProperties": False, "properties": {}, "required": []},
+    },
+    {
         "name": "get_plans",
         "description": "The cheapest plans that keep every tank below shutdown, from the live readings, ranked "
                        "by dollars. Changes nothing.",
@@ -113,10 +162,16 @@ TOOLS = [
 
 class Jarvis:
     def __init__(self, live: LiveField, forecast_fn: Callable[[dict, list], dict],
-                 plans_fn: Callable[[dict], dict]) -> None:
+                 plans_fn: Callable[..., dict],
+                 now_fn: Optional[Callable[[], Optional[tuple]]] = None) -> None:
+        """`now_fn()` -> (scenario, actions already under way) or None: the one clock the rest
+        of the backend plans from (live_api.one_now_for). With it, forecasts run the under-way
+        actions first and plans are called `plans_fn(scenario, under_way)`; without it (or when
+        it returns None), live.live_scenario() with nothing under way."""
         self.live = live
         self.forecast_fn = forecast_fn
         self.plans_fn = plans_fn
+        self.now_fn = now_fn
         self.model = os.environ.get("JARVIS_MODEL", DEFAULT_MODEL)
         self.effort = os.environ.get("JARVIS_EFFORT", "low")
         self._client = None
@@ -173,24 +228,37 @@ class Jarvis:
             if not kind:
                 return {"error": f"Unknown asset {aid}."}
             spec = getattr(live.fmap, {"swd": "swds"}.get(kind, kind + "s"))[aid]
-            return {"asset_id": aid, "name": name(aid), "kind": kind, "clock": live.fmap.clock(live.t),
-                    "live": live.state()["assets"].get(aid, {}), "design": spec,
-                    "alerts": [{k: a[k] for k in ("kind", "severity", "message")} for a in live.detector.active_for(aid)]}
+            lv = live.state()["assets"].get(aid, {})
+            out = {"asset_id": aid, "name": name(aid), "kind": kind, "clock": live.fmap.clock(live.t),
+                   "as_of": live.fmap.clock_text(live.t), "live": lv, "reading": self._reading(aid), "design": spec,
+                   "alerts": [{k: a.get(k) for k in ("id", "kind", "severity", "priority", "root_id", "message")}
+                              for a in live.detector.active_for(aid)]}
+            if lv.get("status") == "UNKNOWN":
+                out["say"] = no_current_reading(name(aid), kind)  # never a level, never safe
+            return out
+        if tool == "list_alerts":
+            return self._alert_groups()
         if tool == "get_forecast":
             actions = [self._forecast_action(a) for a in args.get("actions") or []]
-            sc = live.live_scenario()
-            fc = await asyncio.to_thread(self.forecast_fn, sc, actions)
+            sc, base = self._now()   # on the loop, so it never reads half a tick
+            fc = await asyncio.to_thread(self.forecast_fn, sc, base + actions)
             # Tanks with no fresh level: the forecast can't say they're safe, so neither can Jarvis.
             unknown = fc.get("unknown_tanks")
             if unknown is None:
                 unknown = sorted(t for t, lv in (sc.get("initial_levels_pct") or {}).items() if lv is None)
-            return {"now": live.fmap.clock(live.t),
+            return {"now": live.fmap.clock(live.t), "as_of": live.fmap.clock_text(live.t),
+                    "source": f"forecast run at {live.fmap.clock_text(live.t)} on the live readings",
                     "events": [{"type": e["type"], "asset_id": e.get("asset_id"), "t_min": e.get("t_min"), "text": e.get("text")}
                                for e in fc.get("events", [])][:12],
                     "cost": fc.get("cost"), "warnings": fc.get("warnings", []), "unknown_tanks": list(unknown)}
         if tool == "get_plans":
-            res = await asyncio.to_thread(self.plans_fn, live.live_scenario())
-            return {"plans": [{"id": p["id"], "summary": p["summary"], "actions": p["actions"],
+            sc, base = self._now()
+            res = await (asyncio.to_thread(self.plans_fn, sc, base) if base else
+                         asyncio.to_thread(self.plans_fn, sc))
+            return {"as_of": live.fmap.clock_text(live.t),
+                    "source": f"planner run at {live.fmap.clock_text(live.t)} on the live readings",
+                    "unknown_tanks": self._blind_tanks(),
+                    "plans": [{"id": p["id"], "summary": p["summary"], "actions": p["actions"],
                                "total_usd": p.get("cost", {}).get("total_usd"),
                                "keeps_running": p.get("keeps_running"), "robust": p.get("robust"),
                                "cannot_save": p.get("cannot_save", [])} for p in res.get("plans", [])]}
@@ -205,6 +273,19 @@ class Jarvis:
             return {"proposal_id": p["id"], "status": p["status"], "text": p["text"],
                     "note": "Waiting for a person to confirm on the console." if p["status"] == "PENDING" else p.get("result")}
         return {"error": f"Unknown tool {tool}."}
+
+    def _now(self) -> tuple[dict, list]:
+        """(scenario, actions under way) from the one clock, else the live field as is."""
+        if self.now_fn is not None:
+            try:
+                got = self.now_fn()
+            except Exception:  # noqa: BLE001 - a clock problem falls back, never breaks Jarvis
+                log.exception("one-clock now failed; using the live field")
+                got = None
+            if got is not None:
+                sc, base = got
+                return sc, [dict(a) for a in base]
+        return self.live.live_scenario(), []
 
     def _note_ui(self, aid: str, ctx: dict) -> None:
         d = {"type": "ui", "action": "focus", "asset_id": aid}
@@ -231,6 +312,157 @@ class Jarvis:
             out["target_id"] = str(a["target_id"]).upper()
         return out
 
+    # ---------- where each number came from (CF-11) ----------
+    def _reading(self, aid: str, signal: Optional[str] = None) -> Optional[dict]:
+        """The asset's newest reading (of `signal`, if given): its age in live minutes and
+        seconds, the connector it came from, and whether it is current. None if it never sent one."""
+        live = self.live
+        rows = [(s, r) for (a, s), r in live.latest.items() if a == aid and (signal is None or s == signal)]
+        if not rows:
+            return None
+        sig, r = max(rows, key=lambda x: x[1]["t"])
+        age = max(0.0, live.t - float(r["t"]))
+        return {"signal": sig, "age_min": round(age, 2), "age_s": int(round(age * 60)), "age": age_text(age),
+                "connector_id": r.get("source"), "current": not live.detector.is_stale(aid, signal),
+                "wall_t": r.get("wall")}
+
+    def _age_note(self, aid: str, signal: Optional[str] = None) -> str:
+        """' (reading 20 s old)', or ' (reading from CONN_HOOK, 20 s old)' off the simulator."""
+        r = self._reading(aid, signal)
+        if r is None:
+            return ""
+        sim = getattr(getattr(self.live.registry, "sim", None), "id", "CONN_SIM")
+        src = "reading" if r["connector_id"] in (None, sim) else f"reading from {r['connector_id']},"
+        return f" ({src} {r['age']} old)"
+
+    def _no_reading(self, aid: str) -> str:
+        """The no-current-reading sentence plus how old the last one is, if there was one."""
+        kind = self.live.fmap.kind_of(aid) or "tank"
+        r = self._reading(aid, "level_pct" if kind == "tank" else None)
+        last = f" Its last reading is {r['age']} old." if r else " It has sent no reading since startup."
+        return no_current_reading(name(aid), kind) + last
+
+    def _blind_tanks(self) -> list[str]:
+        """Tanks with no current level: UNKNOWN, never safe."""
+        assets = self.live.state()["assets"]
+        return [tid for tid in self.live.fmap.tanks if assets.get(tid, {}).get("status") == "UNKNOWN"]
+
+    def _blind_line(self, tids: list[str], skip: tuple = ()) -> str:
+        tids = [t for t in tids if t not in skip]
+        if not tids:
+            return ""
+        if len(tids) == 1:
+            return self._no_reading(tids[0])
+        return no_current_reading(and_list([name(t) for t in tids]), "tank", many=True)
+
+    def _forecast_says(self, text: str, t_min: Optional[float] = None, at_t: Optional[float] = None) -> str:
+        """'The forecast at 1:52 AM says Tank 3 reaches shutdown at 2:47 AM ... That's 55 min from now.'
+        `at_t` is the live minute the forecast ran (default now); `t_min` minutes from now."""
+        live = self.live
+        at = live.fmap.clock_text(live.t if at_t is None else at_t)
+        line = f"The forecast at {at} says {text.strip()}"
+        if not line.endswith("."):
+            line += "."
+        if t_min is not None:
+            mins = int(round(t_min))
+            line += " That's now." if mins <= 0 else f" That's {mins} min from now."
+        return line
+
+    def _alert_groups(self) -> dict:
+        """Active alerts grouped under their root cause (CF-7's root_id, followed to the top
+        active alert), most urgent first: P1 before P2 before P3, then the soonest consequence,
+        then alarms before warnings. Shelved roots go last. Changes nothing."""
+        live = self.live
+        active = list(live.detector.active.values())
+        by_id = {a["id"]: a for a in active}
+
+        def top(a: dict) -> dict:
+            seen = {a["id"]}
+            while a.get("root_id") in by_id and a["root_id"] not in seen:
+                a = by_id[a["root_id"]]
+                seen.add(a["id"])
+            return a
+
+        groups: dict[str, list[dict]] = {}
+        for a in active:
+            groups.setdefault(top(a)["id"], []).append(a)
+        prio_t = getattr(live, "_prio_t", None)
+
+        def shelved(a: dict) -> bool:
+            return a.get("shelved_until_t") is not None
+
+        def urgency(a: dict) -> tuple:
+            mins = a.get("consequence_t")
+            return (PRIORITY_RANK.get(a.get("priority") or "P3", 2),
+                    float("inf") if mins is None else mins, a["severity"] != "ALARM", a["id"])
+
+        # A shelve hides only the alert that was shelved. When a group's root is shelved, its
+        # most urgent unshelved member heads the group instead, so a P1 that came after the
+        # shelve is never folded out of sight under it.
+        heads: dict[str, tuple[dict, Optional[dict]]] = {}
+        for rid, members in groups.items():
+            root = by_id[rid]
+            open_ = [m for m in members if not shelved(m)]
+            if shelved(root) and open_:
+                heads[rid] = (min(open_, key=urgency), root)
+            else:
+                heads[rid] = (root, None)
+
+        def row(a: dict) -> dict:
+            at = a.get("consequence_t")
+            return {"id": a["id"], "asset_id": a["asset_id"], "name": name(a["asset_id"]), "kind": a["kind"],
+                    "severity": a["severity"], "priority": a.get("priority") or "P3", "message": a["message"],
+                    "raised_at": clock_at(a["clock"], 0) if a.get("clock") else None,
+                    "consequence": a.get("consequence"), "consequence_clock": a.get("consequence_clock"),
+                    "minutes_to_consequence": a.get("minutes_to_consequence"),
+                    "minutes_from_now": None if at is None else int(round(at - live.t)),
+                    "usd_at_risk": a.get("usd_at_risk", 0),
+                    "forecast_at": None if prio_t is None else live.fmap.clock_text(prio_t),
+                    "reading": self._reading(a["asset_id"]), "root_id": a.get("root_id"),
+                    "acked": bool(a.get("acked")), "shelved": a.get("shelved_until_t") is not None,
+                    "shelved_until": a.get("shelved_until"), "shelve_reason": a.get("shelve_reason")}
+
+        def rank(rid: str) -> tuple:
+            head = heads[rid][0]
+            return (shelved(head), *urgency(head))
+
+        out = []
+        for rid, members in sorted(groups.items(), key=lambda kv: rank(kv[0])):
+            head, shelved_root = heads[rid]
+            skip = {head["id"]} | ({shelved_root["id"]} if shelved_root else set())
+            related = [m["id"] for m in members if m["id"] not in skip]
+            out.append({"root": row(head), "related": len(related), "related_count": len(related),
+                        "related_ids": related, "shelved_root": row(shelved_root) if shelved_root else None})
+        return {"as_of": live.fmap.clock_text(live.t), "open": len(active), "groups": out,
+                "unknown_tanks": self._blind_tanks()}
+
+    def _root_line(self, g: dict) -> str:
+        """One root cause: priority, when it was raised, what it says (with its reading's age),
+        then the forecast's consequence and its clock, then the count folded under it."""
+        r = g["root"]
+        if r["kind"] == "SENSOR_STALE":
+            line = self._no_reading(r["asset_id"])
+        else:
+            msg = r["message"].rstrip()
+            if msg.endswith("."):
+                msg = msg[:-1]
+            line = f"{r['priority']}{' since ' + r['raised_at'] if r['raised_at'] else ''}: " \
+                   f"{msg}{self._age_note(r['asset_id'])}."
+            if r["consequence"] and r.get("consequence_clock") is None:
+                line += " " + r["consequence"]  # no forecast time behind it (an unknown tank)
+            elif r["consequence"]:
+                at_t = getattr(self.live, "_prio_t", None)
+                line += " " + self._forecast_says(r["consequence"], r["minutes_from_now"], at_t)
+        sr = g.get("shelved_root")
+        if sr:
+            why = f" ({sr['shelve_reason']})" if sr.get("shelve_reason") else ""
+            until = f" until {sr['shelved_until']}" if sr.get("shelved_until") else ""
+            line = (f"{sr['name'][0].upper() + sr['name'][1:]} {KIND_WORDS.get(sr['kind'], 'alert')} is shelved"
+                    f"{why}{until}; {r['name']} {KIND_WORDS.get(r['kind'], 'alert')} is still active. {line}")
+        if g["related"]:
+            line += f" {n_of(g['related'], 'related alarm')}."
+        return line
+
     # ---------- Claude ----------
     def _system_prompt(self) -> str:
         f = self.live.fmap
@@ -244,8 +476,16 @@ class Jarvis:
             "sees a 3D model of the field and may send a screenshot of it with selected assets.\n\n"
             "How to answer:\n"
             "- One to three short, plain sentences. No markdown or lists.\n"
-            "- Every number you state (levels, times, rates, dollars) must come from a tool result in this turn. "
-            "If a tool reports missing or stale data, say so first; an unknown tank is never safe.\n"
+            "- Every number you state (levels, times, rates, dollars) must come from a tool result in this turn, "
+            "and must say where it came from and how old it is: a reading with its age from the tool's `reading` "
+            "('Tank 3 is at 71% (reading 20 s old).'), a forecast or plan with its `as_of` time ('The forecast at "
+            "1:52 AM says shutdown at 2:47 AM.').\n"
+            "- If a tool reports missing or stale data, say so first; an unknown tank is never safe. For an asset "
+            "with status UNKNOWN, or a tank in `unknown_tanks`, say exactly 'I have no current reading for Tank 5, "
+            "so I can't say it's safe.' (the tool's `say` field) and never state a level for it.\n"
+            "- For what's failing, call list_alerts: lead with the first group's root cause, its priority and its "
+            "consequence clock, then say how many related alarms fold under it. Don't list every alarm. If a "
+            "group has a `shelved_root`, say it is shelved and why, then the active alarm that heads the group.\n"
             "- Look up an asset with explain_asset before describing it, and call focus_camera on the asset you "
             "are talking about.\n"
             "- For 'what if' use get_forecast; for the cheapest fix use get_plans.\n"
@@ -352,15 +592,56 @@ class Jarvis:
             return float("-inf")
         return (float(tank["shutdown_pct"]) - float(lvl)) / 100.0 * float(tank["capacity_bbl"])
 
-    def _crossover_next_to(self, tid: str, closing: bool = False) -> Optional[str]:
-        """The crossover on `tid` whose other tank has the most room (open ones first when closing)."""
-        xos = [xo for xo in self.live.fmap.crossovers if tid in (xo.get("connects") or [])[:2]]
-        if closing:
-            xos = [xo for xo in xos if self.live.value(xo["id"], "position") == "OPEN"] or xos
-        if not xos:
+    def _level_now(self, tid: str) -> Optional[float]:
+        """A tank's current level, or None when it has no fresh reading."""
+        lvl = self.live.value(tid, "level_pct")
+        if lvl is None or self.live.detector.is_stale(tid, "level_pct"):
             return None
+        return float(lvl)
+
+    def _xo_open(self, vid: str) -> bool:
+        """Reads OPEN, or last read OPEN (a stale OPEN still counts as open)."""
+        return str(self.live.value(vid, "position") or "").upper() == "OPEN"
+
+    def _none_open(self, vids: list[str], where: str = "") -> str:
+        """'No crossover is open.', unless one of `vids` has no current position: then it
+        says so, since a valve nobody can see might be open."""
+        blind = [v for v in vids if self.live.detector.is_stale(v, "position")
+                 or self.live.value(v, "position") is None]
+        if not blind:
+            return f"No crossover{where} is open."
+        return (f"No crossover{where} reads open. " +
+                no_current_reading(and_list([name(v) for v in blind]), "valve", many=len(blind) > 1))
+
+    def _crossover_next_to(self, tid: str, closing: bool = False,
+                           helps: bool = True) -> tuple[Optional[str], Optional[str]]:
+        """(crossover ID, None) or (None, why not), for a crossover on `tid`.
+
+        Opening (`helps`): only a crossover whose other tank is emptier than `tid` now, the
+        emptiest first. Water only runs to the lower tank, so opening onto a fuller one, or
+        one nobody can see, is no help. Closing: only an open one. `helps=False` (showing
+        one) takes the neighbor with the most room."""
+        xos = [xo for xo in self.live.fmap.crossovers if tid in (xo.get("connects") or [])[:2]]
+        if not xos:
+            return None, f"{name(tid)} has no crossover."
         other = lambda xo: next((e for e in xo["connects"][:2] if e != tid), tid)  # noqa: E731
-        return max(xos, key=lambda xo: self._headroom_bbl(other(xo)))["id"]
+        if closing:
+            open_ = [xo for xo in xos if self._xo_open(xo["id"])]
+            if not open_:
+                return None, self._none_open([xo["id"] for xo in xos], f" on {name(tid)}")
+            return open_[0]["id"], None
+        if not helps:
+            return max(xos, key=lambda xo: self._headroom_bbl(other(xo)))["id"], None
+        here = self._level_now(tid)
+        if here is None:
+            return None, (f"I have no current reading for {name(tid)}, so I can't tell whether a crossover "
+                          f"would help it.")
+        emptier = [(lv, xo["id"]) for xo in xos
+                   if (lv := self._level_now(other(xo))) is not None and lv < here]
+        if not emptier:
+            return None, (f"No crossover helps {name(tid)}: every tank it connects to is as full or fuller, "
+                          f"or has no current reading.")
+        return min(emptier)[1], None
 
     async def _tanks_in_trouble(self) -> list[str]:
         """Tanks with an active pump trip, then by earliest forecast shutdown."""
@@ -370,16 +651,19 @@ class Jarvis:
                 tid = f.pumps[a["asset_id"]]["tank_id"]
                 if tid not in out:
                     out.append(tid)
-        if any(self._crossover_next_to(tid) for tid in out):
+        if any(self._crossover_next_to(tid)[0] for tid in out):
             return out
         fc = await self.run_tool("get_forecast", {"actions": []}, {"ui": [], "proposals": []})
         sds = sorted((e for e in fc.get("events", []) if e.get("type") == "SHUTDOWN_LEVEL" and e.get("asset_id") in f.tanks),
                      key=lambda e: e.get("t_min") if e.get("t_min") is not None else float("inf"))
         return out + [e["asset_id"] for e in sds if e["asset_id"] not in out]
 
-    async def _crossover_in(self, t: str, closing: bool = False) -> tuple[Optional[str], Optional[str]]:
-        """(crossover ID, None), or (None, why not). Named tanks first, then the tank in
-        trouble, preferring the neighbor with the most headroom, then the first crossover."""
+    async def _crossover_in(self, t: str, closing: bool = False,
+                            helps: bool = True) -> tuple[Optional[str], Optional[str]]:
+        """(crossover ID, None), or (None, why not). Named tanks first. Closing with none
+        named: an open crossover, else "No crossover is open." Opening: the tank in trouble's
+        emptier neighbor (see _crossover_next_to), else why no crossover helps; with no tank
+        in trouble, the first crossover. `helps=False` (showing one) skips the emptier rule."""
         f = self.live.fmap
         m = re.search(r"\bvalve_xo_\w+\b", t)
         if m and m.group(0).upper() in f.valves:
@@ -394,24 +678,33 @@ class Jarvis:
                 return xo["id"], None
             return None, f"There's no crossover between {name(named[0])} and {name(named[1])}."
         if named:
-            aid = self._crossover_next_to(named[0], closing)
-            return (aid, None) if aid else (None, f"{name(named[0])} has no crossover.")
+            return self._crossover_next_to(named[0], closing, helps)
         if closing:
-            open_ = [x["id"] for x in f.crossovers if self.live.value(x["id"], "position") == "OPEN"]
+            open_ = [x["id"] for x in f.crossovers if self._xo_open(x["id"])]
             if open_:
                 return open_[0], None
+            return None, self._none_open([x["id"] for x in f.crossovers])
+        why = None
         for tid in await self._tanks_in_trouble():
-            aid = self._crossover_next_to(tid, closing)
+            aid, why_not = self._crossover_next_to(tid, helps=helps)
             if aid:
                 return aid, None
-        return f.crossovers[0]["id"], None
+            why = why or why_not
+        return (None, why) if why and helps else (f.crossovers[0]["id"], None)
 
     async def _plans_line(self, ctx: dict) -> str:
         """The cheapest plan, and the cheapest robust one if that's a different plan.
         Focuses the camera on the cheapest plan's first step."""
         res = await self.run_tool("get_plans", {}, ctx)
-        if not res["plans"]:
-            return "No plan needed: nothing reaches shutdown in the next 6 hours."
+        blind = self._blind_line(res.get("unknown_tanks") or [])
+        # The planner's "nothing to do" is one plan with no steps; that is not a $0 plan.
+        nothing = not res["plans"] or all(not p["actions"] and not p["cannot_save"] for p in res["plans"])
+        if nothing:
+            if blind:
+                return (f"{blind} The planner at {res['as_of']} has no plan to make for the tanks with a "
+                        f"current reading: none reaches shutdown in the next 6 hours.")
+            return (f"No plan needed: nothing reaches shutdown in the next 6 hours. The planner ran at "
+                    f"{res['as_of']} on the live readings.")
         p = res["plans"][0]
         if p["actions"]:
             await self._focus(p["actions"][0]["asset_id"], ctx)
@@ -419,12 +712,14 @@ class Jarvis:
         def usd(x: dict) -> str:
             return f", ${x['total_usd']:,.0f}" if isinstance(x.get("total_usd"), (int, float)) else ""
 
-        line = f"Cheapest plan{usd(p)}: {p['summary']}"
+        line = f"The planner ran at {res['as_of']} on the live readings. Cheapest plan{usd(p)}: {p['summary']}"
         if p["cannot_save"]:
             line += f" It can't save {', '.join(name(x) for x in p['cannot_save'])}."
         robust = next((x for x in res["plans"] if x.get("robust")), None)
         if robust and robust["id"] != p["id"]:
             line += f" Cheapest robust plan{usd(robust)}: {robust['summary']}"
+        if blind:
+            line = blind + " " + line  # said first: a plan can't vouch for a tank nobody can see
         return line + " Ask me to propose any step and confirm it on the console."
 
     async def _rules(self, text: str, selected: list, ctx: dict) -> Optional[str]:
@@ -475,7 +770,7 @@ class Jarvis:
 
         # Show or check an asset ("Why is Tank 3 rising, and what's my cheapest fix?" adds the plans).
         if re.search(r"show|focus|zoom|look|go to|where|\bis\b|how's|status of|check|explain|tell me about|about", t):
-            aid = (await self._crossover_in(t))[0] if "crossover" in t else self._asset_in(t)
+            aid = (await self._crossover_in(t, helps=False))[0] if "crossover" in t else self._asset_in(t)
             if aid:
                 await self._focus(aid, ctx)
                 line = await self._describe(aid)
@@ -494,31 +789,54 @@ class Jarvis:
             unknown = fc.get("unknown_tanks") or []
             # The blind-tank warnings are said below in plain words, so skip their raw form here.
             others = [w for w in fc["warnings"] if not any(w.upper().startswith(t + " ") for t in unknown)]
-            warn = (others[0] + " ") if others else ""
+            warn = (" It also warns: " + others[0]) if others else ""
             blind = ""
             if unknown:
-                names = [name(t) for t in unknown]
-                who = names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
-                blind = (f"I can't vouch for {who}: no fresh level reading, so treat "
-                         f"{'it' if len(names) == 1 else 'them'} as at risk and check in person. ")
+                blind = (self._blind_line(unknown) + f" Treat {'it' if len(unknown) == 1 else 'them'} "
+                         f"as at risk and check in person. ")
             if sd:
                 await self._focus(sd["asset_id"], ctx)
-                return (blind + warn + sd["text"]).strip()
+                return (blind + self._forecast_says(sd["text"], sd.get("t_min")) + warn).strip()
             if unknown:
                 await self._focus(unknown[0], ctx)
-                return (blind + warn + "No tank with a fresh reading reaches shutdown in the next 6 hours "
-                        "if nothing changes.").strip()
-            return warn + "No tank reaches shutdown in the next 6 hours if nothing changes."
+                return (blind + self._forecast_says("no tank with a fresh reading reaches shutdown in the next "
+                                                    "6 hours if nothing changes.") + warn).strip()
+            return self._forecast_says("no tank reaches shutdown in the next 6 hours if nothing changes.") + warn
 
         # Status.
         if re.search(r"status|what'?s (failing|wrong|happening|going on|broken)|report|sitrep|alarms?|alerts?|problem|update", t):
-            active = sorted(live.detector.active.values(), key=lambda a: a["severity"] != "ALARM")
-            if not active:
-                return f"All quiet at {live.fmap.clock_text(live.t)}. No active alerts."
-            await self._focus(active[0]["asset_id"], ctx)
-            more = f" {len(active) - 2} more alerts are open." if len(active) > 2 else ""
-            return " ".join(a["message"] for a in active[:2]) + more
+            return await self._status(ctx)
         return None
+
+    async def _status(self, ctx: dict) -> str:
+        """What's failing: every P1 root cause with its clock (at least the most urgent root),
+        then 'N related alarms' folded under each, the tanks Jarvis can't see, and a count of
+        the rest. Never one row per alarm (CF-7, CF-11)."""
+        res = await self.run_tool("list_alerts", {}, ctx)
+        if not res["groups"]:
+            if res["unknown_tanks"]:  # never "all quiet" while a tank is blind
+                await self._focus(res["unknown_tanks"][0], ctx)
+                return f"No active alarms at {res['as_of']}. " + self._blind_line(res["unknown_tanks"])
+            return f"All quiet at {res['as_of']}. No active alerts."
+        groups = [g for g in res["groups"] if not g["root"]["shelved"]]
+        shelved = len(res["groups"]) - len(groups)
+        lead = [g for g in groups if g["root"]["priority"] == "P1"][:2] or groups[:1]
+        if lead:
+            await self._focus(lead[0]["root"]["asset_id"], ctx)
+        parts = [self._root_line(g) for g in lead]
+        said = tuple(g["root"]["asset_id"] for g in lead if g["root"]["kind"] == "SENSOR_STALE")
+        blind = self._blind_line(res["unknown_tanks"], skip=said)
+        if blind:
+            parts.append(blind)
+        rest = [g for g in groups if g not in lead and not (g["root"]["kind"] == "SENSOR_STALE"
+                                                            and g["root"]["asset_id"] in res["unknown_tanks"])]
+        if rest:
+            n = sum(1 + g["related"] for g in rest)
+            nxt = rest[0]["root"]
+            parts.append(f"{n_of(n, 'other alert')} open; the next is {nxt['priority']} on {nxt['name']}.")
+        if shelved:
+            parts.append(f"{n_of(shelved, 'shelved alert')} not shown.")
+        return " ".join(parts)
 
     async def _propose(self, action: dict, text: str, ctx: dict) -> str:
         res = await self.run_tool("propose_action", {**action, "reason": f"Asked in Jarvis: \"{text}\""}, ctx)
@@ -535,14 +853,17 @@ class Jarvis:
         lv, nm, kind = info["live"], info["name"], info["kind"]
         nm = nm[0].upper() + nm[1:]
         if lv.get("status") == "UNKNOWN":
-            line = f"{nm} has no fresh reading, so treat it as unknown, not safe."
+            # Nothing that sounds like a level: the sentence, and how old the last reading is.
+            line = self._no_reading(aid)
+            info["alerts"] = [a for a in info["alerts"] if a["kind"] != "SENSOR_STALE"]
         elif kind == "tank":
-            line = f"{nm} is at {lv['level_pct']:.0f}% (shutdown at {info['design']['shutdown_pct']}%)"
+            line = (f"{nm} is at {lv['level_pct']:.0f}%{self._age_note(aid, 'level_pct')}, "
+                    f"with shutdown at {info['design']['shutdown_pct']}%")
             obs, exp = lv.get("observed_bbl_hr"), lv.get("expected_bbl_hr")
             # Right after a pump changes state the fit can still lag; a rate whose sign
             # disagrees with what the pumps and wells explain would only mislead.
             if obs is not None and not (exp is not None and abs(exp) >= 1 and obs * exp < 0):
-                line += f", changing {obs:+.0f} barrels an hour"
+                line += f", changing {obs:+.0f} barrels an hour over its recent readings"
             line += "."
             # Why: the tank's own pumps' active alerts, then its forecast shutdown time.
             causes = [a["message"] for pid in self.live.fmap.pumps_by_tank.get(aid, [])
@@ -550,18 +871,20 @@ class Jarvis:
             fc = await self.run_tool("get_forecast", {"actions": []}, {"ui": [], "proposals": []})
             sd = next((e for e in fc.get("events", [])
                        if e.get("type") == "SHUTDOWN_LEVEL" and e.get("asset_id") == aid), None)
-            extra = causes[:1] + ([sd["text"]] if sd else [])
+            extra = causes[:1] + ([self._forecast_says(sd["text"], sd.get("t_min"))] if sd else [])
+            # Its own high-level alerts only repeat the level and shutdown just said.
+            info["alerts"] = [a for a in info["alerts"] if a["kind"] not in ("TANK_HIGH", "TANK_HIGH_HIGH")]
             if extra:
                 line += " " + " ".join(extra)
         elif kind == "pump":
             run = "running" if lv.get("running") else "stopped"
-            line = f"{nm} is {run}, moving {lv.get('flow_bbl_hr') or 0:.0f} barrels an hour."
+            line = f"{nm} is {run}, moving {lv.get('flow_bbl_hr') or 0:.0f} barrels an hour{self._age_note(aid)}."
         elif kind == "valve":
-            line = f"{nm} is {str(lv.get('position')).lower()}."
+            line = f"{nm} is {str(lv.get('position')).lower()}{self._age_note(aid, 'position')}."
         elif kind == "truck":
             phase = str(lv.get("phase", "IDLE")).lower().replace("_", " ")
             line = f"{nm} is {phase}" + (f" for {name(lv['target_id'])}." if lv.get("target_id") else ".")
         else:
-            line = f"{nm} is flowing {lv.get('flow_bbl_hr') or 0:.0f} barrels an hour."
+            line = f"{nm} is flowing {lv.get('flow_bbl_hr') or 0:.0f} barrels an hour{self._age_note(aid, 'flow_bbl_hr')}."
         alerts = [a["message"] for a in info["alerts"] if a["message"] not in line]
         return " ".join([line, *alerts[:1]])
