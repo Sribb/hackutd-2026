@@ -6,6 +6,8 @@ import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import * as api from "./api.js";
 import { buildPlaceholder } from "./placeholder.js";
+import { decode, holdButton } from "./fx.js";
+import * as shiftlog from "./shiftlog.js";
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
@@ -32,8 +34,8 @@ controls.maxPolarAngle = Math.PI * 0.47;
 controls.minDistance = 8;
 controls.maxDistance = 140;
 
-scene.add(new THREE.HemisphereLight(0xbfc8d6, 0x1a1d22, 0.9));
-const moon = new THREE.DirectionalLight(0xdfe6f0, 1.4);
+scene.add(new THREE.HemisphereLight(0x8a96a8, 0x0b0b0a, 0.7));
+const moon = new THREE.DirectionalLight(0xc8d4e6, 1.25);
 moon.position.set(-30, 60, 25);
 moon.castShadow = true;
 moon.shadow.mapSize.set(2048, 2048);
@@ -90,11 +92,24 @@ function indexModel(root) {
   root.traverse((o) => {
     if (!o.isMesh) return;
     o.castShadow = o.receiveShadow = true;
+    // Night look: the site itself (ground, roads, pads, scenery) sinks into the dark so
+    // the equipment, lamps and status colors carry the scene.
+    for (let n = o; n; n = n.parent) {
+      if (/^(SITE|PAD|SCENERY)_/.test(n.name)) {
+        o.material = o.material.clone();
+        o.material.color.multiplyScalar(0.28);
+        break;
+      }
+    }
     const id = idFor(o);
     if (!id) return;
     const a = assets.get(id) || { id, meshes: [], levelMesh: null, root: null };
     if (/_LEVEL$/.test(o.name)) a.levelMesh = o;
-    else {
+    else if (/_(light|beacon|headlights)$/.test(o.name)) {
+      // Status lamps from field.glb (CONTRACT.md "Lights"): lit by status, never tinted like a body.
+      o.material = o.material.clone();
+      (a.lights = a.lights || []).push(o);
+    } else {
       // Own material per mesh so status color never bleeds into other assets.
       o.material = o.material.clone();
       o.userData.base = { color: o.material.color.clone(), emissive: (o.material.emissive || new THREE.Color()).clone() };
@@ -109,6 +124,10 @@ function indexModel(root) {
     // Moving parts from CONTRACT.md "What's in field.glb".
     const m = o.name.match(/^(PUMP_\d+)_rotor$|^(VALVE_[A-Z0-9_]+?)_wheel$|^(WELL_\d+)_(beam|crank)$/);
     if (m) movers.push({ node: o, id: m[1] || m[2] || m[3], kind: m[1] ? "rotor" : m[2] ? "wheel" : m[4], rest: o.rotation.clone() });
+    const g = o.name.match(/^(TANK_\d+)_gauge$/);
+    if (g) movers.push({ node: o, id: g[1], kind: "gauge", rest: o.rotation.clone() });
+    const ax = o.name.match(/^(TRUCK_\d+)_axle_\d$/);
+    if (ax) movers.push({ node: o, id: ax[1], kind: "axle", rest: o.rotation.clone() });
   });
   for (const a of assets.values()) if (!a.root) a.root = a.meshes[0] || a.levelMesh;
   for (const a of assets.values()) {
@@ -188,7 +207,7 @@ function placeTrucks(view) {
     if (!a || !a.home) continue;
     const act = actions.find((x) => x.type === "SEND_TRUCK" && x.asset_id === truck.id);
     const at = act && truckAt(truck, act, tMin);
-    if (view[truck.id] && at) view[truck.id] = { ...view[truck.id], location_text: at.text };
+    if (view[truck.id] && at) view[truck.id] = { ...view[truck.id], location_text: at.text, on_job: !!at.pos, driving: !!(at.pos && at.dir) };
     if (!at || !at.pos) { a.root.position.copy(a.home.pos); a.root.quaternion.copy(a.home.quat); continue; }
     a.root.position.copy(a.root.parent.worldToLocal(at.pos.clone()));
     if (at.dir && at.dir.lengthSq() > 1e-6) {
@@ -209,6 +228,9 @@ function animateMovers(dt, t) {
     if (mv.kind === "crank" && running) mv.node.rotation.x += dt * 1.6;
     if (mv.kind === "beam") mv.node.rotation.x = mv.rest.x + (running ? 0.25 * Math.sin(t * 1.6) : 0);
     if (mv.kind === "wheel" && actions.some((a) => a.asset_id === mv.id)) mv.node.rotation.y += dt * 2;
+    // Float marker on the tank's level board: position.y = 0.3 + 4.3 x level (CONTRACT.md).
+    if (mv.kind === "gauge") { const p = (lastView[mv.id] || {}).level_pct; if (p != null) mv.node.position.y = 0.3 + 4.3 * Math.min(1, p / 100); }
+    if (mv.kind === "axle" && (lastView[mv.id] || {}).driving) mv.node.rotation.z += dt * 8;
   }
 }
 
@@ -223,7 +245,9 @@ const COLORS = {
   ALARM: new THREE.Color(0xff4b1f),
   NO_DATA: new THREE.Color(0xc9a14a),
 };
-const TRYING = new THREE.Color(0x58c4e8);
+const TRYING = new THREE.Color(0x8fb8c8);
+const LAMP = { OK: new THREE.Color(0x8fa36b), WARNING: new THREE.Color(0xc9a14a), ALARM: new THREE.Color(0xff4b1f), NO_DATA: new THREE.Color(0xc9a14a) };
+const BEACON = new THREE.Color(0xff9a1f);
 const SELECTED = new THREE.Color(0x2a2f36);
 
 function paint(id, status, t) {
@@ -243,6 +267,15 @@ function paint(id, status, t) {
     if (trying && m.material.emissive) m.material.emissive.add(TRYING.clone().multiplyScalar(0.35));
     if (id === selectedId && m.material.emissive) m.material.emissive.add(SELECTED);
   }
+  for (const l of a.lights || []) {
+    const e = l.material.emissive;
+    if (!e) continue;
+    const v = lastView[id] || {};
+    if (/_beacon$/.test(l.name)) e.copy(BEACON).multiplyScalar(v.on_job ? (Math.sin(t * 9) > 0 ? 2.5 : 0.1) : 0);
+    else if (/_headlights$/.test(l.name)) e.setScalar(v.on_job ? 1.2 : 0);
+    else if (status === "OFFLINE" || !LAMP[status]) e.setScalar(0);
+    else e.copy(LAMP[status]).multiplyScalar(status === "ALARM" ? 3 * pulse : status === "NO_DATA" ? (Math.sin(t * 3) > 0 ? 1.5 : 0) : 1.4);
+  }
 }
 
 // ------------------------------------------------------------ app state ----
@@ -255,6 +288,7 @@ let tMin = 0;
 let walk = null;       // { plan, steps, radio, i } while walking an approved plan
 let whatifNote = "";
 let lastView = {};
+let approved = null;   // { plan, steps, done, at } once a plan is held to approve
 
 const LEAD_DEFAULTS = { SET_VALVE_manual: 20, SET_VALVE_remote: 1, CHOKE_WELL: 2, SEND_TRUCK: 5, SET_PUMP: 1 };
 const lead = (k) => (field.lead_min && field.lead_min[k] != null ? field.lead_min[k] : LEAD_DEFAULTS[k]);
@@ -363,8 +397,17 @@ async function setActions(next, note = "") {
     whatifNote = out.warnings[0];
   } else {
     fc = out;
+    logWhatif(next);
   }
   renderAll();
+}
+
+// One line in the shift log per what-if result, so the next crew sees what was weighed.
+function logWhatif(list) {
+  if (!list.length) { shiftlog.add("whatif", "Cleared every what-if. Back to the no-action forecast."); return; }
+  const ev = shutdownOf(fc);
+  const outcome = ev ? `${nice(ev.asset_id)} still hits shutdown at ${clockAt(ev.t_min)}` : `every tank holds through ${clockAt(360)}`;
+  shiftlog.add("whatif", `Tried ${list.map(describe).join(" + ")}: ${outcome}${fc.cost ? `, ${usd(fc.cost.total_usd)}` : ""}.`);
 }
 
 function toggle(opt) {
@@ -390,7 +433,7 @@ function renderIncident() {
   if (ev) {
     const range = ev.t_min_low != null
       ? ` <span class="muted">(${clockAt(ev.t_min_low)} to ${ev.t_min_high == null ? "later" : clockAt(ev.t_min_high)})</span>` : "";
-    countdown = `<div class="countdown">${nice(ev.asset_id)} reaches shutdown at ${clockAt(ev.t_min)}${range}</div>
+    countdown = `<div class="countdown" data-decode="countdown">${nice(ev.asset_id)} reaches shutdown at ${clockAt(ev.t_min)}${range}</div>
       <div class="sub">${Math.round(ev.t_min)} min from now if nobody acts. ${wellsAtRisk} wells go down with it.</div>`;
   }
   const lc = data.lc;
@@ -405,6 +448,7 @@ function renderIncident() {
     <div class="head">${statusTag("ALARM")} <span>${esc(inc.summary)}</span></div>${countdown}${last}`;
   box.querySelector(".head").style.cursor = "pointer";
   box.querySelector(".head").onclick = () => select(inc.root_asset_id, true);
+  decode(box);
 }
 
 function renderSelected(view) {
@@ -448,12 +492,13 @@ function renderSelected(view) {
     return `<button class="try ${on ? "on" : ""}" data-i="${i}">${on ? "✓ " : ""}${o.label}<span>${o.hint}</span></button>`;
   }).join("");
   box.innerHTML = `<div class="kicker">Selected</div>
-    <div class="asset-id">${selectedId}</div>${statusTag(s.status)}
+    <div class="asset-id" data-decode="asset">${selectedId}</div>${statusTag(s.status)}
     ${reason ? `<div class="reason">${esc(reason)}</div>` : ""}
     ${s.trying ? `<div class="reason trying">${esc(s.trying)}</div>` : ""}
     ${rows.length ? `<dl class="kv">${rows.join("")}</dl>` : ""}
     ${buttons ? `<div class="tries"><div class="kicker">Try a change</div>${buttons}</div>` : ""}`;
   box.querySelectorAll("button.try").forEach((b) => { b.onclick = () => toggle(opts[Number(b.dataset.i)]); });
+  decode(box);
 }
 
 function renderWhatif() {
@@ -464,10 +509,10 @@ function renderWhatif() {
   const now = shutdownOf(fc);
   let verdict;
   if (!actions.length) verdict = "";
-  else if (!now) verdict = `<div class="verdict good">Every tank stays below shutdown through ${clockAt(360)}.</div>`;
+  else if (!now) verdict = `<div class="verdict good" data-decode="verdict">Every tank stays below shutdown through ${clockAt(360)}.</div>`;
   else {
     const gained = base ? Math.round(now.t_min - base.t_min) : 0;
-    verdict = `<div class="verdict bad">${nice(now.asset_id)} still reaches shutdown at ${clockAt(now.t_min)}${gained > 0 ? `, ${gained} min later than doing nothing` : ""}.</div>`;
+    verdict = `<div class="verdict bad" data-decode="verdict">${nice(now.asset_id)} still reaches shutdown at ${clockAt(now.t_min)}${gained > 0 ? `, ${gained} min later than doing nothing` : ""}.</div>`;
   }
   const c = fc.cost;
   const cost = actions.length && c ? `<dl class="kv">
@@ -480,6 +525,7 @@ function renderWhatif() {
     ${whatifNote ? `<div class="note">${esc(whatifNote)}</div>` : ""}
     ${actions.length ? `<button class="link" id="clearAll">Clear all</button>` : ""}`;
   box.querySelectorAll(".act button").forEach((b) => { b.onclick = () => setActions(actions.filter((_, i) => i !== Number(b.dataset.i))); });
+  decode(box);
   const clear = $("clearAll");
   if (clear) clear.onclick = () => setActions([]);
 }
@@ -495,11 +541,11 @@ function renderPlans() {
       <div class="plan-top"><span class="rank">${i + 1}</span><span class="sum">${esc(p.summary)}</span><b>${usd(p.cost.total_usd)}</b></div>
       ${stamp ? `<div class="stamp ${p.robust === false ? "fragile" : ""}">${stamp}</div>` : ""}
       ${p.keeps_running === false ? `<div class="stamp fragile">Can't save: ${(p.cannot_save || []).map(nice).join(", ")}</div>` : ""}
-      <div class="plan-btns"><button data-try="${i}">Try it</button><button class="primary" data-approve="${i}">Approve</button></div>
+      <div class="plan-btns"><button data-try="${i}">Try it</button><button class="primary hold" data-approve="${i}" title="Press and hold to approve"><i></i><span>Hold to approve</span></button></div>
     </div>`;
   }).join("");
   box.querySelectorAll("[data-try]").forEach((b) => { b.onclick = () => setActions(list[Number(b.dataset.try)].actions.map((a) => ({ ...a }))); });
-  box.querySelectorAll("[data-approve]").forEach((b) => { b.onclick = () => startWalk(list[Number(b.dataset.approve)]); });
+  box.querySelectorAll("[data-approve]").forEach((b) => holdButton(b, () => startWalk(list[Number(b.dataset.approve)])));
 }
 
 function renderWalk() {
@@ -515,24 +561,40 @@ function renderWalk() {
     ${walk.radio ? `<details><summary>Radio script</summary><p>${esc(walk.radio)}</p></details>` : ""}`;
   box.querySelectorAll(".steps li").forEach((li) => { li.onclick = () => goStep(Number(li.dataset.i)); });
   $("walkBack").onclick = () => goStep(walk.i - 1);
-  $("walkNext").onclick = () => (walk.i === walk.steps.length - 1 ? endWalk() : goStep(walk.i + 1));
+  $("walkNext").onclick = () => (walk.i === walk.steps.length - 1 ? endWalk(true) : goStep(walk.i + 1));
 }
 
 async function startWalk(plan) {
   await setActions(plan.actions.map((a) => ({ ...a })));
   const res = await api.approve(plan.id);
   walk = { plan, steps: res.steps || [], radio: res.radio_script || "", i: 0 };
+  approved = { plan, steps: walk.steps, done: 0, at: shiftlog.clockNow() };
+  shiftlog.add("approve", `APPROVED ${plan.summary} (${usd(plan.cost.total_usd)})${plan.expires_clock ? `, start by ${plan.expires_clock}` : ""}.`);
   if (!walk.steps.length) walk = null;
   else goStep(0);
   renderAll();
 }
 function goStep(i) {
   if (!walk) return;
-  walk.i = Math.max(0, Math.min(walk.steps.length - 1, i));
+  const next = Math.max(0, Math.min(walk.steps.length - 1, i));
+  if (next > walk.i && approved) {
+    for (let k = walk.i; k < next; k++) if (k >= approved.done) shiftlog.add("step", `Done: ${walk.steps[k].text}`);
+    approved.done = Math.max(approved.done, next);
+  }
+  walk.i = next;
   select(walk.steps[walk.i].asset_id, true);
   renderWalk();
+  renderLog();
 }
-function endWalk() { walk = null; renderAll(); }
+function endWalk(finished = false) {
+  if (finished && walk && approved) {
+    shiftlog.add("step", `Done: ${walk.steps[walk.i].text}`);
+    approved.done = walk.steps.length;
+    shiftlog.add("approve", "Every step of the approved plan is done.");
+  }
+  walk = null;
+  renderAll();
+}
 
 function renderTanks(view) {
   $("tanks").innerHTML = (field.tanks || []).map((t) => {
@@ -572,7 +634,7 @@ function renderSources() {
 function render() {
   const view = viewAt(tMin);
   placeTrucks(view);
-  $("clock").textContent = clockAt(0); // the real "now" never moves with the slider
+  $("clock").textContent = shiftlog.clockNow(true); // the real "now" never moves with the slider
   $("tankKicker").textContent = tMin === 0 ? "Tank levels" : `Tank levels at ${clockAt(tMin)} (forecast)`;
   $("timeClock").textContent = clockAt(tMin);
   $("timeRel").textContent = tMin === 0 ? "now" : `+${tMin} min`;
@@ -590,6 +652,7 @@ function render() {
 }
 
 function renderAll() {
+  renderLog();
   renderSources();
   renderIncident();
   renderWhatif();
@@ -597,6 +660,67 @@ function renderAll() {
   renderWalk();
   renderMarks();
   render();
+}
+
+// ------------------------------------------------------- shift handoff ----
+// Every what-if, approval and finished step is stamped with the shift clock. The
+// handoff note is what the 6 AM crew reads: incident, plan, steps, forecast, log.
+function renderLog() {
+  const box = $("log");
+  const items = shiftlog.entries();
+  box.innerHTML = `<div class="kicker">Shift log</div>
+    <ol class="log">${items.slice().reverse().map((e) => `<li class="${e.kind}"><time>${e.at}</time><span>${esc(e.text)}</span></li>`).join("") || `<li class="empty">Nothing yet. What you try and approve lands here.</li>`}</ol>
+    <form id="noteForm" class="note-form"><input id="noteIn" placeholder="Add a note for the next crew" maxlength="240" autocomplete="off"></form>
+    <div class="plan-btns"><button id="copyHandoff">Copy handoff</button><button id="saveHandoff">Download .txt</button></div>`;
+  $("noteForm").onsubmit = (e) => {
+    e.preventDefault();
+    const v = $("noteIn").value.trim();
+    if (v) { shiftlog.add("note", v); renderLog(); }
+  };
+  $("copyHandoff").onclick = async () => {
+    try { await navigator.clipboard.writeText(handoffText()); $("copyHandoff").textContent = "Copied"; }
+    catch { saveHandoff(); }
+  };
+  $("saveHandoff").onclick = saveHandoff;
+}
+function saveHandoff() {
+  const url = URL.createObjectURL(new Blob([handoffText()], { type: "text/plain" }));
+  const a = Object.assign(document.createElement("a"), { href: url, download: `freeboard-handoff-${shiftlog.clockNow().replace(/[: ]/g, "")}.txt` });
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+function handoffText() {
+  const L = [];
+  const inc = data.state.incident;
+  const base = shutdownOf(data.baseline);
+  L.push("FREEBOARD SHIFT HANDOFF", `Written ${shiftlog.clockNow()} for the next crew.`, "");
+  L.push("INCIDENT");
+  if (inc) L.push(inc.summary);
+  if (base) L.push(`If nothing changes: ${nice(base.asset_id)} reaches shutdown at ${clockAt(base.t_min)}, and ${(field.wells || []).filter((w) => w.tank_id === base.asset_id).length} wells go down with it.`);
+  const lc = data.lc;
+  if (lc && lc.options && lc.options.length) {
+    L.push(`Last Call: the cheapest plan (${usd(lc.options[0].cost.total_usd)}) only works if started by ${lc.options[0].expires_clock}.`);
+    if (lc.point_of_no_return) L.push(`After ${lc.point_of_no_return.clock}, nothing keeps every well online.`);
+  }
+  L.push("", "PLAN");
+  if (!approved) L.push("No plan approved yet.");
+  else {
+    L.push(`Approved ${approved.at}: ${approved.plan.summary} (${usd(approved.plan.cost.total_usd)}).`);
+    approved.steps.forEach((s, i) => L.push(`  [${i < approved.done ? "x" : " "}] ${s.text}`));
+  }
+  L.push("", "FORECAST ON SCREEN");
+  const now = shutdownOf(fc);
+  L.push(actions.length ? `With ${actions.map(describe).join(" + ")}:` : "No changes applied:");
+  L.push(now ? `${nice(now.asset_id)} reaches shutdown at ${clockAt(now.t_min)}.` : `Every tank stays below shutdown through ${clockAt(360)}.`);
+  for (const t of field.tanks || []) {
+    const s = (data.state.assets || {})[t.id];
+    if (s && s.level_pct != null) L.push(`  ${nice(t.id)}: ${s.level_pct.toFixed(1)}% (shutdown ${t.shutdown_pct}%)`);
+  }
+  L.push("", "LOG");
+  for (const e of shiftlog.entries()) L.push(`${e.at.padStart(8)}  ${e.text}`);
+  const fakes = Object.entries(api.sources).filter(([, v]) => v === "fake").map(([k]) => k);
+  L.push("", fakes.length ? `Data: fake for ${fakes.join(", ")}.` : "Data: live API.");
+  return L.join("\n") + "\n";
 }
 
 // --------------------------------------------------- Last Call fuse rings ----
@@ -758,6 +882,7 @@ canvas.addEventListener("pointerleave", () => { $("hoverTag").hidden = true; });
 $("time").addEventListener("input", (e) => { tMin = Number(e.target.value); render(); });
 addEventListener("keydown", (e) => {
   if (e.target.tagName === "INPUT" && e.target.type !== "range") return;
+  if (e.target.tagName === "INPUT") return;
   if (e.key === "Escape") { if (walk) endWalk(); select(null); flyHome(); }
 });
 
@@ -768,6 +893,11 @@ async function boot() {
   ids = new Set(api.assetIds(field));
   const [baseline, lc, plans] = await Promise.all([api.forecast([]), api.lastCall(), api.plans()]);
   data = { field, state, baseline, lc, plans };
+  shiftlog.start(state.clock || "00:00", (state.incident && state.incident.summary) || "");
+  if (!shiftlog.entries().length) {
+    const ev = shutdownOf(baseline);
+    shiftlog.add("open", `Console opened. ${(state.incident && state.incident.summary) || "No incident."}${ev ? ` ${nice(ev.asset_id)} hits shutdown at ${clockAt(ev.t_min)} if nobody acts.` : ""}`);
+  }
   fc = baseline;
   scene.add(model.root);
   indexModel(model.root);
@@ -788,6 +918,7 @@ async function boot() {
 }
 
 const clock = new THREE.Clock();
+let lastSec = -1;
 renderer.setAnimationLoop(() => {
   const dt = clock.getDelta();
   const t = clock.elapsedTime;
@@ -802,6 +933,7 @@ renderer.setAnimationLoop(() => {
   if (data) {
     for (const id of ids) paint(id, (lastView[id] || {}).status || "NO_DATA", t);
     animateMovers(dt, t);
+    if ((t | 0) !== lastSec) { lastSec = t | 0; $("clock").textContent = shiftlog.clockNow(true); }
   }
   if (selBox) selBox.update();
   renderer.render(scene, camera);

@@ -152,3 +152,26 @@ button.hold { position: relative; overflow: hidden; }
 button.hold > i { position: absolute; inset: 0; transform-origin: left; transform: scaleX(var(--p, 0)); background: rgba(255,75,31,.35); pointer-events: none; }
 button.hold.committed { border-color: var(--good); color: var(--good); }
 .incident { border-color: rgba(255,75,31,.45); box-shadow: inset 0 0 40px rgba(255,75,31,.06); }
+
+.loading { display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 8px; background: var(--bg); z-index: 5; letter-spacing: .2em; text-transform: uppercase; }
+.loading b { font: 400 44px var(--display); letter-spacing: .3em; color: var(--ink); }
+.loading span:last-child { animation: blink 1.1s steps(2) infinite; }
+@keyframes blink { 50% { opacity: .2; } }
+.tag { background: rgba(5,5,5,.88); border-color: var(--ink-2); letter-spacing: .06em; }
+.tag::before { content: "[ "; color: var(--muted); } .tag::after { content: " ]"; color: var(--muted); }
+.timebar { background: rgba(5,5,5,.86); }
+input[type=range] { accent-color: var(--alarm); }
+.shiftlog .log { list-style: none; margin: 0; padding: 0; max-height: 180px; overflow-y: auto; display: grid; gap: 5px; font-size: 12px; }
+.shiftlog .log li { display: grid; grid-template-columns: 62px 1fr; gap: 8px; color: var(--ink-2); }
+.shiftlog .log li time { font-variant-numeric: tabular-nums; color: var(--muted); }
+.shiftlog .log li.approve span { color: var(--ink); }
+.shiftlog .log li.step span { color: var(--good); }
+.shiftlog .log li.note span { color: var(--trying); }
+.shiftlog .log li.empty { display: block; color: var(--muted); }
+.note-form input { width: 100%; margin-top: 10px; background: transparent; border: 0; border-bottom: 1px solid var(--line); color: var(--ink);
+  font: 12px var(--mono); padding: 6px 0; outline: none; }
+.note-form input:focus { border-bottom-color: var(--ink-2); }
+.shiftlog .plan-btns { margin-left: 0; }
+button.hold > span { position: relative; }
+button { white-space: nowrap; }
+.plan-btns { flex-wrap: wrap; }

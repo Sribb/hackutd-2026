@@ -1,11 +1,12 @@
 """Build web/public/fake/*.json: contract-shaped responses so the console runs with no backend.
 
 These files are data, not a second forecast. Every number comes from the Last Call
-reference forecast (lastcall/sim.py) on the Last Call placeholder scenario.
+reference forecast (lastcall/sim.py) on the team's scenario/field.json (Vinny's file).
 Run it again whenever that scenario changes:
 
     python3 web/scripts/make_fakes.py                 # needs lastcall/ in the repo (PR #10)
     python3 web/scripts/make_fakes.py --lastcall DIR  # or a folder that contains lastcall/
+    python3 web/scripts/make_fakes.py --from-api http://127.0.0.1:8000   # record the real backend (preferred)
 
 Writes:
   field.json, state.json, forecast.json   GET /api/field, GET /api/state, POST /api/forecast with no actions
@@ -26,11 +27,76 @@ OUT = ROOT / "web" / "public" / "fake"
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--lastcall", default=str(ROOT), help="folder that contains the lastcall package")
+ap.add_argument("--scenario", default=None, help="field file (default: scenario/field.json, else lastcall/scenario.json)")
+ap.add_argument("--from-api", default=None, metavar="URL",
+                help="record every response from a running backend instead (e.g. http://127.0.0.1:8000)")
 args = ap.parse_args()
+
+
+def _from_api(base: str) -> None:
+    """Record the real backend's answers, so the offline console shows the product's numbers."""
+    import urllib.request
+
+    def call(path, body=None):
+        req = urllib.request.Request(base.rstrip("/") + path, method="POST" if body is not None else "GET",
+                                     data=None if body is None else json.dumps(body).encode(),
+                                     headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=120) as r:
+            return json.loads(r.read())
+
+    def out(name, obj):
+        (OUT / name).write_text(json.dumps(obj, separators=(",", ":")) + "\n")
+
+    note = f"Recorded from the backend at {base}. Not live."
+    field, state = call("/api/field"), call("/api/state")
+    out("field.json", field)
+    out("state.json", state)
+    fc = call("/api/forecast", {"horizon_minutes": 360, "step_minutes": 5, "actions": []})
+    fc["warnings"] = [note] + list(fc.get("warnings") or [])
+    out("forecast.json", fc)
+    lead = {"SET_VALVE_manual": 20, "SEND_TRUCK": 5, "CHOKE_WELL": 2, **(field.get("lead_min") or {})}
+    ev = next((e for e in fc["events"] if e["type"] == "SHUTDOWN_LEVEL"), None)
+    tank = ev["asset_id"] if ev else "TANK_3"
+    xos = [v for v in field["valves"] if tank in v.get("connects", []) and all(c.startswith("TANK_") for c in v["connects"])]
+    changing = sorted({tank, *[c for v in xos for c in v["connects"]]})
+    lead.setdefault("SET_VALVE_remote", 1)
+    # One list of choices per lever, None meaning "leave it alone". Matches options() in main.js.
+    flat = [[None, {"type": "SET_VALVE", "asset_id": v["id"], "value": "OPEN",
+                    "at_min": lead["SET_VALVE_remote" if v.get("manual") is False else "SET_VALVE_manual"]}] for v in xos]
+    flat += [[None, {"type": "SEND_TRUCK", "asset_id": tr["id"], "target_id": tank, "at_min": lead["SEND_TRUCK"]}]
+             for tr in field["trucks"] if tank in (tr.get("minutes_to") or {})]
+    flat += [[None] + [{"type": "CHOKE_WELL", "asset_id": w["id"], "value": v, "at_min": lead["CHOKE_WELL"]} for v in (0.5, 0.0)]
+             for w in field["wells"] if w["tank_id"] == tank]
+    whatif = {}
+    for combo in itertools.product(*flat):
+        acts = [a for a in combo if a]
+        if not acts:
+            continue
+        r = call("/api/forecast", {"horizon_minutes": 360, "step_minutes": 5, "actions": acts})
+        k = "|".join(sorted(f"{a['type']}:{a['asset_id']}:{a.get('value', '')}:{a.get('target_id', '')}" for a in acts))
+        whatif[k] = {"tanks": {t: [row["tanks"][t] for row in r["timeline"]] for t in changing},
+                     "wells_online": [row.get("wells_online") for row in r["timeline"]],
+                     "events": r["events"], "cost": r["cost"]}
+    out("whatif.json", {"step_minutes": 5, "horizon_minutes": 360, "changing": changing, "results": whatif})
+    plans = call("/api/plans", {"horizon_minutes": 360})
+    out("plans.json", plans)
+    out("approve.json", {p["id"]: call(f"/api/plans/{p['id']}/approve", {}) for p in plans.get("plans", [])})
+    try:
+        out("lastcall.json", call("/api/lastcall", {}))
+    except Exception as e:  # Last Call not mounted on that backend
+        print("lastcall skipped:", e)
+    print(f"wrote {OUT}: {len(whatif)} what-if results, {len(plans.get('plans', []))} plans, from {base}")
+
+
+if args.from_api:
+    _from_api(args.from_api)
+    sys.exit(0)
 sys.path.insert(0, args.lastcall)
 from lastcall import core, sim  # noqa: E402
 
-S = core.load_scenario(str(Path(args.lastcall) / "lastcall" / "scenario.json"))
+_team = ROOT / "scenario" / "field.json"
+SCENARIO = args.scenario or str(_team if _team.exists() else Path(args.lastcall) / "lastcall" / "scenario.json")
+S = core.load_scenario(SCENARIO)
 LEAD = S["lead_min"]
 INCIDENT_TANK = "TANK_3"
 

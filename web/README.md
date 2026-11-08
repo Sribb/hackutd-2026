@@ -39,3 +39,18 @@ The fake files are generated, not hand-written: `python3 web/scripts/make_fakes.
 
 1. Swap to the live `/api/forecast`, `/api/plans`, and `/api/lastcall` as the backend lands. No code change is needed.
 2. Run the README's 60-second test on a stranger.
+
+## Night shift tools
+
+- **Hold to approve.** Approving a plan takes a 1.5 s press and hold (mouse, touch, or Space/Enter on the focused button). Letting go early approves nothing.
+- **Shift log.** Every what-if result, approval, finished step, and typed note is stamped with the shift clock, which starts at `/api/state`'s clock and runs in real time. It survives a reload in the same browser. **Copy handoff** or **Download .txt** writes the note for the next crew: incident, Last Call deadline, approved plan with steps checked off, the forecast on screen, tank levels, and the log.
+- **Model parts from field.glb:** tank float gauges follow the level, pump and well status lights take the status color, and a sent truck's beacon, lights, and axles run while it's on the job.
+
+## Fake data from the real backend
+
+`public/fake/` is recorded from the backend, so the offline demo shows the product's numbers:
+
+    python -m uvicorn backend.app.main:app --port 8000      # from the repo root
+    python3 web/scripts/make_fakes.py --from-api http://127.0.0.1:8000
+
+The files say "Recorded from the backend" in their warnings, and the badge still reads FAKE DATA.
