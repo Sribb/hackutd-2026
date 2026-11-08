@@ -39,7 +39,10 @@ function record() {
     if (!/^TANK_/.test(id)) continue;
     const r = liveFeed.reading(id);
     const v = r && !r.stale && typeof r.level_pct === "number" ? r.level_pct : null;
-    const list = hist.get(id) || [];
+    let list = hist.get(id) || [];
+    // The live clock went back (the backend restarted): this history is from another run.
+    // Start over and ask /api/history again.
+    if (list.length && L0.t < list[list.length - 1].t - 1) { list = []; asked.delete(id); }
     const last = list[list.length - 1];
     if (last && L0.t - last.t < 0.2 && (last.v == null) === (v == null)) continue;
     list.push({ t: L0.t, v });

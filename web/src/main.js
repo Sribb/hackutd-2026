@@ -602,6 +602,13 @@ function noShutdownText(blind) {
   return `Every tank with a reading stays below shutdown through ${until}. No reading for ${names}, so the console can't vouch for ${blind.length === 1 ? "that tank" : "those tanks"}. Check in person.`;
 }
 
+// The plan on the list with exactly these commands (timing aside), if any.
+function planFor(acts) {
+  const k = (xs) => xs.map(api.actionKey).sort().join("|");
+  const want = k(acts || []);
+  return want ? ((data.plans && data.plans.plans) || []).find((p) => k(p.actions || []) === want) || null : null;
+}
+
 function renderWhatif() {
   const box = $("whatif");
   if (!actions.length && !whatifNote) { box.hidden = true; return; }
@@ -612,7 +619,10 @@ function renderWhatif() {
   if (!actions.length) verdict = "";
   else if (!now) {
     const blind = blindTanks();
-    verdict = `<div class="verdict ${blind.length ? "warn" : "good"}" data-decode="verdict">${noShutdownText(blind)}</div>`;
+    // A plan the planner calls fragile holds only at the forecast inflow: never plain green.
+    const fragile = (planFor(actions) || {}).robust === false;
+    const text = noShutdownText(blind).replace(/\.$/, fragile ? " at the forecast inflow. Not if inflow runs 15% high." : ".");
+    verdict = `<div class="verdict ${blind.length || fragile ? "warn" : "good"}" data-decode="verdict">${text}</div>`;
   }
   else {
     const gained = base ? Math.round(now.t_min - base.t_min) : 0;
@@ -635,6 +645,8 @@ function renderWhatif() {
 }
 
 function renderPlans() {
+  // Never swap a Hold to approve button out from under a finger (storm search, weather).
+  if (isHolding()) { afterHold(renderPlans); return; }
   const box = $("plans");
   const list = (data.plans && data.plans.plans) || [];
   if (!list.length) { box.hidden = true; return; }
@@ -690,7 +702,7 @@ async function findStormPlan() {
       if (f.unknown) return done({ none: "the forecast didn't answer" });
       if (!shutdownOf(f)) {
         const names = andList(wells.slice(0, k).map((w) => nice(w.id)));
-        return done({ plan: { summary: `${value === 0 ? "Shut in" : "Choke to 50%"} ${names} from the console. Every tank stays below shutdown.`, actions: acts, cost: f.cost || { total_usd: 0 } } });
+        return done({ plan: { summary: `${value === 0 ? "Shut in" : "Choke to 50%"} ${names} from the console. ${noShutdownText(blindTanks())}`, actions: acts, cost: f.cost || { total_usd: 0 } } });
       }
     }
   }
@@ -862,14 +874,20 @@ function renderAll() {
 function renderLog() {
   const box = $("log");
   const items = shiftlog.entries();
+  // Keep a half-typed note (and its focus) across redraws: alarms and runs log while you type.
+  const oldIn = $("noteIn");
+  const draft = oldIn ? oldIn.value : "";
+  const typing = oldIn && document.activeElement === oldIn;
   box.innerHTML = `<div class="kicker">Shift log</div>
     <ol class="log">${items.slice().reverse().map((e) => `<li class="${e.kind}"><time>${e.at}</time><span>${esc(e.text)}</span></li>`).join("") || `<li class="empty">Nothing yet. What you try and approve lands here.</li>`}</ol>
     <form id="noteForm" class="note-form"><input id="noteIn" placeholder="Add a note for the next crew" maxlength="240" autocomplete="off"></form>
     <div class="plan-btns"><button id="copyHandoff">Copy handoff</button><button id="saveHandoff">Download .txt</button></div>`;
+  if (draft) $("noteIn").value = draft;
+  if (typing) $("noteIn").focus();
   $("noteForm").onsubmit = (e) => {
     e.preventDefault();
     const v = $("noteIn").value.trim();
-    if (v) { shiftlog.add("note", v); renderLog(); }
+    if (v) { $("noteIn").value = ""; shiftlog.add("note", v); renderLog(); }
   };
   $("copyHandoff").onclick = async () => {
     try { await navigator.clipboard.writeText(handoffText()); $("copyHandoff").textContent = "Copied"; }
@@ -1162,7 +1180,20 @@ function mountPager() {
 // ----------------------------------------------------------------- boot ----
 if (api.usingBackend) liveFeed.start(api.BASE);
 startTrend(api.usingBackend ? api.BASE : "");
-liveFeed.on("state", () => { if (data) { renderFeed(); render(); } });
+// The backend sends state every second, and render() rebuilds the Selected card and the
+// tank list. A rebuild between mousedown and mouseup swallows the click, so while a press is
+// held inside the side panel the redraw waits for the release.
+let pressInSide = false, renderQueued = false;
+addEventListener("pointerdown", (e) => { pressInSide = !!(e.target && e.target.closest && e.target.closest("#side")); }, true);
+const released = () => { pressInSide = false; if (renderQueued) { renderQueued = false; setTimeout(() => { if (data) { renderFeed(); render(); } }, 0); } };
+addEventListener("pointerup", released, true);
+addEventListener("pointercancel", released, true);
+liveFeed.on("state", () => {
+  if (!data) return;
+  if (pressInSide) { renderQueued = true; return; }
+  renderFeed();
+  render();
+});
 
 // #104: the countdown, plans and Last Call were read once at boot and went stale as the
 // night moved. Re-read them every minute, and soon after any alert. A failed read leaves
