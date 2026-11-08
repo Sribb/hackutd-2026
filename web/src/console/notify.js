@@ -250,10 +250,10 @@ export function makeNotifier(H) {
       const tops = short ? [] : [...H.stage.querySelectorAll("#csStatus, .gm-strip, #twonights")]
         .filter((e) => !e.hidden && e.offsetParent !== null).map((e) => e.getBoundingClientRect().bottom);
       top = short ? stage.top + 8 : Math.max(stage.top + 12, ...tops) + 12;
-      width = Math.min(460, stage.width - (short ? 16 : 24));
+      width = Math.min(760, stage.width - (short ? 16 : 24));
       left = stage.left + (stage.width - width) / 2;
       const tb = H.stage.querySelector(".timebar");
-      const need = Math.min(card.scrollHeight || 320, 380);
+      const need = Math.min(card.scrollHeight || 420, 560);
       const above = tb ? stage.top + tb.offsetTop - 10 - top : stage.bottom - 12 - top;
       // No room above the time bar for the card: the time bar steps down while the alert is up,
       // so the two never overlap.
@@ -261,7 +261,7 @@ export function makeNotifier(H) {
       document.body.classList.toggle("gn-tb-hide", hideTb);
       maxH = hideTb ? stage.bottom - 12 - top : above;
     } else {
-      width = Math.min(460, innerWidth - 24);
+      width = Math.min(760, innerWidth - 24);
       left = (innerWidth - width) / 2;
       top = 64;
       maxH = innerHeight - 96;
@@ -288,6 +288,8 @@ export function makeNotifier(H) {
     render();
     void card.offsetWidth; // restart the slide-in
     card.classList.add("in");
+    // Big and unmissable (Sriyan): a red alarm also lights the whole screen edge.
+    document.body.classList.toggle("gn-alarm", card.classList.contains("red"));
     const sound = opts.sound === false ? false : tone(levelOf(a) === "red");
     startFlash(headOf(a).toLowerCase(), levelOf(a) === "red");
     if (H.log) H.log("alert", `Notified: ${a.message || a.id}`);
@@ -299,7 +301,7 @@ export function makeNotifier(H) {
     stopFlash();
     card.classList.remove("in");
     card.hidden = true;
-    document.body.classList.remove("gn-tb-hide");
+    document.body.classList.remove("gn-tb-hide", "gn-alarm");
     card._html = "";
     const a = cur.a;
     cur = null;
