@@ -26,6 +26,7 @@ Most teams will build a normal dashboard, and some will add a 3D model to look a
 | What's failing? | The field is gray. The failed equipment is the only thing in color, with the cause in plain English. |
 | How long do we have? | "Tank 3 reaches shutdown at 2:47 AM, give or take 15 minutes." A time slider plays the next 6 hours. |
 | What's the cheapest fix? | The operator tries fixes directly on the 3D field. The console also tests combinations and ranks plans by dollars. |
+| How long can I think? | **Last Call:** "Your cheapest plan expires at 2:20 AM." Each fix has a fuse, and the price of waiting climbs in steps. See [lastcall/](lastcall/README.md). |
 
 ### The one rule for the 3D
 
@@ -57,8 +58,9 @@ HackUTD's guide says to plan for a 3 minute pitch and 2 minutes of questions. Nu
 |---|---|---|
 | **Backend:** forecast, planner, API | `mounishmavuduru` | Follow [docs/BACKEND.md](docs/BACKEND.md) |
 | **3D model quality in Blender** | Sriyan | Export a rough gray `blender/field.glb` with the correct names first, then improve it |
-| **Web console:** 3D viewer, panels, time slider | Open | Load the `.glb`, click an object, show its ID, then use the fake API data |
+| **Web console:** 3D viewer, panels, time slider | `ronakkasaram` | Load the `.glb`, click an object, show its ID, then use the fake API data |
 | **Scenario, costs, Devpost, pitch** | `vinnycodes67` | Ask the sponsor mentors the open questions below |
+| **Last Call:** option expiry and the price of waiting | `ronakkasaram` | Mount `POST /api/lastcall` and draw fuse rings in the 3D field. See [lastcall/](lastcall/README.md) |
 
 `vinnycodes67` and `ronakkasaram`: claim an open row, or tell Sriyan if you want to work on something else. Agents read the owner table in [AGENTS.md](AGENTS.md), so update it there too.
 
@@ -91,6 +93,7 @@ blender/    field.blend and the exported field.glb
 web/        the console
 backend/    server, forecast, planner
 scenario/   the field definition and tonight's failure
+lastcall/   option expiry and the price of waiting (runs standalone today)
 docs/       this plan
 ```
 

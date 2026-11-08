@@ -119,3 +119,70 @@ Everything else runs in parallel or is polish.
 2. Are we also entering the CBRE track with firebreak, and who works on it?
 3. Sriyan: OK for Vinny's agent to merge his PRs if he's away?
 4. Sriyan: update AGENTS.md section 2 so the orchestrator can assign work.
+
+---
+
+# v2.1: iterate, test, and make it better (added Sat 6:50 PM CST)
+
+Everything above stays: it's the plan we iterate on. This section adds what's left now that most features exist as code.
+
+**Where we are:** almost every step of the product is built and tested on its own branch. What's not done: (1) it isn't all merged on main, (2) it's never run on real hardware, with a real API key, a real hand, a real phone, and Blender on the demo laptop, (3) four features are still in progress, and (4) nothing has been through a stranger test or a quality pass. "Built" means it passes tests on a branch. "Done" means a judge can do it on the demo laptop without us touching anything.
+
+## Phase A: merge and integrate (now → 8:00 PM)
+| # | Task | Owner | Done when |
+|---|---|---|---|
+| A1 | Merge #57 → #64 | Mounish | on main, tools/check PASS |
+| A2 | Merge #10 → #16 → #49 → #52 → #53 → #56 → #58 → #70 → #9, with "Delete branch" each time | Ronak | on main, `npm run build` OK |
+| A3 | Merge #69, #71, #76 | Sriyan | on main |
+| A4 | Integration run #2 **on main** (rehearse.py + pytest + web build + both samples end to end), with every defect filed to its owner | Vinny's agent | 0 blockers open |
+
+## Phase B: prove it on real hardware (8:00 → 11:00 PM), which is **M2**
+| # | Task | Owner | Done when |
+|---|---|---|---|
+| B1 | Demo laptop from a fresh clone: Python 3.12, Blender, `npm run demo`, `.env` with the API key (never committed) | Ronak + Vinny | `tools/check` PASS with nothing skipped |
+| B2 | Real Claude, real key: ingest the sample 3 **photo**, plus 10 free-form Jarvis questions | Vinny | the photo gives the right equipment with confidence; Jarvis answers with real numbers, never invented ones |
+| B3 | Real Blender build of samples 1–3 through `/api/blueprints` | Sriyan + Mounish | each builds in under 30 s, and the console opens on it |
+| B4 | Real hand control under expo-like lighting | Ronak | point, pinch, and palm each work 9 out of 10 times |
+| B5 | Real phone over Wi-Fi via the QR pager: alert → confirm | Ronak | alert in under 2 s, confirm shows on the console |
+| B6 | Draw sample 3, the hand-drawn site plan photo | Vinny (human) | `scenario/samples/sample3_handdrawn.jpg` exists |
+
+## Phase C: finish the features (by 2:00 AM), which is **M3**
+| # | Task | Owner | Done when |
+|---|---|---|---|
+| C1 | #42 one clock + applied actions: confirmed fixes and approved plans change `/api/state` and every forecast | Mounish | approve the crossover, and the console, live layer, forecast, and Last Call all agree |
+| C2 | #62 real MQTT + Modbus with a fake SCADA/PLC | Vinny's agent (PR #74) | both connectors `connected`, trip on the PLC → alert, confirm → register write |
+| C3 | #63 agentic plan runs + Ronak's plan-run panel | Vinny's agent + Ronak | "fix it" runs the cheapest robust plan step by step, each step confirmed, and a stuck valve pauses and re-plans |
+| C4 | DB: publish SpacetimeDB, push every live change in under 1 s, lock writes (B2, B8, D2) | Mounish | two browsers see a confirm in under 1 s |
+| C5 | #46 IoT sensor/RTU models, #47 equipment types, scenery under `SCENERY` | Sriyan | in budget, built from blueprints |
+| C6 | Last Call under 1.5 s (B9) | Mounish | timed on the demo laptop |
+
+## Phase D: make it better (iteration loops, 2:00 → 6:00 AM)
+Each loop: **build → test (`scenario/rehearse.py` + Ronak's Playwright E2E) → file defects → fix → retest**, until **two clean runs in a row**.
+
+| Loop | What "better" means | Owner | Exit |
+|---|---|---|---|
+| D1 Stranger test | Someone new goes from failure to an approved plan in under 60 s without touching the camera (README) | everyone, with Vinny running it | 3 strangers pass |
+| D2 Jarvis quality | A 20-question eval (scripted + free-form, with and without a key): right numbers, focuses the right asset, never claims an unknown tank is safe, never sends a command without a confirm | Vinny | 20/20 |
+| D3 Forecast truth | Hand-check shutdown times and plan costs on Avon, Pecos, and a 1-tank and a 20-tank field | Mounish | every number matches hand math |
+| D4 Failure modes | Backend down, /ws drop, no key, blurry photo, wrong CSV, a 20 MB file, a stale sensor, Blender missing: each shows a clear message and never a fake "safe" | Ronak + Mounish | each case scripted in E2E |
+| D5 Visual polish | Design review of the console, Jarvis panel, upload, and phone: one visual language, readable at expo distance, color only for state | Ronak | `/design-review` has no high findings |
+| D6 Performance | 60 fps console, upload under 30 s, alert to phone under 2 s, Last Call under 1.5 s, Jarvis rules answer under 1 s | Ronak + Mounish | all measured on the demo laptop |
+| D7 3D quality | Generated fields look like a real West Texas lease. Sensors and RTUs show where the IoT data comes from. | Sriyan | Sriyan signs off |
+
+## Phase E: freeze and ship (6:00 → 11:00 AM), which is **M4 → submit**
+| # | Task | Owner | Done when |
+|---|---|---|---|
+| E1 | Feature freeze at 6:00 AM: only fixes for defects found in rehearsal | everyone | no feature PRs after 6:00 |
+| E2 | 3 timed rehearsals of DEMO.md, with `rehearse.py --fill` writing every LIVE number | Vinny + all | under 3:00 each, numbers match the slides |
+| E3 | Devpost: final text (#60 draft), screenshots, the E2E video as backup, credits | Vinny | submitted by 11:00 AM |
+| E4 | Pitch deck: 6 slides that follow DEMO.md's beats | Vinny | rehearsed with the live demo |
+| E5 | Repo public and clean: no keys, README run steps, credits | Sriyan | judges can clone and run |
+
+## Definition of a "perfect demo"
+- [ ] Upload → review → 3D field in under 45 s, from a hand-drawn photo
+- [ ] Pump trip → red on the console + phone buzz in under 2 s → plain-English cause
+- [ ] Countdown and time slider → judge clicks a fix → time and cost update immediately
+- [ ] Jarvis by voice or text, plus hand gestures: answers with real numbers and flies the camera
+- [ ] "Fix it" → a plan run, each step confirmed by a person, and the sim shows the tank saved
+- [ ] Real protocol on screen (MQTT/Modbus badge `connected`), plus a dead sensor shown as UNKNOWN
+- [ ] Every number on stage comes from the live backend
