@@ -64,7 +64,7 @@ export function makeFixCard(box, H) {
   function sourceOf(p) {
     if (p.step && p.steps) return `plan step ${p.step} of ${p.steps}`;
     if (p.source === "phone") return "from phone";
-    if (p.source === "jarvis") return "from Jarvis";
+    if (p.source === "jarvis") return "from gaia";
     return p.source ? `from ${p.source}` : "";
   }
 
@@ -77,15 +77,15 @@ export function makeFixCard(box, H) {
         const more = pendingList().length - 1;
         return `${l.state === "NOTE" ? `<div class="cs-fx-note" role="alert">${esc(l.text)}</div>` : ""}
           <div class="cs-row">
-            <button type="button" class="cs-notnow" data-reject>Not now</button>
-            <button type="button" class="primary hold cs-hold" data-hold aria-label="Press and hold for 1.5 seconds to confirm: ${esc(p.text || "")}"><i></i><span>Hold to confirm</span></button>
+            <button type="button" class="cs-notnow" data-reject>not now</button>
+            <button type="button" class="primary hold cs-hold" data-hold aria-label="Press and hold for 1.5 seconds to confirm: ${esc(p.text || "")}"><i></i><span>hold to confirm</span></button>
           </div>
           ${more > 0 ? `<button type="button" class="link cs-more" data-more>+${more} more waiting</button>` : ""}`;
       }
       case "SENDING": return `<div class="cs-fx-state">Sending to ${esc(p.connector_id || "the field")}…</div>`;
       case "CONFIRMED": return `<div class="cs-fx-state good">Done, confirmed by ${esc(by)} ${esc(when)}.${p.result ? ` <span class="muted">${esc(String(p.result))}</span>` : ""}</div>`;
-      case "FAILED": return `<div class="cs-fx-state bad">Failed: ${esc(String(p.result || "the connector said no"))}. Nothing changed.</div><div class="cs-row"><button type="button" data-dismiss>OK</button></div>`;
-      case "UNCERTAIN": return `<div class="cs-fx-state warn"><b>UNCERTAIN</b> Sent, not confirmed. The device may have moved. Check the field before trying again.${p.result ? ` <span class="muted">${esc(String(p.result))}</span>` : ""}</div><div class="cs-row"><button type="button" data-dismiss>Got it</button></div>`;
+      case "FAILED": return `<div class="cs-fx-state bad">Failed: ${esc(String(p.result || "the connector said no"))}. Nothing changed.</div><div class="cs-row"><button type="button" data-dismiss>ok</button></div>`;
+      case "UNCERTAIN": return `<div class="cs-fx-state warn"><b>uncertain</b> Sent, not confirmed. The device may have moved. Check the field before trying again.${p.result ? ` <span class="muted">${esc(String(p.result))}</span>` : ""}</div><div class="cs-row"><button type="button" data-dismiss>got it</button></div>`;
       case "REJECTED": return `<div class="cs-fx-state">Not done.</div>`;
       case "DECIDED": return `<div class="cs-fx-state">Already decided on another screen.</div>`;
       default: return "";
@@ -104,7 +104,7 @@ export function makeFixCard(box, H) {
     box.className = `cs-fix ${st}`;
     if (st === "PENDING" && !effects.has(p.id)) loadEffect(p); // marks it loading before the first render
     const eff = effects.get(p.id);
-    const html = `<div class="cs-fx-top"><span>FIX</span><span>${esc(sourceOf(p))}</span><b>${esc(st === "DECIDED" ? "409" : st)}</b></div>
+    const html = `<div class="cs-fx-top"><span>fix</span><span>${esc(sourceOf(p))}</span><b>${esc(st === "DECIDED" ? "409" : st.toLowerCase())}</b></div>
       <div class="cs-fx-text">${esc(p.text || "")}</div>
       ${p.reason ? `<div class="cs-fx-why">${esc(p.reason)}</div>` : ""}
       ${eff ? `<div class="cs-fx-eff">${esc(eff)}</div>` : eff === null || st === "PENDING" ? `<div class="cs-fx-eff muted"${eff === null ? " data-loading" : ""}>${eff === null ? "Working out the effect…" : ""}</div>` : ""}

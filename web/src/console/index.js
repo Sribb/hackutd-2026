@@ -28,16 +28,22 @@ import {
   countdownBar, planBars, dot, prioOf, levelOf, watchText, forecastText, plannerText,
 } from "./agents.js";
 import "./console.css";
+import { mountIntro } from "../gaia/intro.js";
+import { mountThreads } from "../gaia/threads.js";
+import { mountMic } from "../gaia/mic.js";
+import { makeLayout } from "../gaia/layout.js";
 
 const POLL_MS = 30000;
 const BRIEF_RETRY_MS = 5 * 60000;
-const DOWN_TEXT = "Can't reach the backend — alerts are NOT being received";
+const DOWN_TEXT = "Can't reach the backend, so alerts are not being received";
 const HEALTH_MS = 10000;
 const FALSE_CLEAR = /\b(all clear|all quiet|every tank is safe|everything is fine)\b/i;
 const DRAWER_PANELS = { plans: "plans", walk: "walk", whatif: "whatif", asset: "selected", log: "log", tanks: "tanks" };
 
 export function mountConsole(H) {
   document.body.classList.add("fb-console");
+  const intro = mountIntro(); // the handwritten gaia, until the field and first data are in
+  const layout = makeLayout();
   const app = H.app;
   const BASE = H.BASE;
   const nice = (id) => H.nice(id);
@@ -49,7 +55,7 @@ export function mountConsole(H) {
   let brief = null;                          // normalized; source "brief" | "fallback"
   let briefFromServer = false, briefNext = 0;
   let fbForecast = null, fbPlans = null;     // fallback inputs, refreshed every 30 s
-  let open = false, unread = false;
+  let open = true, unread = false;   // open: the chat is on screen (false: the field is full width)
   let lastSel = undefined;
   const autoOpened = new Set();
   const seenPrio = new Map();                // alert id -> priority last seen
@@ -61,21 +67,22 @@ export function mountConsole(H) {
   let drawerFrom = null;                     // { el, parent, next } while a panel is borrowed
 
   // --------------------------------------------------------------- DOM ----
-  const status = mountStatusLine(app, onSegment);
+  const status = mountStatusLine(H.stage, onSegment);
   const side = mountSidebar(app, onSide);
   const tab = document.createElement("button");
   tab.type = "button";
   tab.id = "csTab";
   tab.className = "cs-tab";
-  tab.setAttribute("aria-label", "Open Jarvis (J)");
-  tab.innerHTML = `<span>Jarvis</span><i class="cs-unread" hidden></i>`;
+  tab.setAttribute("aria-label", "Show the chat (J)");
+  tab.innerHTML = `<span>chat</span><i class="cs-unread" hidden></i>`;
+  tab.hidden = true;
   tab.onclick = () => setOpen(true);
   app.appendChild(tab);
   const drawer = document.createElement("section");
   drawer.className = "cs-drawer";
   drawer.hidden = true;
   drawer.innerHTML = `<header><span class="cs-kicker" id="csDrawerName"></span><button type="button" class="cs-icon" aria-label="Close panel">×</button></header><div class="cs-drawer-body"></div>`;
-  side.el.insertBefore(drawer, side.fix);
+  side.fix.parentElement.insertBefore(drawer, side.fix);
   drawer.querySelector("button").onclick = () => closeDrawer(true);
   const hot = document.createElement("div");
   hot.className = "cs-tb-hot";
@@ -88,7 +95,7 @@ export function mountConsole(H) {
     const skyBtn = document.createElement("button");
     skyBtn.type = "button";
     skyBtn.className = "cs-skybtn";
-    skyBtn.textContent = "Sky";
+    skyBtn.textContent = "sky";
     skyBtn.onclick = () => document.body.classList.toggle("cs-sky-open");
     const row = timebar.querySelector(".timebar-row");
     if (row) row.appendChild(skyBtn);
@@ -100,6 +107,18 @@ export function mountConsole(H) {
     chip: (id) => chip(id),
   });
   stream.onPost(() => { if (!open) unread = true; });
+
+  // Threads (left sidebar): incidents, the field overview, the person's chats (gaia/threads.js).
+  const threads = mountThreads(app, side, {
+    onNew: () => side.input.focus(),
+    onLog: () => openPanel("log"),
+    onOverview: () => { resetView(); },
+    onNav: (v) => layout.nav(v),
+    onView: () => { if (!open) setOpen(true); },
+    clock: (c) => clock12(toMin(c)).toLowerCase(),
+    greeting: () => (activeAlerts().length || alertsDown() || unknownTanks().length || !vouchable() ? "what's happening on the field?" : "all quiet on the lease"),
+  });
+  mountMic(side.mic, side.input, () => side.el.querySelector("#csAsk").requestSubmit());
 
   const fix = makeFixCard(side.fix, {
     post, clockNow: () => nowClock(), liveClock: () => liveFeed.live.clock,
@@ -202,7 +221,7 @@ export function mountConsole(H) {
     try {
       const [a, p] = await Promise.all([getJson("/api/alerts"), getJson("/api/actions")]);
       reach = "ok";
-      for (const x of a.alerts || []) { alerts.set(x.id, x); if (!seenPrio.has(x.id)) seenPrio.set(x.id, prioOf(x)); }
+      for (const x of a.alerts || []) { alerts.set(x.id, x); threads.alert(x); if (!seenPrio.has(x.id)) seenPrio.set(x.id, prioOf(x)); }
       for (const x of p.proposals || []) fix.take(x, true);
       fix.draw();
     } catch {
@@ -246,12 +265,12 @@ export function mountConsole(H) {
     if (a.active === false || !BASE) return {};
     const acked = a.acked;
     return {
-      extra: `<div class="cs-actions">${acked ? `<span class="muted">Acknowledged</span>` : `<button type="button" data-ack>Ack</button>`}
-        <button type="button" data-shelve-open>Shelve…</button></div>
+      extra: `<div class="cs-actions">${acked ? `<span class="muted">acknowledged</span>` : `<button type="button" data-ack>ack</button>`}
+        <button type="button" data-shelve-open>shelve…</button></div>
         <form class="cs-shelve" hidden>
           <label>For <select name="m"><option>15</option><option selected>30</option><option>60</option><option>120</option><option>240</option></select> min</label>
           <input name="reason" placeholder="Why? A shelve needs a reason." aria-label="Shelve reason">
-          <button type="button" class="primary hold" data-shelve-hold><i></i><span>Hold to shelve</span></button>
+          <button type="button" class="primary hold" data-shelve-hold><i></i><span>hold to shelve</span></button>
           <div class="cs-fx-note" data-shelve-note hidden></div>
         </form>`,
       bind(li) {
@@ -306,6 +325,7 @@ export function mountConsole(H) {
     const prev = alerts.get(a0.id);
     const a = { ...(prev || {}), ...a0 };
     alerts.set(a.id, a);
+    threads.alert(a);
     const ev = m.event || (prev ? "updated" : "raised");
     const p = prioOf(a), was = seenPrio.get(a.id);
     seenPrio.set(a.id, p);
@@ -315,7 +335,7 @@ export function mountConsole(H) {
     if (ev === "raised") log("alert", `${a.severity}: ${a.message}`);
     const news = ev !== "updated" || becameP1;
     stream.say("W", { text: watchText(a, ev, nice), visual: watchVisual(a), ids: [a.asset_id, a.consequence_asset_id].filter(Boolean), key: a.id, ...(ev === "resolved" ? {} : watchExtra(a)) }, { news, urgent: urgent || becameP1 });
-    if (becameP1 && !autoOpened.has(a.id)) { autoOpened.add(a.id); setOpen(true); }
+    if (becameP1 && !autoOpened.has(a.id)) { autoOpened.add(a.id); setOpen(true); threads.view(a.id); }
     agentsTick();
   }
 
@@ -343,7 +363,7 @@ export function mountConsole(H) {
       visual: !nothing && plan ? planBars(plan.total_usd, wait) : "",
       ids: [],
       tag: b.source === "brief" ? "live brief" : "shift plan",
-      extra: !nothing && plan && plan.actions.length ? `<div class="cs-actions"><button type="button" data-try>Try it</button><button type="button" data-plans>All plans</button></div>` : "",
+      extra: !nothing && plan && plan.actions.length ? `<div class="cs-actions"><button type="button" data-try>try it</button><button type="button" data-plans>all plans</button></div>` : "",
       bind(li) {
         const t = li.querySelector("[data-try]");
         if (t) t.onclick = () => { H.setActions(plan.actions.map((x) => ({ ...x }))); stream.line("note", "Showing that plan on the forecast. Nothing was sent."); };
@@ -441,10 +461,10 @@ export function mountConsole(H) {
   }
 
   async function askBackend(text) {
-    if (!BASE) { say("Jarvis needs the backend for that. The 3D view still works: try “open pump 3” or “reset”."); return; }
+    if (!BASE) { say("gaia needs the backend for that. The 3D view still works: try “open pump 3” or “reset”."); return; }
     const t0 = performance.now();
     stream.showTyping("J");
-    const slow = setTimeout(() => stream.showTyping("J", "Asking Claude…"), 2000);
+    const slow = setTimeout(() => stream.showTyping("J", "asking claude…"), 2000);
     let r, out;
     try {
       const sel = H.selected();
@@ -453,7 +473,7 @@ export function mountConsole(H) {
     } catch (e) {
       clearTimeout(slow);
       stream.hideTyping("J");
-      say(e.name === "AbortError" ? "Jarvis took too long to answer. Nothing was sent." : "Can't reach Jarvis. The 3D view and the fix card still work.", { tag: "error" });
+      say(e.name === "AbortError" ? "gaia took too long to answer. Nothing was sent." : "Can't reach gaia. The 3D view and the fix card still work.", { tag: "error" });
       return;
     }
     const wait = 250 - (performance.now() - t0);
@@ -532,9 +552,11 @@ export function mountConsole(H) {
     closeDrawer(false);
     drawerFrom = { el: card, parent: card.parentElement, next: card.nextSibling, id };
     drawer.querySelector(".cs-drawer-body").appendChild(card);
-    drawer.querySelector("#csDrawerName").textContent = panel.toUpperCase();
+    drawer.querySelector("#csDrawerName").textContent = { log: "shift log", whatif: "what-if", walk: "plan walk", asset: "selected", tanks: "tank levels" }[panel] || panel;
     drawer.hidden = false;
     setOpen(true);
+    threads.refresh();
+    requestAnimationFrame(() => drawer.scrollIntoView({ block: "nearest" }));
     return { ok: true, said: "" };
   }
   function closeDrawer(user) {
@@ -543,6 +565,7 @@ export function mountConsole(H) {
     parent.insertBefore(el, next);
     drawerFrom = null;
     drawer.hidden = true;
+    threads.refresh();
     if (user) drawerDismissed = Date.now();
   }
   let drawerDismissed = 0;
@@ -579,16 +602,17 @@ export function mountConsole(H) {
   function setOpen(v) {
     if (open === v) return;
     open = v;
-    side.el.hidden = !v;
+    layout.chat(v);
     document.body.classList.toggle("cs-open", v);
     if (v) unread = false;
     if (!v && handsState() !== "off" && handsState() !== "unavailable") setHands(false); // closing Jarvis turns hands off
-    requestAnimationFrame(() => dispatchEvent(new Event("resize")));
     renderStatus();
   }
   function scrollTo(agent) {
     const li = agent === "FIX" ? side.fix : stream.latest(agent);
-    if (!li || li.hidden) return;
+    if (!li) return;
+    if (li.hidden && li.dataset.thread) threads.view(li.dataset.thread);
+    if (li.hidden) return;
     li.scrollIntoView({ block: "nearest" });
     li.classList.remove("flash");
     void li.offsetWidth;
@@ -598,12 +622,17 @@ export function mountConsole(H) {
     if (seg === "RESET") { const s = resetView(); if (s) say(s); return; }
     if (seg === "F") tbUntil = Date.now() + 10000;
     if (seg === "J") { setOpen(!open); return; }
+    if (seg === "FULL") { setOpen(!open); return; }
+    if (seg === "NOFIELD") { layout.field(false); if (!open) setOpen(true); return; }
     setOpen(true);
     scrollTo(seg);
   }
   function onSide(kind, v) {
     if (kind === "close") setOpen(false);
-    else if (kind === "ask") ask(v);
+    else if (kind === "field") layout.field(true);
+    else if (kind === "nav") layout.nav(!layout.navOpen());
+    else if (kind === "new") threads.newChat();
+    else if (kind === "ask") { setOpen(true); ask(v); }
     else if (kind === "hands") setHands(v);
     else if (kind === "deselect") H.select(null);
   }
@@ -618,61 +647,58 @@ export function mountConsole(H) {
   });
 
   // ------------------------------------------------------- status line ----
+  // One quiet lowercase line over the field: "live · 1 alarm · tank 3 shuts in 55 min · best plan ...".
   function renderStatus() {
     const L = liveFeed.live;
+    const lc = (x) => String(x).toLowerCase();
     let feed;
-    if (!BASE) feed = { level: "amber", text: "No backend", title: "Start the backend with npm run demo." };
+    if (!BASE) feed = { level: "amber", text: "no backend", title: "Start the backend with npm run demo." };
     else if (L.lostSince) {
       const s = Math.floor((Date.now() - L.lostSince) / 1000);
-      feed = { level: "red", text: `Live feed lost ${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}` };
-    } else if (L.connected) feed = { level: "green", text: `Live · ${liveFeed.connectorBadge().map((c) => c.kind).join(", ")}` };
-    else if (L.available) feed = { level: "gray", text: "◌ Polling" };
-    else if (reach === "down") feed = { level: "amber", text: "No backend" };
-    else feed = { level: "gray", text: "Connecting" };
+      feed = { level: "red", text: `live feed lost ${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}` };
+    } else if (L.connected) feed = { level: "green", text: "live", title: `Live from ${liveFeed.connectorBadge().map((c) => c.kind).join(", ")}.` };
+    else if (L.available) feed = { level: "gray", text: "polling" };
+    else if (reach === "down") feed = { level: "amber", text: "no backend" };
+    else feed = { level: "gray", text: "connecting" };
     side.setLive(feed.level, feed.text);
 
     const unknown = unknownTanks();
     const act = activeAlerts().filter((a) => !a.shelved_until);
     const roots = act.filter((a) => !a.root_id || !alerts.has(a.root_id) || a.root_id === a.id);
     let watch;
-    if (alertsDown()) watch = { level: "red", text: DOWN_TEXT };
+    if (alertsDown()) watch = { level: "red", text: lc(DOWN_TEXT) };
     else if (roots.length) {
       const red = act.some((a) => levelOf(a) === "red");
       const amber = act.some((a) => levelOf(a) === "amber");
       const rel = act.length - roots.length;
-      watch = { level: red ? "red" : amber ? "amber" : "gray", text: `${roots.length} ${red ? "alarm" : "alert"}${roots.length === 1 ? "" : "s"}${rel ? ` +${rel}` : ""}${unknown.length ? ` · ${unknown.length} unknown` : ""}` };
-    } else if (unknown.length) watch = { level: "gray hatched", text: `No alarms · ${unknown.length} tank${unknown.length === 1 ? "" : "s"} unknown` };
-    else if (!vouchable()) watch = { level: "gray hatched", text: L.available ? "No alarms · feed not live" : "No live alerts · no live feed" };
-    else watch = { level: "gray", text: "No alarms" };
+      watch = { level: red ? "red" : amber ? "amber" : "gray", text: `${roots.length} ${red ? "alarm" : "alert"}${roots.length === 1 ? "" : "s"}${rel ? `, ${rel} related` : ""}${unknown.length ? ` · ${unknown.length} unknown` : ""}` };
+    } else if (unknown.length) watch = { level: "gray", text: `no alarms · ${unknown.length} tank${unknown.length === 1 ? "" : "s"} unknown` };
+    else if (!vouchable()) watch = { level: "gray", text: L.available ? "no alarms · feed not live" : "no live alerts · no live feed" };
+    else watch = { level: "gray", text: "no alarms" };
 
     const b = computeBrief();
     const cd = b.countdown;
     const n = nowMin();
     const left = cd ? minsUntil(cd.at, n) : null;
-    const cdText = cd ? `${nice(cd.asset_id)} ${left != null && left <= 0 ? "at shutdown" : `${Math.max(0, Math.round(left))} min`}` : "";
+    const cdText = cd ? lc(`${nice(cd.asset_id)} ${left != null && left <= 0 ? "is at shutdown" : `shuts in ${Math.max(0, Math.round(left))} min`}`) : "";
     let ftext;
-    if (L.lostSince) ftext = `Can't vouch: feed lost${cd ? ` · ${cdText}` : ""}`;
-    else if (unknown.length) ftext = `Can't vouch for ${andList(unknown.map(nice))}${cd ? ` · ${cdText}` : ""}`;
-    else ftext = cd ? cdText : vouchable() ? "No shutdown in 6 h" : "No shutdown forecast · not live";
+    if (L.lostSince) ftext = `can't vouch: feed lost${cd ? ` · ${cdText}` : ""}`;
+    else if (unknown.length) ftext = `can't vouch for ${lc(andList(unknown.map(nice)))}${cd ? ` · ${cdText}` : ""}`;
+    else ftext = cd ? cdText : vouchable() ? "no shutdown in 6 h" : "no shutdown forecast · not live";
     const src = b.source === "brief" ? "the live brief" : b.from === "alerts" ? "the backend's live forecast (alerts)" : "the shift forecast (/api/forecast, every 30 s)";
-    // Short forms for the narrowed line while Jarvis is open (the stream beside it has the words).
-    watch.short = alertsDown() ? "Backend down" : roots.length ? `${roots.length}${act.length - roots.length ? ` +${act.length - roots.length}` : ""}${unknown.length ? ` · ${unknown.length}?` : ""}` : unknown.length ? `${unknown.length} unknown` : vouchable() ? "0" : "not live";
-    const shortCd = cd ? `${nice(cd.asset_id).replace(/^Tank /, "T")} ${left != null && left <= 0 ? "now" : `${Math.max(0, Math.round(left))}m`}` : "";
-    const fshort = L.lostSince ? "Feed lost" : unknown.length ? `Can't vouch ${unknown.map((x) => nice(x).replace(/^Tank /, "T")).join(",")}${cd ? ` · ${shortCd}` : ""}` : cd ? shortCd : vouchable() ? "none 6h" : "not live";
-    const forecast = { short: fshort, bar: countdownBar(cd, n, unknown.length || L.lostSince ? unknown.concat(L.lostSince ? ["*"] : []) : [], { mini: true }), text: ftext, unknown: unknown.length > 0,
+    const forecast = { text: ftext, unknown: unknown.length > 0,
       title: cd ? `${nice(cd.asset_id)} shuts in at ${clock12(cd.at)}${cd.low != null && cd.high != null ? ` (${clock12(cd.low)} to ${clock12(cd.high)})` : ""}, from ${src}.` : `From ${src}.` };
 
     const plan = b.plans.robust;
     const nothing = !cd && !unknown.length && vouchable();
-    const planSeg = nothing ? { text: "No fix needed" } : plan ? { text: `${usd(plan.total_usd)} vs ${usd(b.do_nothing_usd)}`, title: `Cheapest robust fix vs doing nothing, from ${b.source === "brief" ? "the live brief" : "the shift plans"}.` } : { text: "—" };
+    const planSeg = nothing ? { text: "no fix needed" } : plan ? { text: `best plan ${usd(plan.total_usd)} vs ${usd(b.do_nothing_usd)} if nothing changes`, title: `Cheapest robust fix vs doing nothing, from ${b.source === "brief" ? "the live brief" : "the shift plans"}.` } : { text: "" };
 
     status.render({
-      clock: nowClock(), feed, watch, forecast, plan: planSeg,
-      pending: fix.pending().length, unread, open,
-      isolated: (view().state() || {}).isolated ? nice(view().state().isolated) : "",
+      clock: lc(nowClock()), feed, watch, forecast, plan: planSeg,
+      pending: fix.pending().length, unread, open, full: !open,
+      isolated: (view().state() || {}).isolated ? lc(nice(view().state().isolated)) : "",
     });
-    tab.querySelector(".cs-unread").hidden = !unread;
-    tab.hidden = open;
+    tab.hidden = true;
   }
 
   // ------------------------------------------------------------ socket ----
@@ -699,6 +725,7 @@ export function mountConsole(H) {
       if (sc && row) row.insertBefore(sc, row.querySelector(".cs-skybtn"));
       agentsTick();
       renderStatus();
+      intro.ready();
       void root;
     },
     update() {
@@ -721,6 +748,7 @@ export function mountConsole(H) {
     brief: () => computeBrief(), countdown: () => { const b = computeBrief(); return b.countdown ? { ...b.countdown, clock: clock12(b.countdown.at) } : null; },
     unknown: () => unknownTanks(), now: () => nowMin(), reach: () => reach, vouchable: () => vouchable(), card: () => fix.shown(), cardLog: () => fix.log(),
     ask: (t) => ask(t), view: () => view(), reset: () => api.reset(), directives: () => directives.seen(),
+    threads: () => threads.list(), thread: (id) => (id ? threads.view(id) : threads.viewing()), intro: () => intro.state(),
   };
   return api;
 }

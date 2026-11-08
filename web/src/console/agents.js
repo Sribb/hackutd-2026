@@ -15,7 +15,7 @@
 
 import { esc } from "./stream.js";
 
-export const usd = (n) => (n == null || !isFinite(n) ? "—" : "$" + Math.round(n).toLocaleString("en-US"));
+export const usd = (n) => (n == null || !isFinite(n) ? "n/a" : "$" + Math.round(n).toLocaleString("en-US"));
 
 // "2:47 AM", "02:47", "2:47" -> minutes of the day.
 export function toMin(clock) {
@@ -160,7 +160,7 @@ export function forecastText(cd, nowMin, unknown, feedLost, nice, fromAlerts) {
   if (!cd) {
     return short(`${blind}${fromAlerts ? "No live alert leads to a shutdown in the next 6 hours." : `No tank${unknown.length ? " with a reading" : ""} reaches shutdown in the next 6 hours if nothing changes.`}`);
   }
-  const band = cd.low != null && cd.high != null ? ` (${clock12(cd.low).replace(/ [AP]M$/, "")}–${clock12(cd.high)})` : "";
+  const band = cd.low != null && cd.high != null ? ` (${clock12(cd.low).replace(/ [AP]M$/, "")} to ${clock12(cd.high)})` : "";
   const left = minsUntil(cd.at, nowMin);
   const when = left != null && left <= 0 ? `is at shutdown now (forecast ${clock12(cd.at)})` : `shuts in at ${clock12(cd.at)}${band} if nobody acts`;
   return short(`${blind}${nice(cd.asset_id)} ${when}.${cd.wells ? ` ${plural(cd.wells, "well")} go${cd.wells === 1 ? "es" : ""} down.` : ""}`, 180);
@@ -169,7 +169,7 @@ export function forecastText(cd, nowMin, unknown, feedLost, nice, fromAlerts) {
 export function plannerText(plan, wait, cd, unknown) {
   if (!plan) {
     if (!cd && !unknown.length) return "No fix needed: nothing shuts down in the next 6 hours.";
-    return unknown.length && !cd ? "No plan can vouch for a tank with no reading. Check it in person." : "No plan keeps every well running. Ask Jarvis for options.";
+    return unknown.length && !cd ? "No plan can vouch for a tank with no reading. Check it in person." : "No plan keeps every well running. Ask gaia for options.";
   }
   const start = plan.expires_clock ? ` Start by ${plan.expires_clock}.` : "";
   const first = (plan.summary.split(/(?<=\.)\s/)[0] || plan.summary).replace(/\.$/, "");
