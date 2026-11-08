@@ -157,6 +157,7 @@ button.try.on { border-color: var(--trying); color: var(--trying); }
 .run { border-color: var(--ink-2); }
 .run .plan-btns { margin-left: 0; }
 .run-sum { font-size: 13px; color: var(--ink-2); margin: 2px 0 6px; }
+.run-sum .bad { color: var(--alarm); }
 .run-sum b { font-family: var(--mono); color: var(--ink); }
 .run-head { font: 600 12px var(--mono); margin-bottom: 8px; color: var(--ink); }
 .run-head.PAUSED, .run-head.CANCELLING { color: var(--warning); }

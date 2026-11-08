@@ -50,6 +50,13 @@ export function clockNow(seconds = false, plusMin = 0) {
   return `${hh % 12 || 12}:${String(mm).padStart(2, "0")}${sec} ${hh < 12 ? "AM" : "PM"}`;
 }
 
+// While the console is open the log is alive, written or not: a quiet half hour followed by a
+// reload must keep it. Only a log nobody had open for 30 min is a rehearsal.
+setInterval(() => {
+  if (!list.length) return;
+  try { localStorage.setItem(key, JSON.stringify({ t0, last: Date.now(), list })); } catch { /* private window */ }
+}, 60000);
+
 export function add(kind, text) {
   list.push({ at: clockNow(), kind, text });
   try { localStorage.setItem(key, JSON.stringify({ t0, last: Date.now(), list })); } catch { /* private window: keep it in memory */ }

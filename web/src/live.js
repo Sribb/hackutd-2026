@@ -15,6 +15,7 @@ let heard = false;       // this socket delivered a message
 let queryToken = false;  // fall back to /ws?token= (a backend without first-message auth)
 let authed = false, authTimer = 0;
 let sentAuth = "", rejected = "";
+let lastMsgAt = 0, ticks = 0;  // a socket that ticks state every second and then goes quiet is lost
 const subs = new Map(); // type -> Set(fn)
 
 export const live = {
@@ -79,8 +80,9 @@ async function poll() {
       return; // this backend has no live layer yet; stay quiet and don't mark anything
     }
   } catch {
-    // One failed poll while the socket still carries state is a blip, not a lost feed.
-    if (!live.connected) markLost(true);
+    // One failed poll while the socket still carries state is a blip, not a lost feed. A socket
+    // that says it's open but has delivered nothing for 6 s doesn't count.
+    if (!live.connected || Date.now() - lastMsgAt > 6000) markLost(true);
   }
   // While the socket is up it carries state; poll slowly as a safety net, faster when it's down.
   pollTimer = setTimeout(poll, live.connected ? 15000 : 3000);
@@ -124,6 +126,7 @@ function connect() {
     // (a refused ?token=) must not get a 1 Hz loop, each try counted as a wrong token.
     if (!heard) tries = 0;
     heard = true;
+    lastMsgAt = Date.now();
     let msg;
     try { msg = JSON.parse(m.data); } catch { return; }
     if (msg.type === "auth") {
@@ -132,6 +135,7 @@ function connect() {
       emit("auth", msg);
     } else if (msg.type === "state") {
       mergeState(msg.state || msg);
+      ticks++;
       markLost(false);
       emit("state", live);
     } else {
@@ -163,6 +167,15 @@ export function send(msg) {
   ws.send(JSON.stringify(msg));
   return true;
 }
+
+// Half-open socket (Wi-Fi drop with no close event): once the socket has shown it sends state
+// every second, 6 s of silence means the feed is lost. Close it so the reconnect starts.
+setInterval(() => {
+  if (!ws || !live.connected || ticks < 3 || Date.now() - lastMsgAt < 6000) return;
+  markLost(true);
+  ticks = 0;
+  try { ws.close(); } catch { /* gone */ }
+}, 2000);
 
 function retry() {
   setTimeout(connect, Math.min(15000, 1000 * 2 ** tries++));

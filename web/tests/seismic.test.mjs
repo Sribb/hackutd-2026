@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 const SRC = new URL("../src", import.meta.url).href;
 const store = new Map();
 globalThis.location = { search: "" };
+globalThis.setInterval = () => 0;
 globalThis.sessionStorage = { getItem: (k) => store.get(k) ?? null, setItem: (k, v) => store.set(k, v), removeItem: (k) => store.delete(k) };
 let answer = null;
 globalThis.fetch = async () => (answer ? { ok: true, status: 200, json: async () => answer } : { ok: false, status: 503, json: async () => ({}) });

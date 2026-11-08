@@ -103,7 +103,14 @@ const fresh = (w) => w && w.status === "ok" && (w.drill || Date.now() - w.at <= 
 
 // What the weather means for people outside, per rule. Empty when nothing applies.
 export function hazards(w = state) {
-  if (!fresh(w)) return [];
+  if (!w || w.status !== "ok") return [];
+  // Old reading: the grid numbers are out of date, but a warning whose end time hasn't come is
+  // still in force. Keep those, marked with how old the reading is.
+  if (!fresh(w)) {
+    const age = Math.round((Date.now() - w.at) / 60000);
+    const live = { ...w, thunderPct: null, gustKmh: null, visM: null, alerts: (w.alerts || []).filter((a) => a.ends && a.ends > Date.now()), at: Date.now() };
+    return hazards(live).map((h) => ({ ...h, text: `${h.text} (as of ${age} min ago)` }));
+  }
   const ev = (re) => w.alerts.find((a) => re.test(a.event || ""));
   const out = [];
   const storm = ev(/thunderstorm|tornado/i);

@@ -40,7 +40,7 @@ let box = null;
 let openRow = null;         // root id whose related alarms are shown
 let shelving = null;        // alert id with the shelve form open
 let formMsg = "";
-let loadSeq = 0;            // GET /api/alerts in flight; socket updates stamp the seq they arrived under
+let loadSeq = 0, applied = 0; // applied: the newest load whose answer is on screen            // GET /api/alerts in flight; socket updates stamp the seq they arrived under
 const touched = new Map();  // id -> loadSeq when the socket last changed it
 let loadedOnce = false;     // the alerts feed answered at least once
 let loadError = "";         // why the last load failed, while it keeps failing
@@ -169,6 +169,9 @@ async function load() {
     if (r.status === 404) return useDerived();
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const j = await r.json();
+    // Loads overlap (boot, feed recovery, the 30 s timer). An older answer never overwrites a newer one.
+    if (seq < applied) return;
+    applied = seq;
     derived = false;
     // The snapshot is as old as the request. A row the socket changed after the request went
     // out is newer than the snapshot: keep the socket's version (a new P1 raised, or a

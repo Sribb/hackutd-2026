@@ -61,14 +61,15 @@ export async function runsSupported() {
   if (supported != null || !base) return !!supported;
   try {
     const r = await fetch(`${base}/api/runs`);
-    supported = r.ok;
+    // Only a 404 means "no plan runs here". A 5xx or a restart is asked again next time.
+    supported = r.ok ? true : r.status === 404 ? false : null;
     if (r.ok) {
       const j = await r.json();
       const active = (j.runs || []).filter((x) => ACTIVE.has(x.status) && x.started !== false);
       if (active.length) setRun(active[active.length - 1]);
     }
-  } catch { supported = false; }
-  return supported;
+  } catch { supported = null; }
+  return !!supported;
 }
 
 // The backend's 409 text ends with "Execute plan_x to run it.", an instruction for API callers.
@@ -77,6 +78,16 @@ const plain = (t) => String(t || "").replace(/\s*Execute plan_\w+ to run it\.?/,
 // Same commands (type, asset, value, target), whatever their timing. A re-scored plan with the
 // same commands is what the person already held to approve, so it can start without asking twice.
 const key = (a) => `${a.type}|${a.asset_id}|${a.value ?? ""}|${a.target_id ?? ""}`;
+// Same outcome too: still keeps every tank running, same robustness, same tanks it can't save,
+// and a cost within 10%. Anything else is a different plan, and goes back to the person.
+function sameOutcome(a, b) {
+  const cost = (p) => (p.cost && typeof p.cost === "object" ? p.cost.total_usd : p.cost_usd);
+  const ca = cost(a), cb = cost(b);
+  return (a.keeps_running !== false) === (b.keeps_running !== false)
+    && (a.robust === true) === (b.robust === true)
+    && JSON.stringify((a.cannot_save || []).slice().sort()) === JSON.stringify((b.cannot_save || []).slice().sort())
+    && typeof ca === "number" && typeof cb === "number" && Math.abs(cb - ca) <= 0.1 * Math.max(ca, 1);
+}
 function sameActions(a, b) {
   const x = ((a && a.actions) || (a && a.steps ? a.steps.map((s) => s.action) : [])).map(key).sort();
   const y = ((b && b.actions) || []).map(key).sort();
@@ -155,7 +166,7 @@ function draw() {
   const steps = r ? r.steps : [];
   const done = steps.filter((s) => s.status === "DONE").length;
   box.innerHTML = `<div class="kicker">Plan run${r ? ` · ${esc(r.status)}` : ""}${r ? ` · ${done} of ${steps.length} done` : ""}</div>
-    ${r ? `<div class="run-sum">${esc(r.summary.split(". ")[0])}. <b>${hooks.usd(r.cost_usd)}</b>${r.robust === false ? ` <span class="muted">· not enough if inflow runs 15% high</span>` : ""}</div>
+    ${r ? `<div class="run-sum">${esc(r.summary.split(". ")[0])}. <b>${hooks.usd(r.cost_usd)}</b>${r.keeps_running === false ? ` <span class="bad">· does not keep every tank below shutdown</span>` : r.robust === false ? ` <span class="muted">· not enough if inflow runs 15% high</span>` : ""}</div>
       <div class="run-head ${esc(r.status)}">${esc(headline(r))}</div>
       <ol class="run-steps">${steps.map((s) => {
         const st = stepState(s);
@@ -203,6 +214,13 @@ function setRun(r) {
   if (!r) return;
   // An offered re-plan (not started) never replaces the run on screen: it shows as an offer.
   if (run && r.id !== run.id && r.started === false) return;
+  // Snapshots arrive out of order (a slow GET after a ws message). A run never leaves a final
+  // status, and never goes back from CANCELLING to RUNNING: drop such an older snapshot.
+  if (run && r.id === run.id) {
+    const FINAL = new Set(["DONE", "FAILED", "CANCELLED"]);
+    if (FINAL.has(run.status) && !FINAL.has(r.status)) return;
+    if (run.status === "CANCELLING" && (r.status === "RUNNING" || r.status === "PAUSED")) return;
+  }
   const was = run && run.id === r.id ? run.status : "";
   run = r;
   if (r.status !== was) {
@@ -220,6 +238,8 @@ async function loadReplan(id) {
   if (offer && offer.run && offer.run.id === id) return;
   try {
     const nr = await call(`/api/runs/${encodeURIComponent(id)}`);
+    // The answer may be late: only show it if it is still this run's offer and still on offer.
+    if (!run || run.replan_run_id !== id || nr.status !== "PAUSED" || nr.started !== false) { draw(); return; }
     offer = { kind: "replan", run: nr, text: `${nr.summary.split(". ")[0]}. ${hooks.usd(nr.cost_usd)}${run && run.replan_source ? ` (picked by ${run.replan_source === "claude" ? "Jarvis" : "the rules: cheapest that holds"})` : ""}${run && run.excluded && run.excluded.length ? `. Avoids ${run.excluded.map(hooks.nice).join(", ")}.` : "."}${run && run.note ? ` ${run.note}` : ""}` };
   } catch { /* the paused run still shows its reason */ }
   draw();
@@ -245,7 +265,7 @@ async function takeOffer() {
     if (e.status === 409 && e.body && e.body.stale_plan_id && o.run) {
       // The offered re-plan went out of date while it waited. Same commands re-scored on the live
       // state: start that, since it is what the person just held to run. Otherwise offer it.
-      if (fresh && sameActions(o.run, fresh)) { offer = null; await execute(fresh, { approved: true }); return; }
+      if (fresh && sameActions(o.run, fresh) && sameOutcome(o.run, fresh)) { offer = null; await execute(fresh, { approved: true }); return; }
       offer = { kind: "stale", plan: fresh || null, text: plain(e.message) + (fresh ? "" : " Nothing needs doing now.") };
     } else note = plain(e.message);
   }
@@ -296,7 +316,7 @@ export async function execute(plan, opts = {}) {
       // Plans on the list are scored at the scenario's start, so they age by the live minute. If
       // the live state still calls for the same commands, start that once: the person held to
       // approve exactly these. Different commands always go back to the person.
-      if (fresh && !opts.retried && sameActions(plan, fresh)) {
+      if (fresh && !opts.retried && sameActions(plan, fresh) && sameOutcome(plan, fresh)) {
         hooks.log(`Re-scored on the live state: same steps, new times. Starting it.`);
         return execute(fresh, { ...opts, retried: true });
       }

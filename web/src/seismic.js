@@ -60,8 +60,10 @@ async function fetchQuakes(site) {
   const signal = typeof AbortSignal !== "undefined" && AbortSignal.timeout ? AbortSignal.timeout(6000) : undefined;
   const r = await fetch(url, { signal });
   if (!r.ok) throw new Error(`USGS ${r.status}`);
-  return { status: "ok", drill: false, at: Date.now(), source: "USGS / TexNet", quakes: parse(await r.json(), site) };
+  return { status: "ok", drill: false, at: Date.now(), site: siteKey(site), source: "USGS / TexNet", quakes: parse(await r.json(), site) };
 }
+
+const siteKey = (site) => `${Number(site.lat).toFixed(3)},${Number(site.lon).toFixed(3)}`;
 
 export function quakes() { return state; }
 export function onQuakes(fn) { subs.add(fn); return () => subs.delete(fn); }
@@ -76,13 +78,22 @@ export async function startSeismic(site, { offline = false } = {}) {
   if (offline) return set({ status: "unavailable", why: "offline mode" });
   if (!site || !Number.isFinite(Number(site.lat)) || !Number.isFinite(Number(site.lon))) return set({ status: "unavailable", why: "no site location" });
   try {
+    // Another site's quakes are never "near the lease": the cache is per site.
     const cached = JSON.parse(sessionStorage.getItem(KEY) || "null");
-    if (cached && Date.now() - cached.at < CACHE_MS) return set(cached);
+    if (cached && cached.site === siteKey(site) && Date.now() - cached.at < CACHE_MS) { set(cached); setInterval(() => load(), CACHE_MS); return; }
   } catch { /* ignore */ }
-  try { set(await fetchQuakes(site)); } catch (e) { set({ status: "unavailable", why: e.message || "no answer" }); }
+  async function load() { try { set(await fetchQuakes(site)); } catch (e) { if (state.status !== "ok") set({ status: "unavailable", why: e.message || "no answer" }); } }
+  await load();
+  setInterval(load, CACHE_MS);
 }
 
-const ago = (t) => { const d = Math.round((Date.now() - t) / 86400000); return d < 1 ? "today" : d === 1 ? "yesterday" : `${d} days ago`; };
+// Calendar days on this computer's clock: an 11 PM quake seen at 1 AM was yesterday.
+const ago = (t) => {
+  const day = (ms) => { const d = new Date(ms); return Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()) / 86400000; };
+  const d = day(Date.now()) - day(t);
+  return d < 1 ? "today" : d === 1 ? "yesterday" : `${d} days ago`;
+};
+const asOf = (s) => (s.drill ? "" : ` As of ${new Date(s.at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}.`);
 const mi = (k) => `${Math.round(k / 1.609)} mi`;
 
 // { flag, line, detail } for the panel and the handoff. flag: true when disposal capacity
@@ -99,13 +110,13 @@ export function seismicSummary(s = state, swds = []) {
     return {
       flag: true,
       line: `${tag}M${q.mag.toFixed(1)} ${mi(q.km)} away, ${ago(q.t)}. Confirm ${swdText} can take water.`,
-      detail: `${q.place} (${s.source}). Texas RRC limits disposal near quake clusters area by area: every deep SWD permit in the Northern Culberson-Reeves area was suspended from Jan 12, 2024. Context for planning, not an alarm.`,
+      detail: `${q.place} (${s.source}).${asOf(s)} Texas RRC limits disposal near quake clusters area by area: every deep SWD permit in the Northern Culberson-Reeves area was suspended from Jan 12, 2024. Context for planning, not an alarm.`,
     };
   }
-  if (!a.count) return { flag: false, line: `${tag}no M2+ quakes ${where}`, detail: `${s.source}.` };
+  if (!a.count) return { flag: false, line: `${tag}no M2+ quakes ${where}`, detail: `${s.source}.${asOf(s)}` };
   return {
     flag: false,
     line: `${tag}${a.near ? `${a.near} small quake${a.near === 1 ? "" : "s"} within 10 mi` : "none within 10 mi"}; ${a.count} M2+ ${where}`,
-    detail: `Largest M${a.largest.mag.toFixed(1)}, ${a.largest.place}. Nearest ${mi(a.nearest.km)} (M${a.nearest.mag.toFixed(1)}). ${s.source}. Nothing M${WATCH_MAG.toFixed(1)}+ within 10 mi.`,
+    detail: `Largest M${a.largest.mag.toFixed(1)}, ${a.largest.place}. Nearest ${mi(a.nearest.km)} (M${a.nearest.mag.toFixed(1)}). ${s.source}.${asOf(s)} Nothing M${WATCH_MAG.toFixed(1)}+ within 10 mi.`,
   };
 }

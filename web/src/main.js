@@ -637,9 +637,13 @@ function renderWhatif() {
   else if (!now) {
     const blind = blindTanks();
     // A plan the planner calls fragile holds only at the forecast inflow: never plain green.
-    const fragile = (planFor(actions) || {}).robust === false;
-    const text = noShutdownText(blind).replace(/\.$/, fragile ? " at the forecast inflow. Not if inflow runs 15% high." : ".");
-    verdict = `<div class="verdict ${blind.length || fragile ? "warn" : "good"}" data-decode="verdict">${text}</div>`;
+    // Only a plan the planner checked at +15% inflow gets plain green. Fragile: amber, and says so.
+    // Not checked (a hand-made what-if): says it holds at the forecast inflow.
+    const robust = (planFor(actions) || {}).robust;
+    const [first, ...rest] = noShutdownText(blind).split(/(?<=\.) /);
+    const clause = robust === true ? "" : robust === false ? " Not if inflow runs 15% high." : " Not checked at +15% inflow.";
+    const text = `${robust === true ? first : first.replace(/\.$/, " at the forecast inflow.")}${clause}${rest.length ? ` ${rest.join(" ")}` : ""}`;
+    verdict = `<div class="verdict ${blind.length || robust === false ? "warn" : "good"}" data-decode="verdict">${text}</div>`;
   }
   else {
     const gained = base ? Math.round(now.t_min - base.t_min) : 0;
@@ -706,7 +710,9 @@ function renderPlans() {
     const dl = deadlineFor(p);
     const hold = p.robust === true ? "Holds even if inflow runs 15% high" : p.robust === false ? "Holds at the forecast inflow, not at +15%" : "";
     const stamp = [dl ? `Start by ${dl.clock}` : "", hold].filter(Boolean).join(" · ");
-    const mine = approved && approved.plan.id === p.id;
+    // An approved plan whose run was cancelled or failed can be approved again.
+    const mine = approved && approved.plan.id === p.id && !approved.ended;
+    const endedHere = approved && approved.plan.id === p.id && approved.ended;
     const out = exposure(p, field);
     const roles = {};
     out.forEach((o) => { roles[o.who] = (roles[o.who] || 0) + 1; });
@@ -717,8 +723,9 @@ function renderPlans() {
       ${stamp ? `<div class="stamp ${p.robust === false ? "fragile" : ""}">${stamp}</div>` : ""}
       ${p.keeps_running === false ? `<div class="stamp fragile">Can't save: ${(p.cannot_save || []).map(nice).join(", ")}</div>` : ""}
       <div class="stamp who ${risky ? "fragile" : hz.length ? "safe" : ""}">${esc(who)}${risky ? ` · in ${esc(hz.map((h) => h.key).join(", "))}` : ""}</div>
+      ${endedHere ? `<div class="stamp fragile">Run ${esc(approved.ended.toLowerCase())} at ${approved.done} of ${approved.steps.length} done</div>` : ""}
       ${mine ? `<div class="approved-stamp">Approved ${esc(approved.at)} · ${approved.done} of ${approved.steps.length} done</div>`
-        : `<div class="plan-btns"><button data-try="${i}">Try it</button><button class="primary hold" data-approve="${i}" title="Press and hold to approve"><i></i><span>${approved ? "Hold to approve instead" : risky ? `Hold to approve · ${out.length} out` : "Hold to approve"}</span></button></div>`}
+        : `<div class="plan-btns"><button data-try="${i}">Try it</button><button class="primary hold" data-approve="${i}" title="Press and hold to approve"><i></i><span>${approved && !approved.ended ? "Hold to approve instead" : risky ? `Hold to approve · ${out.length} out` : "Hold to approve"}</span></button></div>`}
     </div>`;
   }).join("") + (list.length > show.size ? `<button class="link more-plans" data-more>${allPlans ? "Fewer plans ▴" : `${hidden} more plan${hidden === 1 ? "" : "s"} ▸`}</button>` : "");
   const more = box.querySelector("[data-more]");
@@ -1018,7 +1025,7 @@ function handoffText() {
   head(4, "APPROVED PLAN");
   if (!approved) L.push("  No plan approved yet.");
   else {
-    L.push(`  Approved ${approved.at}: ${approved.plan.summary} (${usd(approved.plan.cost.total_usd)}).`);
+    L.push(`  Approved ${approved.at}: ${approved.plan.summary} (${usd(approved.plan.cost.total_usd)}).${approved.ended ? ` The run ended ${approved.ended}${approved.reason ? `: ${approved.reason}` : ""}.` : ""}`);
     approved.steps.forEach((s, i) => {
       // Run steps carry their own status (#75); a static walk counts steps walked.
       const word = s.status ? (s.status === "DONE" ? "done" : s.status.toLowerCase()) : i < approved.done ? "done" : "pending";
@@ -1028,7 +1035,8 @@ function handoffText() {
 
   head(5, "NEXT DEADLINE");
   const lc = data.lc;
-  if (approved) L.push(approved.done >= approved.steps.length ? "  Every step of the approved plan is done." : `  Finish the approved plan: ${approved.steps.length - approved.done} step${approved.steps.length - approved.done === 1 ? "" : "s"} still pending.`);
+  if (approved && approved.ended) L.push(`  The approved plan's run ended ${approved.ended} with ${approved.done} of ${approved.steps.length} steps done. Nothing more from it reaches equipment; choose a plan again.`);
+  else if (approved) L.push(approved.done >= approved.steps.length ? "  Every step of the approved plan is done." : `  Finish the approved plan: ${approved.steps.length - approved.done} step${approved.steps.length - approved.done === 1 ? "" : "s"} still pending.`);
   if (lc && lc.options && lc.options.length) {
     L.push(`  Last Call: the cheapest plan (${usd(lc.options[0].cost.total_usd)}) only works if started by ${lc.options[0].expires_clock}.`);
     if (lc.point_of_no_return) L.push(`  After ${lc.point_of_no_return.clock}, nothing keeps every well online.`);
@@ -1254,9 +1262,14 @@ addEventListener("pointerdown", (e) => { pressInSide = !!(e.target && e.target.c
 const released = () => { pressInSide = false; if (renderQueued) { renderQueued = false; setTimeout(() => { if (data) { renderFeed(); render(); } }, 0); } };
 addEventListener("pointerup", released, true);
 addEventListener("pointercancel", released, true);
+let queuedAt = 0;
 liveFeed.on("state", () => {
   if (!data) return;
-  if (pressInSide) { renderQueued = true; return; }
+  // At most 1.5 s: a press with no release (a scrollbar drag, a release outside the window)
+  // must not freeze the levels and the clock.
+  if (pressInSide && (!renderQueued || Date.now() - queuedAt < 1500)) { if (!renderQueued) queuedAt = Date.now(); renderQueued = true; return; }
+  pressInSide = false;
+  renderQueued = false;
   renderFeed();
   render();
 });
@@ -1299,7 +1312,7 @@ mountTwoNights({
   fc: () => fc,
   plans: () => (data && data.plans && data.plans.plans) || [],
   lastCall: () => (data && data.lc) || null,
-  approved: () => (approved ? approved.plan : null),
+  approved: () => (approved && !approved.ended ? approved.plan : null),
   incident: () => data.state.incident,
   getActions: () => actions.map((a) => ({ ...a })),
   setActions: (list, quiet) => setActions(list, "", quiet),
@@ -1439,11 +1452,16 @@ async function boot() {
     log: (text) => { shiftlog.add("step", text); renderLog(); },
     progress: (r) => {
       if (!approved || approved.run !== r.id) {
-        if (!approved || approved.run) approved = { plan: { id: r.plan_id, summary: r.summary, cost: { total_usd: r.cost_usd }, actions: r.steps.map((s) => s.action).filter(Boolean) }, steps: r.steps, done: 0, at: shiftlog.clockNow(), run: r.id };
+        // "01:48" from the backend is when the run started; a reload must not restamp it.
+        const st = /^(\d{1,2}):(\d{2})$/.exec(r.start_clock || "");
+        const at = st ? `${(+st[1] % 12) || 12}:${st[2]} ${+st[1] < 12 ? "AM" : "PM"}` : shiftlog.clockNow();
+        if (!approved || approved.run) approved = { plan: { id: r.plan_id, summary: r.summary, cost: { total_usd: r.cost_usd }, actions: r.steps.map((s) => s.action).filter(Boolean) }, steps: r.steps, done: 0, at, run: r.id };
         else return;
       }
       approved.steps = r.steps;
       approved.done = r.steps.filter((s) => s.status === "DONE").length;
+      approved.ended = r.status === "FAILED" || r.status === "CANCELLED" ? r.status : null;
+      approved.reason = approved.ended ? String(r.reason || "").replace(/\.+$/, "") : "";
       approved.logged = approved.logged || new Set();
       let fresh = false;
       for (const s of r.steps) {

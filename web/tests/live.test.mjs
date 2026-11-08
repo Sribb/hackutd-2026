@@ -30,5 +30,16 @@ now += 120_000; // 30 live minutes later
 const after = L.clockEstimate();
 assert.equal(after.estimated, true);
 assert.equal(after.clock, "02:35", `clock carries on while lost (${before.clock} -> ${after.clock})`);
+// Half-open socket (review 2, #1): it ticked state, then went silent without closing. Lost within ~8 s.
+down = false;
+sock.onopen && sock.onopen();
+const tick = () => sock.onmessage({ data: JSON.stringify({ type: "state", state: { clock: "02:40", t: 60, speed: 0.25, assets: { TANK_3: { status: "OK", level_pct: 61, age_min: 0 } } } }) });
+tick(); tick(); tick();
+assert.equal(L.live.lostSince, null, "ticking: not lost");
+down = true;
+now += 7000;
+await new Promise((r) => setTimeout(r, 2100));
+assert.ok(L.live.lostSince, "silent for 7 s after ticking: lost");
+assert.equal(L.reading("TANK_3").stale, true);
 console.log("live.js: all checks pass");
 process.exit(0);
