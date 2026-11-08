@@ -1001,33 +1001,36 @@ function traces(f, alert) {
 // README: "select anything on the network and plot any of its sensor readings". Any
 // sensor of this facility (its wells, tank, pump, pipeline) or its disposal site. Picks of
 // the same metric share one chart, up to four, so every chart keeps one unit and one axis.
+// "receive_flow_bpd" reads "receive flow": the unit sits beside the title already.
+const metricName = (m) => m.replace(/_(bpd|psi|pct|mcfd)$/, "").replace(/_/g, " ");
 const unitOf = (m) => (/_pct$/.test(m) ? "% full" : /_bpd$/.test(m) ? "bbl/day" : /_mcfd$/.test(m) ? "mcf/day" : /_psi$/.test(m) ? "psi" : m === "status" ? "0 off · 1 on · 2 fault" : m);
 function pickedCharts(f, wrap, add, R) {
   const sys = facilityOf(f.id)?.s;
   const assets = [f.id, f.tank.id, f.pump.id, f.pipeline.id, ...f.wells.map((w) => w.id), sys?.disposal_site?.id].filter(Boolean);
   const picked = (state.picked ||= new Map()).get(f.id) || [];
+  const full = (m) => picked.filter((k) => k.split("|")[1] === m).length >= 4;
   const bar = document.createElement("div");
   bar.className = "ds-pick";
   const opts = assets.map((a) => {
     const ms = state.store.metrics(a).filter((m) => !picked.includes(`${a}|${m}`));
-    return ms.length ? `<optgroup label="${esc(a)}">${ms.map((m) => `<option value="${esc(a)}|${esc(m)}">${esc(a)} · ${esc(m)}</option>`).join("")}</optgroup>` : "";
+    // A metric whose chart already holds four can't take a fifth: say so in the list.
+    return ms.length ? `<optgroup label="${esc(a)}">${ms.map((m) => `<option value="${esc(a)}|${esc(m)}" ${full(m) ? "disabled" : ""}>${esc(a)} · ${esc(metricName(m))}${full(m) ? " (chart full)" : ""}</option>`).join("")}</optgroup>` : "";
   }).join("");
   bar.innerHTML = `<span class="kicker">Plot any sensor</span><select aria-label="Add a sensor to plot"><option value="">add a sensor…</option>${opts}</select>
-    ${picked.map((k) => `<span class="ds-chip">${esc(k.replace("|", " · "))}<button type="button" data-k="${esc(k)}" aria-label="Remove ${esc(k)}">×</button></span>`).join("")}`;
+    ${picked.map((k) => `<span class="ds-chip">${esc(k.split("|")[0] + " · " + metricName(k.split("|")[1]))}<button type="button" data-k="${esc(k)}" aria-label="Remove ${esc(k)}">×</button></span>`).join("")}`;
   wrap.appendChild(bar);
   const set = (list) => { state.picked.set(f.id, list); renderDetail(); };
   bar.querySelector("select").onchange = (e) => {
     const k = e.target.value;
     if (!k) return;
-    const m = k.split("|")[1];
-    if (picked.filter((x) => x.split("|")[1] === m).length >= 4) { e.target.value = ""; e.target.setCustomValidity?.("Four of one metric is the most one chart shows."); return; }
+    if (full(k.split("|")[1])) { e.target.value = ""; return; }
     set([...picked, k]);
   };
   for (const b of bar.querySelectorAll("[data-k]")) b.onclick = () => set(picked.filter((k) => k !== b.dataset.k));
   const byMetric = new Map();
   for (const k of picked) { const [a, m] = k.split("|"); if (!byMetric.has(m)) byMetric.set(m, []); byMetric.get(m).push(a); }
   for (const [m, list] of byMetric) {
-    add({ title: m, unit: unitOf(m), step: m === "status", yMin: m === "status" || /_bpd$|_pct$|_mcfd$/.test(m) ? 0 : undefined, yMax: m === "status" ? 2 : undefined,
+    add({ title: metricName(m), unit: unitOf(m), step: m === "status", yMin: m === "status" || /_bpd$|_pct$|_mcfd$/.test(m) ? 0 : undefined, yMax: m === "status" ? 2 : undefined,
       series: list.map((a) => ({ name: a, points: R(a, m) })) });
   }
 }
