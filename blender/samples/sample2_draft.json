@@ -1,0 +1,313 @@
+{
+ "name": "Uploaded field",
+ "tanks": [
+  {
+   "id": "TANK_1",
+   "_ingest": {
+    "label": "Tank 1",
+    "confidence": 1.0,
+    "evidence": "CSV row 2"
+   },
+   "capacity_bbl": 400.0,
+   "x": -60.0,
+   "y": 40.0
+  },
+  {
+   "id": "TANK_2",
+   "_ingest": {
+    "label": "Tank 2",
+    "confidence": 1.0,
+    "evidence": "CSV row 3"
+   },
+   "capacity_bbl": 400.0,
+   "x": -20.0,
+   "y": 40.0
+  },
+  {
+   "id": "TANK_3",
+   "_ingest": {
+    "label": "Tank 3",
+    "confidence": 1.0,
+    "evidence": "CSV row 4"
+   },
+   "capacity_bbl": 500.0,
+   "x": 20.0,
+   "y": 40.0
+  },
+  {
+   "id": "TANK_4",
+   "_ingest": {
+    "label": "Tank 4",
+    "confidence": 1.0,
+    "evidence": "CSV row 5"
+   },
+   "capacity_bbl": 500.0,
+   "x": 60.0,
+   "y": 40.0
+  }
+ ],
+ "pumps": [
+  {
+   "id": "PUMP_1",
+   "_ingest": {
+    "label": "P-1",
+    "confidence": 1.0,
+    "evidence": "CSV row 6"
+   },
+   "tank_id": "TANK_1",
+   "rate_bbl_hr": 140.0,
+   "x": -60.0,
+   "y": 25.0
+  },
+  {
+   "id": "PUMP_2",
+   "_ingest": {
+    "label": "P-2",
+    "confidence": 1.0,
+    "evidence": "CSV row 7"
+   },
+   "tank_id": "TANK_2",
+   "rate_bbl_hr": 140.0,
+   "x": -20.0,
+   "y": 25.0
+  },
+  {
+   "id": "PUMP_3",
+   "_ingest": {
+    "label": "P-3",
+    "confidence": 1.0,
+    "evidence": "CSV row 8"
+   },
+   "tank_id": "TANK_3",
+   "rate_bbl_hr": 160.0,
+   "x": 20.0,
+   "y": 25.0
+  },
+  {
+   "id": "PUMP_4",
+   "_ingest": {
+    "label": "P-4",
+    "confidence": 1.0,
+    "evidence": "CSV row 9"
+   },
+   "tank_id": "TANK_4",
+   "rate_bbl_hr": 160.0,
+   "x": 60.0,
+   "y": 25.0
+  }
+ ],
+ "valves": [
+  {
+   "id": "VALVE_XO_23",
+   "kind": "CROSSOVER",
+   "connects": [
+    "TANK_2",
+    "TANK_3"
+   ],
+   "_ingest": {
+    "label": "XO 2-3",
+    "confidence": 1.0,
+    "evidence": "CSV row 15"
+   },
+   "max_bbl_hr": 150.0
+  },
+  {
+   "id": "VALVE_D_1",
+   "kind": "DISCHARGE",
+   "connects": [
+    "PUMP_1",
+    "SWD_1"
+   ],
+   "_ingest": {
+    "label": "VD-1",
+    "confidence": 1.0,
+    "evidence": "CSV row 11"
+   },
+   "pump_id": "PUMP_1"
+  },
+  {
+   "id": "VALVE_D_2",
+   "kind": "DISCHARGE",
+   "connects": [
+    "PUMP_2",
+    "SWD_1"
+   ],
+   "_ingest": {
+    "label": "VD-2",
+    "confidence": 1.0,
+    "evidence": "CSV row 12"
+   },
+   "pump_id": "PUMP_2"
+  },
+  {
+   "id": "VALVE_D_3",
+   "kind": "DISCHARGE",
+   "connects": [
+    "PUMP_3",
+    "SWD_1"
+   ],
+   "_ingest": {
+    "label": "VD-3",
+    "confidence": 1.0,
+    "evidence": "CSV row 13"
+   },
+   "pump_id": "PUMP_3"
+  },
+  {
+   "id": "VALVE_D_4",
+   "kind": "DISCHARGE",
+   "connects": [
+    "PUMP_4",
+    "SWD_1"
+   ],
+   "_ingest": {
+    "label": "VD-4",
+    "confidence": 1.0,
+    "evidence": "CSV row 14"
+   },
+   "pump_id": "PUMP_4"
+  }
+ ],
+ "wells": [
+  {
+   "id": "WELL_1",
+   "_ingest": {
+    "label": "Well 1",
+    "confidence": 1.0,
+    "evidence": "CSV row 16"
+   },
+   "tank_id": "TANK_1",
+   "water_bbl_hr": 21.0,
+   "x": -90.0,
+   "y": 120.0
+  },
+  {
+   "id": "WELL_2",
+   "_ingest": {
+    "label": "Well 2",
+    "confidence": 1.0,
+    "evidence": "CSV row 17"
+   },
+   "tank_id": "TANK_1",
+   "water_bbl_hr": 19.0,
+   "x": -70.0,
+   "y": 140.0
+  },
+  {
+   "id": "WELL_3",
+   "_ingest": {
+    "label": "Well 3",
+    "confidence": 1.0,
+    "evidence": "CSV row 18"
+   },
+   "tank_id": "TANK_2",
+   "water_bbl_hr": 24.0,
+   "x": -30.0,
+   "y": 130.0
+  },
+  {
+   "id": "WELL_4",
+   "_ingest": {
+    "label": "Well 4",
+    "confidence": 1.0,
+    "evidence": "CSV row 19"
+   },
+   "tank_id": "TANK_2",
+   "water_bbl_hr": 22.0,
+   "x": -10.0,
+   "y": 150.0
+  },
+  {
+   "id": "WELL_5",
+   "_ingest": {
+    "label": "Well 5",
+    "confidence": 1.0,
+    "evidence": "CSV row 20"
+   },
+   "tank_id": "TANK_3",
+   "water_bbl_hr": 26.0,
+   "x": 10.0,
+   "y": 130.0
+  },
+  {
+   "id": "WELL_6",
+   "_ingest": {
+    "label": "Well 6",
+    "confidence": 1.0,
+    "evidence": "CSV row 21"
+   },
+   "tank_id": "TANK_3",
+   "water_bbl_hr": 25.0,
+   "x": 30.0,
+   "y": 150.0
+  },
+  {
+   "id": "WELL_7",
+   "_ingest": {
+    "label": "Well 7",
+    "confidence": 1.0,
+    "evidence": "CSV row 22"
+   },
+   "tank_id": "TANK_4",
+   "water_bbl_hr": 20.0,
+   "x": 70.0,
+   "y": 130.0
+  },
+  {
+   "id": "WELL_8",
+   "_ingest": {
+    "label": "Well 8",
+    "confidence": 1.0,
+    "evidence": "CSV row 23"
+   },
+   "tank_id": "TANK_4",
+   "water_bbl_hr": 23.0,
+   "x": 90.0,
+   "y": 140.0
+  }
+ ],
+ "disposal_wells": [
+  {
+   "id": "SWD_1",
+   "_ingest": {
+    "label": "SWD 1",
+    "confidence": 1.0,
+    "evidence": "CSV row 10"
+   },
+   "max_bbl_hr": 480.0,
+   "x": 0.0,
+   "y": -80.0
+  }
+ ],
+ "trucks": [
+  {
+   "id": "TRUCK_1",
+   "_ingest": {
+    "label": "Truck 1",
+    "confidence": 1.0,
+    "evidence": "CSV row 24"
+   },
+   "capacity_bbl": 130.0
+  }
+ ],
+ "yards": [
+  {
+   "id": "YARD_1",
+   "_ingest": {
+    "label": "Yard",
+    "confidence": 1.0,
+    "evidence": "CSV row 25"
+   },
+   "x": -120.0,
+   "y": -40.0
+  }
+ ],
+ "_ingest": {
+  "source": {
+   "file": "sample2_delaware_4tank.csv",
+   "media_type": "text/csv",
+   "read_by": "parser"
+  },
+  "unclear": []
+ }
+}

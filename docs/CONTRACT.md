@@ -67,7 +67,7 @@ Change the model in the scripts, not by hand in the `.blend`, or the next rebuil
 
 ### The blueprint
 
-A blueprint is `scenario/field.json` with optional positions. The generator reads only these fields. The backend reads the rest.
+A blueprint follows [BLUEPRINT.md](BLUEPRINT.md), format v1. The generator reads only these fields, and the backend reads the rest. The generator needs only IDs and links, so an ingest draft with missing numbers builds too. Keys that start with `_` are ignored everywhere. `site` and `connectors` never stop a build: a malformed one is a warning.
 
 | Field | What the generator does with it |
 |---|---|
@@ -78,8 +78,9 @@ A blueprint is `scenario/field.json` with optional positions. The generator read
 | `disposal_wells[]`: `id` | 1 to 4, fed by the trunk line. |
 | `trucks[]`: `id`, `home_id` | Up to 6, parked in the yard. |
 | `yards[]`: `id` | One yard, or none. |
-| `x`, `y` on any asset | Optional position in meters. Assets without one are placed automatically. Valves always sit on their pipe, so their `x` and `y` are ignored with a warning. |
-| `connections` | Checked for unknown IDs, not drawn yet. |
+| `x`, `y` on any asset | Optional position in meters. Assets without one, or with a null `x` and `y`, are placed automatically. Valves always sit on their pipe, so their `x` and `y` are ignored with a warning. |
+| `connections` | Checked for unknown IDs, not drawn yet. An end may be a connector ID. |
+| `site`, `connectors` | Read for the report: `site` and the connector IDs appear in `build_report.json`. |
 
 The generator never invents an asset ID: every asset node in the glb is a blueprint ID. These stop the build with exit code 1: an ID that doesn't match `^[A-Z][A-Z0-9_]*$`, a duplicate ID, a reference to an unknown ID (`tank_id`, `valve_id`, `swd_id`, `pump_id`, `connects`, `home_id`, or a `minutes_to` key), a crossover that doesn't join two tanks, a discharge valve that no pump uses, and a size outside 1 to 20 tanks, 0 to 8 wells per tank, 0 to 2 pumps per tank, 4 crossovers per tank, 1 to 4 disposal wells, 0 to 6 trucks, or 0 to 1 yards.
 
