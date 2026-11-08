@@ -400,3 +400,19 @@ body.fb-console .loading b { font: 400 64px/1 "Great Vibes", cursive; color: #ff
   .typing .cs-dots i, .cs-b.flash, .cs-text.streaming .w { animation: none; opacity: 1; }
   body.fb-console .timebar { transition: none; }
 }
+
+/* Big alerts (Sriyan, 11:30): the card is wide and loud, and a red alarm lights the screen edge. */
+.gn-card { padding: 26px 30px 22px; font-size: 17px; }
+.gn-card.red { border-width: 2px; border-color: rgba(255,90,60,.85); }
+.gn-top { font-size: 15px; }
+.gn-head { font: 700 48px/1.08 var(--sans); margin: 10px 0 6px; letter-spacing: -.5px; }
+.gn-what { font-size: 19px; }
+.gn-sd { font-size: 23px; }
+.gn-fix { font-size: 19px; margin-top: 16px; }
+.gn-usd { font-size: 24px; }
+.gn-src { font-size: 13px; }
+.gn-row button { padding: 14px 28px; font-size: 17px; }
+body.gn-alarm::after { content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 29;
+  box-shadow: inset 0 0 0 4px rgba(255,70,40,.9), inset 0 0 140px rgba(255,60,30,.55); animation: gn-edge 1.6s ease-in-out infinite; }
+@keyframes gn-edge { 50% { box-shadow: inset 0 0 0 4px rgba(255,70,40,.45), inset 0 0 60px rgba(255,60,30,.2); } }
+@media (prefers-reduced-motion: reduce) { body.gn-alarm::after { animation: none; } }
