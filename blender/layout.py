@@ -212,6 +212,8 @@ def plan(bp):
 
     _site(L, frames, pad_xs)
     plan_crossovers(L, bp, frames)
+    import siting   # imported here: siting reads this module's constants
+    siting.place_equipment(L, bp)
     return L
 
 

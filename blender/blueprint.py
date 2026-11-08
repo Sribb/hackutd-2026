@@ -1,23 +1,46 @@
 """Read and check a blueprint.json before anything is built.
 
-A blueprint is scenario/field.json plus optional "x" and "y" (meters) on any asset.
+The format is docs/BLUEPRINT.md, version 1: scenario/field.json plus optional "x" and "y"
+on any asset, "connections", "site", and "connectors". x runs east along the lease road,
+y runs north, and the road is at y = 0, in meters. Keys that start with "_" are comments
+or metadata and are ignored everywhere. The generator only needs IDs and links, so an
+ingest draft with missing numbers (null or absent) still builds.
+
 This module uses only the standard library, so it runs inside Blender and in plain
 Python (the tests check validation without starting Blender).
 
 check() returns (bp, errors, warnings). Any error means the build must stop and no
-glb is written. bp is a plain dict of normalized assets in blueprint order.
+glb is written. bp is a plain dict of normalized assets in blueprint order. "site" and
+"connectors" never cause an error: a malformed one is a warning and is skipped.
 """
 import json
 import math
 import re
 
 ID_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
-LISTS = ("tanks", "pumps", "valves", "wells", "disposal_wells", "trucks", "yards")
-COUNT_LIMITS = {"tanks": (1, 20), "disposal_wells": (1, 4), "trucks": (0, 6), "yards": (0, 1)}
+LISTS = ("tanks", "pumps", "valves", "wells", "disposal_wells", "trucks", "yards", "equipment")
+COUNT_LIMITS = {"tanks": (1, 20), "disposal_wells": (1, 4), "trucks": (0, 6), "yards": (0, 1), "equipment": (0, 30)}
+# Equipment types with a generated model (equipment_parts.py). Any other type, or none,
+# builds as a labeled placeholder, so a blueprint never fails over a missing model.
+EQUIPMENT_MODELS = ("SEPARATOR", "HEATER_TREATER", "FLARE", "COMPRESSOR", "LACT", "METER_RUN")
+EQUIPMENT_ALIASES = {"SEP": "SEPARATOR", "TWO_PHASE_SEPARATOR": "SEPARATOR", "THREE_PHASE_SEPARATOR": "SEPARATOR",
+                     "HT": "HEATER_TREATER", "TREATER": "HEATER_TREATER", "HEATER": "HEATER_TREATER",
+                     "FLARE_STACK": "FLARE", "COMP": "COMPRESSOR", "GAS_COMPRESSOR": "COMPRESSOR",
+                     "LACT_UNIT": "LACT", "METER": "METER_RUN", "GAS_METER": "METER_RUN", "ORIFICE_METER": "METER_RUN"}
 WELLS_PER_TANK = 8
 PUMPS_PER_TANK = 2
 XO_PER_TANK = 4
 MAX_COORD = 5000.0
+FORMAT_VERSION = 1
+# Top-level keys in docs/blueprint.schema.json. The generator reads some; the backend reads the rest.
+KNOWN_KEYS = {"version", "name", "clock_start", "site", *LISTS, "connections", "connectors",
+              "lead_min", "costs", "initial", "faults", "sensors"}
+SITE_KEYS = ("name", "operator", "lat", "lon", "width_m", "timezone")
+
+
+def meta(key):
+    """Keys that start with "_" are comments or metadata (_note, _source, _ingest)."""
+    return isinstance(key, str) and key.startswith("_")
 
 
 def load(path):
@@ -36,13 +59,14 @@ def _num(v):
 
 
 def _position(entry, where, errors):
-    has_x, has_y = "x" in entry, "y" in entry
+    """(x, y) in plan meters, or None to lay the asset out. A null x or y counts as missing."""
+    x, y = entry.get("x"), entry.get("y")
+    has_x, has_y = x is not None, y is not None
     if not has_x and not has_y:
         return None
     if has_x != has_y:
         errors.append(f"{where} has only one of x and y; give both or neither")
         return None
-    x, y = entry["x"], entry["y"]
     if not (_num(x) and _num(y)):
         errors.append(f"{where} x and y must be numbers in meters")
         return None
@@ -65,7 +89,71 @@ def _entries(data, key, errors):
         if not isinstance(entry, dict):
             errors.append(f"{key}[{i}] must be an object")
             continue
+        if entry and all(meta(k) for k in entry):
+            continue          # a comment entry such as {"_note": "..."}
         out.append((i, entry))
+    return out
+
+
+def equipment_type(raw):
+    """'heater treater' -> HEATER_TREATER. Returns (type, model), model None for a placeholder."""
+    t = re.sub(r"[^A-Z0-9]+", "_", str(raw).upper()).strip("_") if raw is not None else ""
+    t = EQUIPMENT_ALIASES.get(t, t) or "OTHER"
+    return t, (t if t in EQUIPMENT_MODELS else None)
+
+
+def _site(data, warnings):
+    """The optional site block: {name, operator, lat, lon, width_m, timezone}. Context only."""
+    raw = data.get("site")
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        warnings.append('"site" must be an object; it is ignored')
+        return None
+    return {k: raw[k] for k in SITE_KEYS if raw.get(k) is not None}
+
+
+def _connectors(data, kinds, warnings):
+    """The optional connectors list (#38). Never an error: anything malformed is a warning.
+
+    Returns [{"id", "kind", "signals": [(asset_id, signal)]}] for well-formed connectors,
+    keeping only signals on assets that exist.
+    """
+    raw = data.get("connectors")
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        warnings.append('"connectors" must be a list; it is ignored')
+        return []
+    out, seen = [], set()
+    for i, c in enumerate(raw):
+        where = f"connectors[{i}]"
+        if not isinstance(c, dict):
+            warnings.append(f"{where} is not an object; it is ignored")
+            continue
+        if c and all(meta(k) for k in c):
+            continue
+        cid = c.get("id")
+        if not isinstance(cid, str) or not ID_RE.match(cid):
+            warnings.append(f"{where} has no valid id; it is ignored")
+            continue
+        if cid in kinds or cid in seen:
+            warnings.append(f'{where} id "{cid}" is already used; IDs must be unique across the file')
+            continue
+        seen.add(cid)
+        sigs, signals = c.get("signals"), []
+        if sigs is not None and not isinstance(sigs, list):
+            warnings.append(f"{where} signals must be a list; they are ignored")
+            sigs = None
+        for j, s in enumerate(sigs or []):
+            if not isinstance(s, dict) or (s and all(meta(k) for k in s)):
+                continue
+            aid = s.get("asset_id")
+            if not isinstance(aid, str) or aid not in kinds:
+                warnings.append(f'{where} signals[{j}] asset_id "{aid}" is not an asset; that signal is ignored')
+                continue
+            signals.append((aid, s.get("signal")))
+        out.append({"id": cid, "kind": c.get("kind"), "signals": signals})
     return out
 
 
@@ -73,6 +161,12 @@ def check(data):
     errors, warnings = [], []
     if not isinstance(data, dict):
         return None, ["the blueprint must be a JSON object"], warnings
+    version = data.get("version")
+    if version is not None and version != FORMAT_VERSION:
+        warnings.append(f"blueprint version {version!r}; this generator reads version {FORMAT_VERSION}")
+    unknown = sorted(k for k in data if not meta(k) and k not in KNOWN_KEYS)
+    if unknown:
+        warnings.append(f"ignored keys that are not in blueprint format v1: {', '.join(map(str, unknown))}")
 
     raw = {key: _entries(data, key, errors) for key in LISTS}
     seen = {}        # id -> where it was first defined
@@ -103,7 +197,7 @@ def check(data):
             errors.append(f'{where} {field} "{value}" is not an asset in this blueprint')
             return None
         if allowed and kinds[value] not in allowed:
-            errors.append(f'{where} {field} "{value}" is a {kinds[value][:-1].replace("_", " ")}, '
+            errors.append(f'{where} {field} "{value}" is a {kinds[value].rstrip("s").replace("_", " ")}, '
                           f"expected one of: {', '.join(allowed)}")
             return None
         return value
@@ -114,9 +208,13 @@ def check(data):
             if isinstance(aid, str) and seen.get(aid) == f"{key}[{i}]":
                 yield i, entry, f"{key}[{i}] {aid}"
 
-    bp = {"name": data.get("name") if isinstance(data.get("name"), str) else "",
+    site = _site(data, warnings)
+    name = data.get("name") if isinstance(data.get("name"), str) and data.get("name") else ""
+    if not name and site and isinstance(site.get("name"), str):
+        name = site["name"]
+    bp = {"name": name, "site": site, "connectors": _connectors(data, kinds, warnings),
           "tanks": [], "pumps": [], "discharge": [], "crossovers": [], "wells": [],
-          "swds": [], "trucks": [], "yard": None}
+          "swds": [], "trucks": [], "yard": None, "equipment": []}
 
     for i, e, where in valid("tanks"):
         cap = e.get("capacity_bbl")
@@ -144,7 +242,7 @@ def check(data):
     pump_ids = {p["id"] for p in pumps}
     owner = {}
     for vid, (e, where) in valves.items():
-        kind = str(e.get("kind", "")).upper()
+        kind = str(e.get("kind") or "").upper()
         connects = e.get("connects")
         if connects is not None and not (isinstance(connects, list) and all(isinstance(c, str) for c in connects)):
             errors.append(f"{where} connects must be a list of asset IDs")
@@ -155,7 +253,7 @@ def check(data):
             tank_ends = [c for c in connects or [] if kinds.get(c) == "tanks"]
             kind = "CROSSOVER" if len(tank_ends) == 2 else "DISCHARGE"
             warnings.append(f"{where} has no kind; treating it as {kind}")
-        if "x" in e or "y" in e:
+        if e.get("x") is not None or e.get("y") is not None:
             _position(e, where, errors)
             warnings.append(f"{where} x and y are ignored: valves sit on the pipe they control")
         if kind == "CROSSOVER":
@@ -170,8 +268,8 @@ def check(data):
             pid = e.get("pump_id")
             if pid is not None:
                 pid = ref(where, "pump_id", pid, ["pumps"])
-            elif connects and kinds.get(connects[0]) == "pumps":
-                pid = connects[0]
+            else:   # v1 writes connects as [PUMP, SWD]; take the pump from either end
+                pid = next((c for c in connects or [] if kinds.get(c) == "pumps"), None)
             owner[vid] = pid
         else:
             errors.append(f'{where} kind "{e.get("kind")}" is not supported; use DISCHARGE or CROSSOVER')
@@ -218,31 +316,61 @@ def check(data):
         minutes = e.get("minutes_to")
         if isinstance(minutes, dict):
             for target in minutes:
-                ref(where, "minutes_to", target, None)
+                if not meta(target):
+                    ref(where, "minutes_to", target, None)
         bp["trucks"].append({"id": e["id"], "pos": _position(e, where, errors)})
 
-    for j, link in enumerate(data.get("connections") or []):
+    for i, e, where in valid("equipment"):
+        etype, model = equipment_type(e.get("type"))
+        if model is None:
+            warnings.append(f"{where} type {etype} has no model yet; it builds as a labeled placeholder")
+        tank = ref(where, "tank_id", e["tank_id"], ["tanks"]) if e.get("tank_id") is not None else None
+        links = e.get("connects")
+        if links is not None and not (isinstance(links, list) and all(isinstance(c, str) for c in links)):
+            errors.append(f"{where} connects must be a list of asset IDs")
+            links = None
+        links = [c for c in links or [] if ref(where, "connects", c, None)]
+        label = e.get("label") if isinstance(e.get("label"), str) and e.get("label").strip() else None
+        bp["equipment"].append({"id": e["id"], "type": etype, "model": model, "label": label, "tank_id": tank,
+                                "connects": links, "pos": _position(e, where, errors)})
+
+    # connections are links between assets or connectors; they are checked, not drawn
+    links = data.get("connections")
+    if links is not None and not isinstance(links, list):
+        errors.append('"connections" must be a list')
+        links = []
+    linkable = set(kinds) | {c["id"] for c in bp["connectors"]}
+    drawn = 0
+    for j, link in enumerate(links or []):
+        if isinstance(link, dict) and link and all(meta(k) for k in link):
+            continue
         ends = link if isinstance(link, list) else [link.get("from"), link.get("to")] if isinstance(link, dict) else []
+        drawn += 1
         if len(ends) != 2:
             errors.append(f"connections[{j}] must be [from, to] or {{\"from\": ..., \"to\": ...}}")
             continue
         for end in ends:
+            if isinstance(end, str) and end in linkable and end not in kinds:
+                continue          # a connector end, such as a SIGNAL link to CONN_SCADA
             ref(f"connections[{j}]", "end", end, None)
-    if data.get("connections"):
+    if drawn:
         warnings.append("connections are checked but not drawn; piping follows tank_id, pump, and valve fields")
 
     # scenario fields the geometry does not use: warn, do not block
     initial = data.get("initial", {}) if isinstance(data.get("initial"), dict) else {}
-    for tid in (initial.get("tank_pct") or {}):
-        if tid not in kinds:
+    tank_pct = initial.get("tank_pct") if isinstance(initial.get("tank_pct"), dict) else {}
+    for tid in tank_pct:
+        if not meta(tid) and tid not in kinds:
             warnings.append(f'initial.tank_pct names "{tid}", which is not an asset')
-    for j, fault in enumerate(data.get("faults") or []):
-        if isinstance(fault, dict) and fault.get("asset_id") not in kinds:
-            warnings.append(f'faults[{j}] asset_id "{fault.get("asset_id")}" is not an asset')
+    faults = data.get("faults") if isinstance(data.get("faults"), list) else []
+    for j, fault in enumerate(faults):
+        aid = fault.get("asset_id") if isinstance(fault, dict) else None
+        if isinstance(fault, dict) and not (isinstance(aid, str) and aid in kinds):
+            warnings.append(f'faults[{j}] asset_id "{aid}" is not an asset')
 
     # field size
     sizes = {"tanks": len(bp["tanks"]), "disposal_wells": len(bp["swds"]),
-             "trucks": len(bp["trucks"]), "yards": len(raw["yards"])}
+             "trucks": len(bp["trucks"]), "yards": len(raw["yards"]), "equipment": len(bp["equipment"])}
     for key, (lo, hi) in COUNT_LIMITS.items():
         if not lo <= sizes[key] <= hi:
             label = key.replace("_", " ")
@@ -275,4 +403,4 @@ def counts(bp):
     return {"tanks": len(bp["tanks"]), "pumps": len(bp["pumps"]),
             "discharge_valves": len(bp["discharge"]), "crossover_valves": len(bp["crossovers"]),
             "wells": len(bp["wells"]), "disposal_wells": len(bp["swds"]),
-            "trucks": len(bp["trucks"]), "yards": 1 if bp["yard"] else 0}
+            "trucks": len(bp["trucks"]), "yards": 1 if bp["yard"] else 0, "equipment": len(bp["equipment"])}

@@ -39,6 +39,10 @@ FALLBACK_MODELS = {"claude-sonnet-5-5", "claude-opus-5-5", "claude-opus-5", "cla
 COMPLEX = re.compile(r"\b(what if|why|instead|compare|versus|vs\.?|explain|should (we|i)|better|cheaper than|unless|and then)\b")
 NUM_WORDS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8,
              "nine": 9, "ten": 10, "eleven": 11, "twelve": 12}
+# A number after one of these words is not a tank ("well 9", "valve d 3", "truck 1").
+NOT_TANK_WORDS = {"well", "wells", "pump", "pumps", "truck", "trucks", "valve", "valves", "d", "swd", "plan", "step"}
+# A tank question that also asks for a fix gets the plans line too.
+ASKS_FIX = re.compile(r"\bplans?\b|cheapest|\bfix(es)?\b|what should|what do (we|i) do|recommend")
 HELP = ("I can show and explain assets, report what's failing, give the time to shutdown, find the "
         "cheapest plan, run it step by step when you say 'fix it', and propose fixes like 'open the "
         "crossover' or 'send truck 1 to tank 3'.")
@@ -148,6 +152,10 @@ class Jarvis:
     def status(self) -> dict:
         mode = os.environ.get("JARVIS_MODE", "auto").lower()
         return {"mode": mode, "model": self.model, "llm_available": self.has_key() and mode != "rules"}
+
+    def refresh(self) -> None:
+        """Rebuild the asset list in Claude's prompt after the live field reloads."""
+        self.system = self._system_prompt()
 
     async def handle(self, message: str, selected: Optional[list] = None,
                      image_png_base64: Optional[str] = None) -> dict:
@@ -401,12 +409,105 @@ class Jarvis:
         m = re.search(r"\b(?:discharge )?valve (?:d ?)?(\d+)\b", t)
         if m and f.kind_of(f"VALVE_D_{m.group(1)}"):
             return f"VALVE_D_{m.group(1)}"
-        if "crossover" in t and f.crossovers:
-            return f.crossovers[0]["id"]
         m = re.search(r"\b((?:tank|pump|well|truck|swd|valve_d|valve_xo)_\d+)\b", t)
         if m and f.kind_of(m.group(1).upper()):
             return m.group(1).upper()
         return None
+
+    def _tanks_named(self, t: str) -> list[str]:
+        """Tanks a sentence names, in order: 'tank 3 to 4', '3 and 4', 'between 5 and 6'.
+        Numbers that belong to another asset ('well 9', 'valve d 3') or a unit don't count."""
+        out: list[str] = []
+        for m in re.finditer(r"(?:\b([a-z]+) )?\b(\d+)\b(?!:| ?(?:%|percent|min|minutes?|hours?|hrs?|bbl|barrels?)\b)", t):
+            if m.group(1) in NOT_TANK_WORDS:
+                continue
+            tid = f"TANK_{m.group(2)}"
+            if tid in self.live.fmap.tanks and tid not in out:
+                out.append(tid)
+        return out
+
+    def _headroom_bbl(self, tid: str) -> float:
+        """Barrels a tank can take before shutdown; an unknown level counts as none."""
+        tank = self.live.fmap.tanks[tid]
+        lvl = self.live.value(tid, "level_pct")
+        if lvl is None or self.live.detector.is_stale(tid, "level_pct"):
+            return float("-inf")
+        return (float(tank["shutdown_pct"]) - float(lvl)) / 100.0 * float(tank["capacity_bbl"])
+
+    def _crossover_next_to(self, tid: str, closing: bool = False) -> Optional[str]:
+        """The crossover on `tid` whose other tank has the most room (open ones first when closing)."""
+        xos = [xo for xo in self.live.fmap.crossovers if tid in (xo.get("connects") or [])[:2]]
+        if closing:
+            xos = [xo for xo in xos if self.live.value(xo["id"], "position") == "OPEN"] or xos
+        if not xos:
+            return None
+        other = lambda xo: next((e for e in xo["connects"][:2] if e != tid), tid)  # noqa: E731
+        return max(xos, key=lambda xo: self._headroom_bbl(other(xo)))["id"]
+
+    async def _tanks_in_trouble(self) -> list[str]:
+        """Tanks with an active pump trip, then by earliest forecast shutdown."""
+        f, out = self.live.fmap, []
+        for a in self.live.detector.active.values():
+            if a["kind"] == "PUMP_TRIP" and a["asset_id"] in f.pumps:
+                tid = f.pumps[a["asset_id"]]["tank_id"]
+                if tid not in out:
+                    out.append(tid)
+        if any(self._crossover_next_to(tid) for tid in out):
+            return out
+        fc = await self.run_tool("get_forecast", {"actions": []}, {"ui": [], "proposals": []})
+        sds = sorted((e for e in fc.get("events", []) if e.get("type") == "SHUTDOWN_LEVEL" and e.get("asset_id") in f.tanks),
+                     key=lambda e: e.get("t_min") if e.get("t_min") is not None else float("inf"))
+        return out + [e["asset_id"] for e in sds if e["asset_id"] not in out]
+
+    async def _crossover_in(self, t: str, closing: bool = False) -> tuple[Optional[str], Optional[str]]:
+        """(crossover ID, None), or (None, why not). Named tanks first, then the tank in
+        trouble, preferring the neighbor with the most headroom, then the first crossover."""
+        f = self.live.fmap
+        m = re.search(r"\bvalve_xo_\w+\b", t)
+        if m and m.group(0).upper() in f.valves:
+            return m.group(0).upper(), None
+        if not f.crossovers:
+            return None, "This field has no crossovers."
+        named = self._tanks_named(t)
+        if len(named) >= 2:
+            pair = set(named[:2])
+            xo = next((x for x in f.crossovers if set((x.get("connects") or [])[:2]) == pair), None)
+            if xo:
+                return xo["id"], None
+            return None, f"There's no crossover between {name(named[0])} and {name(named[1])}."
+        if named:
+            aid = self._crossover_next_to(named[0], closing)
+            return (aid, None) if aid else (None, f"{name(named[0])} has no crossover.")
+        if closing:
+            open_ = [x["id"] for x in f.crossovers if self.live.value(x["id"], "position") == "OPEN"]
+            if open_:
+                return open_[0], None
+        for tid in await self._tanks_in_trouble():
+            aid = self._crossover_next_to(tid, closing)
+            if aid:
+                return aid, None
+        return f.crossovers[0]["id"], None
+
+    async def _plans_line(self, ctx: dict) -> str:
+        """The cheapest plan, and the cheapest robust one if that's a different plan.
+        Focuses the camera on the cheapest plan's first step."""
+        res = await self.run_tool("get_plans", {}, ctx)
+        if not res["plans"]:
+            return "No plan needed: nothing reaches shutdown in the next 6 hours."
+        p = res["plans"][0]
+        if p["actions"]:
+            await self._focus(p["actions"][0]["asset_id"], ctx)
+
+        def usd(x: dict) -> str:
+            return f", ${x['total_usd']:,.0f}" if isinstance(x.get("total_usd"), (int, float)) else ""
+
+        line = f"Cheapest plan{usd(p)}: {p['summary']}"
+        if p["cannot_save"]:
+            line += f" It can't save {', '.join(name(x) for x in p['cannot_save'])}."
+        robust = next((x for x in res["plans"] if x.get("robust")), None)
+        if robust and robust["id"] != p["id"]:
+            line += f" Cheapest robust plan{usd(robust)}: {robust['summary']}"
+        return line + " Ask me to propose any step and confirm it on the console."
 
     async def _rules(self, text: str, selected: list, ctx: dict) -> Optional[str]:
         t = " " + text.lower().replace("-", " ").replace("?", " ") + " "
@@ -427,7 +528,12 @@ class Jarvis:
                                         "target_id": f"TANK_{target}"}, text, ctx)
         m = re.search(r"^\s*(?:please |can you |could you |jarvis,? )?(open|close)\b", t)
         if m and re.search(r"crossover|valve", t):
-            aid = self._asset_in(t)
+            if "crossover" in t:
+                aid, why_not = await self._crossover_in(t, closing=m.group(1) == "close")
+                if why_not:
+                    return why_not
+            else:
+                aid = self._asset_in(t)
             if aid and live.fmap.kind_of(aid) == "valve":
                 return await self._propose({"type": "SET_VALVE", "asset_id": aid,
                                             "value": "OPEN" if m.group(1) == "open" else "CLOSED"}, text, ctx)
@@ -462,24 +568,19 @@ class Jarvis:
             await self._focus(ids[0], ctx)
             return " ".join([await self._describe(a) for a in ids])
 
-        # Show or check an asset.
-        aid = self._asset_in(t)
-        if aid and re.search(r"show|focus|zoom|look|go to|where|\bis\b|how's|status of|check|explain|tell me about|about", t):
-            await self._focus(aid, ctx)
-            return await self._describe(aid)
+        # Show or check an asset ("Why is Tank 3 rising, and what's my cheapest fix?" adds the plans).
+        if re.search(r"show|focus|zoom|look|go to|where|\bis\b|how's|status of|check|explain|tell me about|about", t):
+            aid = (await self._crossover_in(t))[0] if "crossover" in t else self._asset_in(t)
+            if aid:
+                await self._focus(aid, ctx)
+                line = await self._describe(aid)
+                if ASKS_FIX.search(t):
+                    line += " " + await self._plans_line(ctx)
+                return line
 
         # Plans.
-        if re.search(r"\bplans?\b|cheapest|\bfix\b|options|what should|what do (we|i) do|recommend", t):
-            res = await self.run_tool("get_plans", {}, ctx)
-            if not res["plans"]:
-                return "No plan needed: nothing reaches shutdown in the next 6 hours."
-            p = res["plans"][0]
-            if p["actions"]:
-                await self._focus(p["actions"][0]["asset_id"], ctx)
-            line = f"Cheapest plan, ${p['total_usd']:,.0f}: {p['summary']}"
-            if p["cannot_save"]:
-                line += f" It can't save {', '.join(name(x) for x in p['cannot_save'])}."
-            return line + " Ask me to propose any step and confirm it on the console."
+        if ASKS_FIX.search(t) or re.search(r"\boptions\b", t):
+            return await self._plans_line(ctx)
 
         # Countdown.
         if re.search(r"how long|time left|countdown|until|when (does|will)|shutdown", t):
@@ -519,8 +620,11 @@ class Jarvis:
             line = f"{nm} has no fresh reading, so treat it as unknown, not safe."
         elif kind == "tank":
             line = f"{nm} is at {lv['level_pct']:.0f}% (shutdown at {info['design']['shutdown_pct']}%)"
-            if lv.get("observed_bbl_hr") is not None:
-                line += f", changing {lv['observed_bbl_hr']:+.0f} barrels an hour"
+            obs, exp = lv.get("observed_bbl_hr"), lv.get("expected_bbl_hr")
+            # Right after a pump changes state the fit can still lag; a rate whose sign
+            # disagrees with what the pumps and wells explain would only mislead.
+            if obs is not None and not (exp is not None and abs(exp) >= 1 and obs * exp < 0):
+                line += f", changing {obs:+.0f} barrels an hour"
             line += "."
             # Why: the tank's own pumps' active alerts, then its forecast shutdown time.
             causes = [a["message"] for pid in self.live.fmap.pumps_by_tank.get(aid, [])
