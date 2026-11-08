@@ -13,6 +13,7 @@ import { mountHands } from "./hands.js";
 import { mountJarvis, jarvisSelectionChanged } from "./jarvis.js";
 import * as liveFeed from "./live.js";
 import { mountTwoNights } from "./twonights.js";
+import { mountScenery } from "./scenery.js";
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
@@ -1117,6 +1118,7 @@ async function boot() {
   const note = $("modelNote");
   note.hidden = false;
   note.textContent = model.from === "placeholder" ? "Placeholder geometry until blender/field.glb lands" : `Model: ${model.from}`;
+  mountScenery(model.root, note, renderer); // #88 scenery toggle, plus a 45 fps guard (pixels first, then scenery)
   $("loading").remove();
   frame(model.root);
   buildFuses();
