@@ -115,13 +115,13 @@ export function mountTwoNights(h) {
     for (const e of none.events || []) {
       if (e.type !== "SHUTDOWN_LEVEL") continue;
       const n = (e.wells_lost || []).length;
-      L.push({ t: e.t_min, bad: true, text: `${clock(e.t_min)} ${nice(e.asset_id)} hits shutdown. ${n} well${n === 1 ? "" : "s"} shut in.` });
+      L.push({ t: e.t_min, bad: true, text: `${clock(e.t_min)} ${nice(e.asset_id)} reaches shutdown. ${n} well${n === 1 ? "" : "s"} shut in.` });
     }
     const acts = [...plan.actions].sort((a, b) => a.at_min - b.at_min);
     for (const a of acts) R.push({ t: a.at_min, text: `${clock(a.at_min)} ${h.describe(a)}.` });
     for (const e of withFc.events || []) {
       if (e.type !== "SHUTDOWN_LEVEL") continue;
-      R.push({ t: e.t_min, bad: true, text: `${clock(e.t_min)} ${nice(e.asset_id)} still hits shutdown.` });
+      R.push({ t: e.t_min, bad: true, text: `${clock(e.t_min)} ${nice(e.asset_id)} still reaches shutdown.` });
     }
     // The closest call on the plan side: the tank that comes nearest its shutdown line.
     let close = null;

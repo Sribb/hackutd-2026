@@ -432,7 +432,7 @@ function viewAt(t) {
     }
     for (const [tid, e] of shut) {
       view[tid].status = "ALARM";
-      view[tid].reason = `${e.text}. Its wells are shut in.`;
+      view[tid].reason = `${String(e.text).replace(/\.$/, "")}. Its wells are shut in.`;
       for (const w of field.wells || []) {
         if (w.tank_id === tid && view[w.id]) {
           view[w.id] = { ...view[w.id], status: "OFFLINE", reason: `Shut in when ${nice(tid)} reached shutdown at ${clockAt(e.t_min)}.` };
@@ -466,7 +466,7 @@ async function setActions(next, note = "", quiet = false) {
 function logWhatif(list) {
   if (!list.length) { shiftlog.add("whatif", "Cleared every what-if. Back to the no-action forecast."); return; }
   const ev = shutdownOf(fc);
-  const outcome = ev ? `${nice(ev.asset_id)} still hits shutdown at ${clockAt(ev.t_min)}` : `every tank holds through ${clockAt(360)}`;
+  const outcome = ev ? `${nice(ev.asset_id)} still reaches shutdown at ${clockAt(ev.t_min)}` : `every tank holds through ${clockAt(360)}`;
   shiftlog.add("whatif", `Tried ${list.map(describe).join(" + ")}: ${outcome}${fc.cost ? `, ${usd(fc.cost.total_usd)}` : ""}.`);
 }
 
@@ -484,18 +484,33 @@ function statusTag(s) {
   return `<span class="status ${s}"><i></i>${label}</span>`;
 }
 
+// Minutes the shift clock has moved past the clock the forecast was computed at
+// (data.state.clock). The forecast is re-read every minute with a backend; offline it isn't,
+// so countdowns subtract this to stay in step with the header clock.
+function minutesSinceData() {
+  const m = /^(\d{1,2}):(\d{2})(?::\d{2})? (AM|PM)$/.exec(shiftlog.clockNow());
+  const [h0, m0] = String(data.state.clock || "00:00").split(":").map(Number);
+  if (!m) return 0;
+  const now = ((+m[1] % 12) + (m[3] === "PM" ? 12 : 0)) * 60 + +m[2];
+  const d = (((now - (h0 * 60 + m0)) % 1440) + 1440) % 1440;
+  return d > 720 ? 0 : d; // a clock behind the data (just re-read): nothing to subtract
+}
+
 function renderIncident() {
   const inc = data.state.incident;
   const box = $("incident");
-  if (!inc) { box.hidden = true; return; }
   const ev = shutdownOf(data.baseline);
+  // No incident reported but the forecast has a shutdown: never a silent screen.
+  if (!inc && !ev) { box.hidden = true; return; }
   const wellsAtRisk = ev ? (field.wells || []).filter((w) => w.tank_id === ev.asset_id).length : 0;
   let countdown = "";
   if (ev) {
     const range = ev.t_min_low != null
       ? ` <span class="muted">(${clockAt(ev.t_min_low)} to ${ev.t_min_high == null ? "later" : clockAt(ev.t_min_high)})</span>` : "";
-    countdown = `<div class="countdown" data-decode="countdown">${nice(ev.asset_id)} reaches shutdown at ${clockAt(ev.t_min)}${range}</div>
-      <div class="sub">${Math.round(ev.t_min)} min from now if nobody acts. ${wellsAtRisk} wells go down with it.</div>`;
+    const left = Math.max(0, Math.round(ev.t_min - minutesSinceData()));
+    // data-decode on the headline only: decode() sets textContent, which would flatten the range's styling.
+    countdown = `<div class="countdown"><span data-decode="countdown">${nice(ev.asset_id)} reaches shutdown at ${clockAt(ev.t_min)}</span>${range}</div>
+      <div class="sub">${left > 0 ? `${left} min from now if nobody acts.` : "Due now if nobody has acted."} ${wellsAtRisk} wells go down with it.</div>`;
   }
   const blind = blindTanks();
   if (blind.length) {
@@ -506,14 +521,15 @@ function renderIncident() {
   let last = "";
   if (lc && lc.status === "INCIDENT" && lc.options && lc.options.length) {
     const best = lc.options[0];
+    const hot = best.robust === false && !best.expires_clock_hot ? " It already falls short if inflow runs 15% high." : "";
     last = `<div class="lastcall"><b>Last Call:</b> the cheapest plan (${usd(best.cost.total_usd)}) only works if you start by
-      <b>${best.expires_clock}</b>.${lc.point_of_no_return ? ` After ${lc.point_of_no_return.clock}, nothing keeps every well online.` : ""}</div>`;
+      <b>${best.expires_clock}</b>.${hot}${lc.point_of_no_return ? ` At the forecast inflow, nothing keeps every well online after ${lc.point_of_no_return.clock}.` : ""}</div>`;
   }
   box.hidden = false;
   box.innerHTML = `<div class="kicker">Incident</div>
-    <div class="head">${statusTag("ALARM")} <span>${esc(inc.summary)}</span></div>${countdown}${last}`;
+    <div class="head">${statusTag(inc ? "ALARM" : "WARNING")} <span>${inc ? esc(inc.summary) : `No incident reported, but the forecast has ${esc(nice(ev.asset_id))} reaching shutdown.`}</span></div>${countdown}${last}`;
   box.querySelector(".head").style.cursor = "pointer";
-  box.querySelector(".head").onclick = () => select(inc.root_asset_id, true);
+  box.querySelector(".head").onclick = () => select(inc ? inc.root_asset_id : ev.asset_id, true);
   decode(box);
 }
 
@@ -644,6 +660,19 @@ function renderWhatif() {
   if (clear) clear.onclick = () => setActions([]);
 }
 
+// Last Call's deadline for a plan: the option with the same commands (type and asset) and
+// the same cost. Plans from /api/plans don't carry expires_clock themselves.
+function deadlineFor(p) {
+  if (p.expires_clock) return { clock: p.expires_clock, hot: p.expires_clock_hot };
+  const k = (xs) => xs.map((a) => `${a.type}:${a.asset_id}`).sort().join("|");
+  const want = k(p.actions || []);
+  const o = ((data.lc && data.lc.options) || []).find((x) => x.expires_clock && x.cost && p.cost
+    && Math.round(x.cost.total_usd) === Math.round(p.cost.total_usd) && k(x.steps || []) === want);
+  return o ? { clock: o.expires_clock, hot: o.expires_clock_hot } : null;
+}
+const firstSentence = (t) => { const m = /^(.+?\.)(\s|$)/.exec(String(t || "")); return m ? m[1] : String(t || ""); };
+let allPlans = false; // the plan list shows the cheapest and the cheapest robust until asked
+
 function renderPlans() {
   // Never swap a Hold to approve button out from under a finger (storm search, weather).
   if (isHolding()) { afterHold(renderPlans); return; }
@@ -660,19 +689,33 @@ function renderPlans() {
       : storm && storm.busy ? "Looking for a plan that keeps everyone inside…"
       : storm && storm.none ? `No remote-only fix keeps every tank below shutdown (${esc(storm.none)}). Weigh the shutdown against sending people out.`
       : "No plan on the list keeps everyone inside. Weigh the shutdown against sending people out."}</div>` : ""}</div>`;
+  // Short list: the cheapest, the cheapest that holds at +15% inflow, and the remote-only
+  // plan when the weather calls for it. The rest behind one link.
+  const robustI = list.findIndex((p) => p.robust === true && p.keeps_running !== false);
+  const show = new Set([0, robustI, safe ? safe.i : -1, approved ? list.findIndex((p) => p.id === approved.plan.id) : -1].filter((i) => i >= 0));
+  const hidden = allPlans ? 0 : list.length - show.size;
   box.innerHTML = `<div class="kicker">Cheapest plans</div>${wx}` + list.map((p, i) => {
-    const stamp = p.expires_clock ? `Start by ${p.expires_clock}${p.robust === false ? " · fails if inflow runs 15% hot" : ""}` : "";
+    if (!allPlans && !show.has(i)) return "";
+    const dl = deadlineFor(p);
+    const hold = p.robust === true ? "Holds even if inflow runs 15% high" : p.robust === false ? "Holds at the forecast inflow, not at +15%" : "";
+    const stamp = [dl ? `Start by ${dl.clock}` : "", hold].filter(Boolean).join(" · ");
+    const mine = approved && approved.plan.id === p.id;
     const out = exposure(p, field);
-    const who = out.length ? `Sends ${out.length} out: ${out.map((o) => `${o.who} (${nice(o.asset_id)})`).join(", ")}` : "Remote only: nobody goes out";
+    const roles = {};
+    out.forEach((o) => { roles[o.who] = (roles[o.who] || 0) + 1; });
+    const who = out.length ? `${out.length} go${out.length === 1 ? "es" : ""} out: ${Object.entries(roles).map(([w, n]) => (n > 1 ? `${n} ${w.replace("truck driver", "truck drivers").replace("rover at the valve", "rovers")}` : w.replace(" at the valve", ""))).join(", ")}` : "Remote only: nobody goes out";
     const risky = hz.length && out.length;
     return `<div class="plan">
-      <div class="plan-top"><span class="rank">${i + 1}</span><span class="sum">${esc(p.summary)}</span><b>${usd(p.cost.total_usd)}</b></div>
+      <div class="plan-top"><span class="rank">${i + 1}</span><span class="sum" title="${esc(p.summary)}">${esc(firstSentence(p.summary))}</span><b>${usd(p.cost.total_usd)}</b></div>
       ${stamp ? `<div class="stamp ${p.robust === false ? "fragile" : ""}">${stamp}</div>` : ""}
       ${p.keeps_running === false ? `<div class="stamp fragile">Can't save: ${(p.cannot_save || []).map(nice).join(", ")}</div>` : ""}
       <div class="stamp who ${risky ? "fragile" : hz.length ? "safe" : ""}">${esc(who)}${risky ? ` · in ${esc(hz.map((h) => h.key).join(", "))}` : ""}</div>
-      <div class="plan-btns"><button data-try="${i}">Try it</button><button class="primary hold" data-approve="${i}" title="Press and hold to approve"><i></i><span>${risky ? `Hold to approve · ${out.length} out` : "Hold to approve"}</span></button></div>
+      ${mine ? `<div class="approved-stamp">Approved ${esc(approved.at)} · ${approved.done} of ${approved.steps.length} done</div>`
+        : `<div class="plan-btns"><button data-try="${i}">Try it</button><button class="primary hold" data-approve="${i}" title="Press and hold to approve"><i></i><span>${approved ? "Hold to approve instead" : risky ? `Hold to approve · ${out.length} out` : "Hold to approve"}</span></button></div>`}
     </div>`;
-  }).join("");
+  }).join("") + (list.length > show.size ? `<button class="link more-plans" data-more>${allPlans ? "Fewer plans ▴" : `${hidden} more plan${hidden === 1 ? "" : "s"} ▸`}</button>` : "");
+  const more = box.querySelector("[data-more]");
+  if (more) more.onclick = () => { allPlans = !allPlans; renderPlans(); };
   box.querySelectorAll("[data-try]").forEach((b) => { b.onclick = () => setActions(list[Number(b.dataset.try)].actions.map((a) => ({ ...a }))); });
   const sb = box.querySelector("[data-storm]");
   if (sb) sb.onclick = () => setActions(storm.plan.actions.map((a) => ({ ...a })));
@@ -735,6 +778,7 @@ async function startWalk(plan) {
     // runs.js logged the approval; keep the full plan (actions, cost) for the handoff.
     if (r && approved && approved.run === r.id && r.plan_id === plan.id) approved.plan = plan;
     renderAll();
+    $("run").scrollIntoView({ block: "nearest", behavior: "smooth" });
     return;
   }
   let res;
@@ -752,6 +796,7 @@ async function startWalk(plan) {
   if (!walk.steps.length) walk = null;
   else goStep(0);
   renderAll();
+  if (walk) $("walk").scrollIntoView({ block: "nearest", behavior: "smooth" });
 }
 function goStep(i) {
   if (!walk) return;
@@ -821,9 +866,13 @@ function render() {
   const view = viewAt(tMin);
   placeTrucks(view);
   $("clock").textContent = shiftlog.clockNow(true); // the real "now" never moves with the slider
-  $("tankKicker").textContent = tMin === 0 ? "Tank levels" : `Tank levels at ${clockAt(tMin)} (forecast)`;
+  // Slider minute 0 is when the forecast was computed. Once the shift clock has moved on,
+  // calling it "now" would put two different times on screen under the same word.
+  const behind = minutesSinceData();
+  const liveLevels = liveFeed.live.available && !liveFeed.live.lostSince;
+  $("tankKicker").textContent = tMin === 0 ? (liveLevels ? "Tank levels" : `Tank levels · as of ${clockAt(0)}`) : `Tank levels at ${clockAt(tMin)} (forecast)`;
   $("timeClock").textContent = clockAt(tMin);
-  $("timeRel").textContent = tMin === 0 ? "now" : `+${tMin} min`;
+  $("timeRel").textContent = tMin === 0 ? (behind >= 1 ? "forecast start" : "now") : `+${tMin} min`;
   $("timeLabel").textContent = actions.length ? `Forecast with ${actions.length} change${actions.length > 1 ? "s" : ""}` : "Forecast, no action";
   renderSelected(view);
   renderTanks(view);
@@ -922,7 +971,7 @@ function handoffText() {
   const cons = (a) => {
     const m = alarms.minutesLeft(a);
     return a.consequence_clock && a.consequence_asset_id
-      ? ` ${nice(a.consequence_asset_id)} shuts in at ${a.consequence_clock}${m != null ? (m > 0 ? ` (${m} min)` : " (now)") : ""}.`
+      ? ` ${nice(a.consequence_asset_id)} reaches shutdown at ${a.consequence_clock}${m != null ? (m > 0 ? ` (${m} min)` : " (now)") : ""}.`
       : a.consequence ? ` ${a.consequence}` : "";
   };
 
@@ -1219,6 +1268,8 @@ async function refreshData() {
   })();
 }
 setInterval(refreshData, 60000);
+// The countdown counts down between forecast reads (and offline, where there are none).
+setInterval(() => { if (data) renderIncident(); }, 30000);
 let alertKick = 0;
 liveFeed.on("alert", () => { clearTimeout(alertKick); alertKick = setTimeout(refreshData, 2000); });
 liveFeed.on("feed", () => { if (data) { renderFeed(); render(); } });
@@ -1307,7 +1358,7 @@ async function boot() {
   if (built) shiftlog.add("open", `Field "${built.name}" built from an uploaded blueprint in ${built.secs} s${built.status === "fallback" ? `, on the standard model (${built.note})` : ""}.`);
   if (!shiftlog.entries().length) {
     const ev = shutdownOf(baseline);
-    shiftlog.add("open", `Console opened. ${(state.incident && state.incident.summary) || "No incident."}${ev ? ` ${nice(ev.asset_id)} hits shutdown at ${clockAt(ev.t_min)} if nobody acts.` : ""}`);
+    shiftlog.add("open", `Console opened. ${(state.incident && state.incident.summary) || "No incident."}${ev ? ` ${nice(ev.asset_id)} reaches shutdown at ${clockAt(ev.t_min)} if nobody acts.` : ""}`);
   }
   fc = baseline;
   scene.add(model.root);
@@ -1346,7 +1397,7 @@ async function boot() {
     nice,
     usd,
     clockAt,
-    startClock: () => data.state.clock || "",
+    startClock: () => clockAt(0),
     clockIn: (m) => shiftlog.clockNow(false, m),
     select: (id) => select(id, true),
     log: (text) => { shiftlog.add("alarm", text); renderLog(); },
@@ -1360,7 +1411,7 @@ async function boot() {
     log: (text) => { shiftlog.add("step", text); renderLog(); },
     progress: (r) => {
       if (!approved || approved.run !== r.id) {
-        if (!approved || approved.run) approved = { plan: { summary: r.summary, cost: { total_usd: r.cost_usd }, actions: r.steps.map((s) => s.action).filter(Boolean) }, steps: r.steps, done: 0, at: shiftlog.clockNow(), run: r.id };
+        if (!approved || approved.run) approved = { plan: { id: r.plan_id, summary: r.summary, cost: { total_usd: r.cost_usd }, actions: r.steps.map((s) => s.action).filter(Boolean) }, steps: r.steps, done: 0, at: shiftlog.clockNow(), run: r.id };
         else return;
       }
       approved.steps = r.steps;
@@ -1374,6 +1425,7 @@ async function boot() {
         fresh = true;
       }
       if (fresh) renderLog();
+      renderPlans(); // the approved plan's card shows how far the run got
     },
   });
   window.__freeboard = { assets, select, viewAt: (t) => viewAt(t), missing, setActions, get actions() { return actions; }, handoff: () => handoffText() };

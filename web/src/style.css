@@ -5,7 +5,7 @@
   --line: rgba(232,226,214,.11);
   --ink: #e8e2d6;
   --ink-2: #a39d91;
-  --muted: #5e5a53;
+  --muted: #858076; /* 5:1 on --bg: kickers and stamps stay readable on a projector */
   --warning: #c9a14a;
   --alarm: #ff4b1f;
   --offline: #2a2825;
@@ -14,7 +14,7 @@
   --display: "Gloock", "Times New Roman", serif;
 }
 * { box-sizing: border-box; }
-html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink); font: 14px/1.45 var(--sans); }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink); font: 14px/1.45 var(--sans); font-variant-ligatures: none; /* Azeret Mono draws "fi" as a dotless ı */ }
 #app { display: grid; grid-template-columns: minmax(0, 1fr) 360px; height: 100vh; }
 
 #stage { position: relative; overflow: hidden; }
@@ -138,6 +138,8 @@ button.try.on { border-color: var(--trying); color: var(--trying); }
 .stamp { margin: 4px 0 0 26px; font: 11px var(--mono); color: var(--warning); }
 .stamp.fragile { color: var(--muted); }
 .plan-btns { display: flex; gap: 8px; margin: 8px 0 0 26px; }
+.approved-stamp { margin: 8px 0 0 26px; font: 600 11px var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--good); }
+.more-plans { margin: 8px 0 0 26px; font: 11px var(--mono); }
 .walk .plan-btns { margin-left: 0; }
 
 .lastcall { margin-top: 10px; padding-top: 8px; border-top: 1px dashed var(--line); font-size: 13px; color: var(--ink-2); }
@@ -199,7 +201,7 @@ body::after { content: ""; position: fixed; inset: -50%; pointer-events: none; z
 @keyframes grain { 0%{transform:translate(0,0)} 33%{transform:translate(-3%,2%)} 66%{transform:translate(2%,-3%)} 100%{transform:translate(0,0)} }
 #stage::after { content: ""; position: absolute; inset: 0; pointer-events: none; background: radial-gradient(ellipse at center, transparent 45%, rgba(0,0,0,.75)); }
 .clock, .incident .countdown, .asset-id { font-family: var(--display); font-weight: 400; letter-spacing: 0; }
-.clock { font-size: 56px; }
+.clock { font-size: 44px; }
 .brand { font-family: var(--display); font-size: 20px; letter-spacing: .32em; color: var(--ink); }
 .kicker::before { content: "// "; color: var(--muted); }
 button { background: transparent; text-transform: uppercase; letter-spacing: .12em; font-size: 11px; }

@@ -28,6 +28,7 @@ assert.match(W.summary({ status: "unavailable", why: "offline mode" }), /not che
 const base = { status: "ok", alerts: [], alertsChecked: true, source: "t", thunderPct: 0, gustKmh: 10, visM: 16000, at: Date.now() };
 // Never "no risk" from missing or old data (review #3), and Wind Chill is not wind (#16).
 assert.doesNotMatch(W.summary(base), /no .*risk/i);
+assert.doesNotMatch(W.summary(base), /not checked/, "everything checked: nothing listed as unchecked");
 assert.match(W.summary({ ...base, alertsChecked: false }), /warnings not checked/);
 assert.match(W.summary({ ...base, thunderPct: null, gustKmh: null, visM: null }), /thunder, wind, visibility not checked/);
 assert.match(W.summary({ ...base, at: Date.now() - 25 * 60000 }), /last checked 25 min ago/);

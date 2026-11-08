@@ -46,7 +46,7 @@ let loadedOnce = false;     // the alerts feed answered at least once
 let loadError = "";         // why the last load failed, while it keeps failing
 
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
-const label = (m) => (m < 60 ? `${m} min` : m % 60 ? `${Math.floor(m / 60)} h ${m % 60} min` : `${m / 60} h`);
+const label = (m) => (m < 120 ? `${m} min` : m % 60 ? `${Math.floor(m / 60)} h ${m % 60} min` : `${m / 60} h`);
 
 // ------------------------------------------------------------------ model ----
 function nowT() {
@@ -289,7 +289,7 @@ function consequenceLine(a) {
   const m = minutesLeft(a);
   const who = a.consequence_asset_id ? hooks.nice(a.consequence_asset_id) : "";
   const text = a.consequence_clock && who
-    ? `${who} shuts in at ${a.consequence_clock}${m != null ? (m > 0 ? ` (${label(m)})` : " (now)") : ""}`
+    ? `${who} reaches shutdown at ${a.consequence_clock}${m != null ? (m > 0 ? ` (${label(m)})` : " (now)") : ""}`
     : a.consequence;
   const usd = a.usd_at_risk ? ` · ${hooks.usd(a.usd_at_risk)} at risk` : "";
   return `<div class="al-cons">${esc(text)}<span class="muted">${esc(usd)}</span></div>`;

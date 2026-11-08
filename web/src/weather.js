@@ -180,7 +180,7 @@ export function summary(w = state) {
   if (w.visM != null) bits.push(`visibility ${w.visM >= 16000 ? "10+" : (w.visM / MILE_M).toFixed(1)} mi`);
   // Never "no risk": only what NWS flagged, and what wasn't checked.
   const missing = [w.thunderPct == null && "thunder", w.gustKmh == null && "wind", w.visM == null && "visibility"].filter(Boolean);
-  const unchecked = [w.alertsChecked === false && "warnings", ...missing];
+  const unchecked = [w.alertsChecked === false && "warnings", ...missing].filter(Boolean);
   const head = hz.length ? hz.map((h) => h.text).join(" · ")
     : unchecked.length ? `No NWS storm, dust or wind flags, but ${unchecked.join(", ")} not checked`
     : "No NWS storm, dust or wind flags";
