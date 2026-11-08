@@ -628,6 +628,43 @@ A read-only push, so it needs no token.
 - When the alerts can't be built, the tick still carries the clock, with `"alerts": null` and `"error": { "status": 503, "detail": "..." }`. A problem with the dataset itself arrives once as `{ "type": "error", "status": 503, "detail": "..." }` (500 for an internal error), and ticks resume when it clears. With dataset mode off, the socket sends that error and closes with code 1013.
 - Messages from the client are ignored.
 
+### /api/dataset (the /dataset page)
+
+backend/app/eog/dataset_api.py (#152). The client is web/src/dataset (data.js `apiSource()`, alerts.js `normAlerts()`). Every number is the same cached detect and plan output `/api/eog/*` serves, so the two never disagree. Every route answers 503 with one sentence while dataset mode is off. `?at=` is a ts_unix or ISO 8601 UTC, clamped into the data, default the folder's last `ts_unix` (not the clock cursor). `?folder=` picks a dataset for one request without changing the active one.
+
+| Route | Answer |
+|---|---|
+| `GET /api/dataset` | `{"folder": "<active id>", "folders": ["history/full_week", "test", ...]}` (ids from `dataset.discover`) |
+| `POST /api/dataset/load` `{"folder"}` | activates it, like `POST /api/eog/datasets/activate`, and starts building its 3D in the background; answers like `GET /api/dataset`. 404 unknown folder, 422 bad body. Same-site only (origin_guard), but no operator token: it only picks the recording on screen, and the page posts it with plain `fetch`. |
+| `GET /api/dataset/file/{name}` | the active folder's `network.json`, `ops.json` (application/json) or `telemetry.csv` (text/csv, streamed with Content-Length) byte for byte. Any other name, `answer_key.json` above all, is 404. |
+| `GET /api/dataset/alerts?at=&folder=` | `{"folder", "at", "now", "last", "count", "ongoing", "alerts": [...]}`: ongoing events in SPEC order (`plan.alerts_order`), then resolved ones by onset. |
+| `GET /api/dataset/events.json?at=&folder=` | the SPEC events.json list (the same as `GET /api/eog/events?download=1`), `Content-Disposition: attachment; filename="events.json"` |
+| `GET /api/dataset/field.glb?system=` | `ingest.eog_field.field_glb(active folder, system)` as model/gltf-binary. Blender builds it when installed (`$BLENDER` or the Mac app), else the model kit; a failed Blender build falls back to the kit (`FREEBOARD_GLB_ENGINE=kit\|blender` forces one). Builds run in a threadpool, are cached on disk and in memory, and every system of a dataset is built in a background thread once it is activated by either route (`Service.ON_ACTIVATE`), or first listed or asked for. 404 unknown system, 422 no system, 503 with the build's errors. |
+| `GET /api/dataset/field_ids?system=` | the ids.json beside that glb |
+| `GET /api/eog/blueprint?system=` | `ingest.eog_network`'s blueprint for that system; without `?system=`, `{"dataset", "systems": {id: blueprint}}` |
+
+Each alert is the SPEC events.json entry plus the page's fields; every key is always there (null when it doesn't apply). EV-0020 of history/snapshot_2026-10-10T0900:
+
+```json
+{ "event_id": "EV-0020", "system_id": "S4", "facility_id": "S4_FACILITY_D", "asset_id": "S4_PUMP_D",
+  "category": "pump_failure", "status": "ongoing", "onset_ts": "2026-10-10T07:30:00Z", "onset_unix": 1791617400,
+  "end_ts": null, "end_unix": null, "confidence": 0.99, "evidence": ["S4_PUMP_D reports a fault (status 2) from ..."],
+  "level_pct": 59.2, "hours_to_limit": { "p50": 3.48, "p10": 3.48, "p90": 3.48 },
+  "recommended_actions": [{ "type": "shut_in_wells", "wells": ["S4_WELL_D2"], "start_after_min": 108 }], "est_cost": 1215.0,
+  "order": 3, "title": "S4_PUMP_D failed: S4_TANK_D reaches shutdown at 12:29 (in 3 h 29 min)", "detected_at": 1791617400,
+  "trips_at_unix": 1791635340, "trips_at_ts": "2026-10-10T12:29:00Z", "repair_end_unix": 1791639000,
+  "repair_end_ts": "2026-10-10T13:30:00Z", "tripped": false, "lost_revenue_per_hour": 3037.5, "do_nothing_cost": 3119.69,
+  "plan": { "summary": "shut in S4_WELL_D2 at +108 min, ~100 min before the trip (~$1,215)",
+            "actions": [{ "type": "shut_in_wells", "wells": ["S4_WELL_D2"], "start_after_min": 108 }], "cost": 1215.0,
+            "trip_at": null, "expires_at": 1791629280, "...": "the rest of the /api/eog alert's action" },
+  "approval": null }
+```
+
+- `hours_to_limit`, `trips_at_unix` and `level_pct` are the Event's countdown block, from `plan.countdown`. `hours_to_limit` is null except for ongoing pump failures, and null for one whose tank won't reach shutdown.
+- `recommended_actions` and `est_cost` are the plan from now (`plan.plan_failures`, joint per system) for an ongoing pump failure, the plan made at its onset for a resolved one, and SPEC's defaults for the rest. `plan` and `do_nothing_cost` (the "none" option of `plan.alternatives` with the trucks `/api/eog/plans` leaves it) are only for ongoing pump failures.
+
+gaia: once a dataset has been activated by either route (`POST /api/eog/datasets/activate` or `POST /api/dataset/load`; both set `Service.activated`), or while the console's legacy routes serve a dataset (#153), gaia's `list_alerts`, `explain_asset`, `get_forecast` and `get_plans` answer from the active dataset at the clock cursor (backend/app/eog/gaia.py, one guarded line in `Jarvis.run_tool`), with the same top-level keys, sponsor ids, the dataset's UTC clock and a `source` naming the folder and the cut. `propose_action` answers with a sentence: the dataset is a recording, and a plan can be approved for its steps and a radio script (`POST /api/eog/plans/{event_id}/approve`). With no dataset ever activated and no legacy route serving one, gaia reads the live field exactly as before.
+
 ## API
 
 The default server address is `http://127.0.0.1:8000`. All numbers below are examples. Times are minutes from now.
