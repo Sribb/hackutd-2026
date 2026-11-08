@@ -154,7 +154,7 @@ In build order. M3 is 2:00 AM CST, M4 (feature freeze) is 6:00 AM CST.
 The rows below that change `web/` are new modules plus small hooks, and **Ronak merges them**, the same as #101.
 
 ### CF-17: 3D alarm markers by priority (TOP 10)
-- **Build:** each alarmed asset gets a marker above it. P1 is a pulsing red ring, P2 is amber, and P3 is small and steady. A shelved alarm is a hollow gray ring with a clock. At overview zoom, each pad shows one badge with its alarm count. Drive it through the `alarm` source in `highlight.js` (#101), and let #102's freeboard tag take over on tanks so no tank gets two markers.
+- **Build:** each alarmed asset gets a marker above it. P1 is a pulsing red ring, P2 is amber, and P3 is small and steady. A shelved alarm is a hollow gray ring with a clock. At overview zoom, each pad shows one badge with its alarm count. Drive it through the `alarm` source in `highlight.js` (#101), and on tanks, coordinate with the freeboard tag in the Freeboard Remote port so no tank gets two markers.
 - **Why:** Ignition has no native 3D, and its users embed a web viewer in an iframe [I4]. ISA-101 practice keeps color for abnormal states only [I3] [X7], which is how our gray field already works.
 - **Acceptance:** after the trip, Pump 3 has the only pulsing red ring, and its pad badge says "1 + 3 related". Shelving the alarm turns the ring hollow. The console holds 30 fps or better on the demo laptop.
 - **Effort:** M. **Milestone:** M4. **Files:** a new `web/src/` module and a hook; Ronak merges.
