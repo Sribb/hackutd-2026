@@ -12,7 +12,7 @@ Each task below is a `CF-N` row. Pick yours by owner. Do not start another lane'
 ## Rules for every agent
 
 1. **Lanes from AGENTS.md hold.** Nobody edits another lane's files without the owner's or the lead's OK on the board. Rows that touch two lanes say who writes and who merges.
-2. **Sriyan's 3D control panel rows touch `web/`.** They follow the #101 pattern: Sriyan's agent writes new modules under `web/src/` plus small hooks, and **Ronak merges**. They must fit #102 (the agent-first layout) and `web/src/highlight.js` (#101).
+2. **Sriyan's 3D control panel rows touch `web/`.** They follow the #101 pattern: Sriyan's agent writes new modules under `web/src/` plus small hooks, and **Ronak merges**. They must fit the default screen the lead picked, Vinny's "Freeboard Remote" layout ported beside the 3D field (see the board), and `web/src/highlight.js` (#101).
 3. **The orchestrator (Vinny's agent) folds the accepted rows into ROADMAP.md** and can reorder or reassign them. If Vinny's agent is saturated, CF-7 and CF-10 can move to Mounish, since both live in `backend/`.
 4. **After M4 (6:00 AM CST) only bug fixes land.** A row not merged by its milestone gets cut, not rushed.
 5. A row that changes an API updates `docs/CONTRACT.md` in the same commit and posts on the board.
@@ -40,7 +40,7 @@ In build order. M3 is 2:00 AM CST, M4 (feature freeze) is 6:00 AM CST.
 ## Ronak (`@ronakkasaram`): `web/`
 
 ### CF-1: Alarm list with live priority, ack, and shelve (TOP 10)
-- **Build:** an alarm list fed by `/api/alerts` and `/ws` (PR #57, extended by CF-7). In #102's layout it is the Watch agent's feed, and in Classic it is a panel. Each row shows the priority (P1, P2, P3), the asset, the plain-English cause, and the consequence with a clock time, like "Pump 3 tripped. Tank 3 shuts in at 2:47 AM (60 min)". Consequential alarms fold under their root cause as a count. **Ack** is one click. **Shelve** asks for a reason and a duration (15 min to 4 h), shows the time left, and the alarm comes back when the timer ends. Every ack and shelve writes a shift log line.
+- **Build:** an alarm list fed by `/api/alerts` and `/ws` (PR #57, extended by CF-7). In the Freeboard Remote layout it is the alerts feed beside the Jarvis chat, and in Classic it is a panel. Each row shows the priority (P1, P2, P3), the asset, the plain-English cause, and the consequence with a clock time, like "Pump 3 tripped. Tank 3 shuts in at 2:47 AM (60 min)". Consequential alarms fold under their root cause as a count. **Ack** is one click. **Shelve** asks for a reason and a duration (15 min to 4 h), shows the time left, and the alarm comes back when the timer ends. Every ack and shelve writes a shift log line.
 - **Why it beats them:** Ignition and Experion let operators shelve alarms [I7] [H1], but their priorities are set by an engineer ahead of time. Ours come from the live forecast, so the alarm with the least time left is always on top. The eLynx team itself says operators get over 50 alarm notifications a day [L5].
 - **Acceptance:** trip Pump 3 in the sim. Within 3 readings, one P1 row appears with the shutdown time. The tank high-level and well alarms that follow sit under it as "+N related", not as separate rows. Shelving without a reason is refused. A shelved alarm returns when its timer ends. The shift log shows every ack and shelve with the clock time.
 - **Effort:** M. **Milestone:** M3. **Depends on:** CF-7 (build against a fake JSON until it lands).
