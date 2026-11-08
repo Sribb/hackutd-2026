@@ -1,8 +1,11 @@
 // Look-dev shared by the preview pages (index.html and generate.js): image-based light from CC0
-// HDRIs, AgX tone mapping, soft sun shadows, a sky dome and distance fog that meet at the same
-// horizon color, a desert floor out to that horizon, a day / dusk / night toggle, and the moving
-// parts animated the way docs/CONTRACT.md says. Nothing here edits the field's own nodes except
-// lamp materials, which are cloned per mesh first so one lamp never lights another.
+// HDRIs (PMREM), Khronos PBR Neutral tone mapping, soft sun shadows, a sky dome and distance fog
+// that meet at the same horizon color, a desert floor out to that horizon, a day / dusk / night
+// toggle, and the moving parts animated the way docs/CONTRACT.md says. Nothing here edits the
+// field's own nodes except lamp materials, which are cloned per mesh first so one lamp never
+// lights another. Night follows docs/3D_QUALITY.md (#111): the moonlit HDRI at environment
+// intensity 0.3, exposure 0.9, Neutral tone mapping so status colors stay true (AgX turns ALARM
+// red pinkish), and shadow bias -0.0005 / normalBias 0.04 against acne on pads and tanks.
 import * as THREE from "three";
 import { RGBELoader } from "three/addons/loaders/RGBELoader.js";
 
@@ -12,9 +15,9 @@ export const MODES = {
   day: { hdri: "day", env: 0.9, sky: 1.0, horizon: 0xcfc6b8, sun: [215, 52], sunColor: 0xfff0dc, sunI: 2.6,
          exposure: 1.0, fog: [1.2, 9], lamps: 0, ground: 1.0 },
   dusk: { hdri: "day", env: 0.32, sky: 0.42, skyTint: 0xffb68a, horizon: 0xd7967a, sun: [252, 7], sunColor: 0xffa060,
-          sunI: 2.2, exposure: 1.05, fog: [0.9, 7], lamps: 0.45, ground: 0.95 },
+          sunI: 2.2, exposure: 1.3, fog: [0.9, 7], lamps: 0.45, ground: 0.95 },
   night: { hdri: "night", env: 0.3, sky: 0.35, horizon: 0x1a2232, sun: [150, 38], sunColor: 0x9db4ff, sunI: 0.45,
-           exposure: 1.05, fog: [0.6, 5], lamps: 1, ground: 0.9 },
+           exposure: 0.9, fog: [0.6, 5], lamps: 1, ground: 0.9 },
 };
 const LAMP_OK = new THREE.Color(0x8fa36b);  // the console's OK lamp color (web/src/main.js)
 const WARM = new THREE.Color(0xffdcae);
@@ -58,7 +61,7 @@ function brightestYaw(tex) {  // yaw of the HDRI's sun or moon, so the light can
 }
 
 export function createLook({ renderer, scene, camera, container, initial }) {
-  renderer.toneMapping = THREE.AgXToneMapping ?? THREE.ACESFilmicToneMapping;
+  renderer.toneMapping = THREE.NeutralToneMapping ?? THREE.ACESFilmicToneMapping;
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -82,7 +85,7 @@ export function createLook({ renderer, scene, camera, container, initial }) {
   floor.name = "LOOK_floor"; floor.rotation.x = -Math.PI / 2; floor.position.y = -0.45; floor.receiveShadow = true; floor.raycast = () => {};
   const sun = new THREE.DirectionalLight(0xffffff, 2);
   sun.name = "LOOK_sun"; sun.castShadow = true;
-  Object.assign(sun.shadow, { bias: -0.0004, normalBias: 0.06, radius: 3 });
+  Object.assign(sun.shadow, { bias: -0.0005, normalBias: 0.04, radius: 3 });  // no acne (3D_QUALITY.md)
   sun.shadow.mapSize.set(4096, 4096);
   const fill = new THREE.HemisphereLight(0xdfe8f0, 0x5a5048, 0);  // only used if an HDRI fails to load
   scene.add(dome, floor, sun, sun.target, fill);
@@ -98,6 +101,7 @@ export function createLook({ renderer, scene, camera, container, initial }) {
     const c = sun.shadow.camera, h = span * 0.62;
     Object.assign(c, { left: -h, right: h, top: h, bottom: -h, near: 1, far: span * 4 });
     c.updateProjectionMatrix();
+    sun.shadow.normalBias = 0.04 * Math.max(1, span / 470);  // bigger shadow box, bigger texels (Avon is 470 m)
     sun.target.position.copy(center);
   }
 
