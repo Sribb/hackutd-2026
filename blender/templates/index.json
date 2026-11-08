@@ -1,0 +1,67 @@
+{
+ "templates": [
+  {
+   "id": "avon",
+   "name": "Avon lease, 6 tanks",
+   "note": "The demo field. Pump 3 trips at 1:47 AM.",
+   "source": "scenario/field.json",
+   "glb": "../field.glb",
+   "report": "../build_report.json",
+   "ingest": "../templates/avon/ingest.json",
+   "blueprint": "../templates/avon/blueprint.json",
+   "counts": {
+    "tanks": 6,
+    "pumps": 6,
+    "valves": 7,
+    "wells": 24,
+    "disposal_wells": 2,
+    "trucks": 2,
+    "yards": 1
+   },
+   "review": 0,
+   "filled": 0
+  },
+  {
+   "id": "pecos",
+   "name": "Pecos lease, 8 tanks",
+   "note": "A complete blueprint for a bigger lease, with a simulated SCADA connector.",
+   "source": "scenario/samples/sample1_pecos_8tank.json",
+   "glb": "../templates/pecos/field.glb",
+   "report": "../templates/pecos/build_report.json",
+   "ingest": "../templates/pecos/ingest.json",
+   "blueprint": "../templates/pecos/blueprint.json",
+   "counts": {
+    "tanks": 8,
+    "pumps": 8,
+    "valves": 13,
+    "wells": 24,
+    "disposal_wells": 3,
+    "trucks": 3,
+    "yards": 1
+   },
+   "review": 0,
+   "filled": 0
+  },
+  {
+   "id": "delaware",
+   "name": "Delaware lease, 4 tanks (from a spreadsheet)",
+   "note": "An equipment list the way most operators keep it. Review asks for 14 numbers.",
+   "source": "scenario/samples/sample2_delaware_4tank.csv",
+   "glb": "../templates/delaware/field.glb",
+   "report": "../templates/delaware/build_report.json",
+   "ingest": "../templates/delaware/ingest.json",
+   "blueprint": "../templates/delaware/blueprint.json",
+   "counts": {
+    "tanks": 4,
+    "pumps": 4,
+    "valves": 5,
+    "wells": 8,
+    "disposal_wells": 1,
+    "trucks": 1,
+    "yards": 1
+   },
+   "review": 14,
+   "filled": 14
+  }
+ ]
+}
