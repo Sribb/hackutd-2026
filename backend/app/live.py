@@ -128,6 +128,7 @@ class LiveField:
         self._told: dict[str, tuple] = {}            # alert id -> (priority, consequence asset, time) last broadcast
         self._task: Optional[asyncio.Task] = None
         self.loop: Optional[asyncio.AbstractEventLoop] = None   # the loop start() ran on
+        self.brief_hook = None                       # jarvis_tools.BriefFeed.poke, set by live_api
         self.ingest(self.registry.read())
 
     # ---------- loop ----------
@@ -179,6 +180,7 @@ class LiveField:
             await self.hub.broadcast("alert", {"alert": alert, "event": event})
             if event == "unshelved":
                 self.notifier.push(alert)   # the shelf ran out and the alarm still holds: it is back
+        self._poke_brief(changed)
 
     # ---------- priority, root cause, and shelving (CF-7) ----------
     def _follow_up(self, changed: list[dict]) -> list[tuple[str, dict]]:
@@ -384,6 +386,7 @@ class LiveField:
         for alert in changes.get("resolved_alerts", []):
             await self.hub.broadcast("alert", {"alert": alert, "event": "resolved"})
         await self.hub.broadcast("state", {"state": self.state()})
+        self._poke_brief(changes.get("resolved_alerts") or [], force=True)
 
     async def reload_and_publish(self, scenario: dict, raw: Optional[dict] = None) -> dict:
         changes = self.reload(scenario, raw)
@@ -400,6 +403,16 @@ class LiveField:
         directive = {"type": "ui", "action": "focus", "asset_id": asset_id}
         await self.hub.broadcast("ui", {"action": "focus", "asset_id": asset_id, "reason": reason, "source": source})
         return directive
+
+    async def ui(self, directive: dict) -> dict:
+        """Broadcast one checked screen directive (jarvis_tools.check_directive) to every screen."""
+        await self.hub.broadcast("ui", {k: v for k, v in directive.items() if k != "type"})
+        return directive
+
+    def _poke_brief(self, changed=(), force: bool = False) -> None:
+        """Tell the Jarvis brief feed (jarvis_tools.BriefFeed, set by live_api) something changed."""
+        if self.brief_hook is not None:
+            self.brief_hook(changed, force)
 
     # ---------- views ----------
     def value(self, asset_id: str, signal: str):
@@ -600,6 +613,7 @@ class LiveField:
         await self.hub.broadcast("proposal", {"proposal": p})
         await self.focus(a["asset_id"], p["result"], source="action")
         await self.hub.broadcast("state", {"state": self.state()})
+        self._poke_brief(force=ok)
         return p
 
     async def _send_if_current(self, conn, a: dict, gen: int, is_sim: bool, started: list) -> Optional[dict]:

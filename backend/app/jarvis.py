@@ -32,6 +32,7 @@ import os
 import re
 from typing import Any, Callable, Optional
 
+from . import jarvis_intents, jarvis_tools   # console tools and intents (docs/JARVIS_CONSOLE.md section 5)
 from .fieldmap import name
 from .forecast import clock_at
 from .live import ActionError, LiveField
@@ -209,6 +210,7 @@ TOOLS = [
                              "type": "string", "description": "One sentence: why, citing the tool result"}}},
     },
 ]
+TOOLS += jarvis_tools.extend_tools(TOOLS)
 
 
 class Jarvis:
@@ -252,8 +254,9 @@ class Jarvis:
         ctx: dict = {"ui": [], "proposals": [], "role": role}
         rules_first = mode == "rules" or (mode != "llm" and not (key and (COMPLEX.search(text.lower()) or
                                                                            (image_png_base64 and not selected))))
-        reply, source = None, "rules"
-        if rules_first:
+        # Deterministic intents first, even before COMPLEX sends a question to Claude.
+        reply, source = (None if mode == "llm" else await jarvis_intents.match(self, text, selected, ctx)), "rules"
+        if reply is None and rules_first:
             reply = await self._rules(text, selected, ctx)
         if reply is None:
             if mode == "rules":
@@ -262,11 +265,16 @@ class Jarvis:
                 raise JarvisUnavailable(NO_KEY)
             else:
                 reply, source = await self._claude(text, selected, image_png_base64, ctx), "claude"
-        return {"reply": reply, "source": source, "ui": ctx["ui"], "proposals": ctx["proposals"]}
+        return {"reply": reply, "source": source, "ui": ctx["ui"], "proposals": ctx["proposals"],
+                **jarvis_tools.extras(ctx)}
 
     # ---------- tools (both engines) ----------
     async def run_tool(self, tool: str, args: dict, ctx: dict) -> Any:
         if (g := __import__(f"{__package__}.eog.gaia", fromlist=["TOOLS"])).active() and tool in g.TOOLS: return await g.run_tool(tool, args, ctx)  # noqa: E501,E701 - a dataset on screen answers (eog/gaia.py, #152)
+
+        out = await jarvis_tools.run(self, tool, args, ctx)
+        if out is not jarvis_tools.PASS:
+            return out
         live = self.live
         if tool == "focus_camera":
             aid = str(args.get("asset_id", "")).upper()
@@ -342,13 +350,10 @@ class Jarvis:
         return self.live.live_scenario(), []
 
     def _note_ui(self, aid: str, ctx: dict) -> None:
-        d = {"type": "ui", "action": "focus", "asset_id": aid}
-        if not ctx["ui"] or ctx["ui"][-1] != d:
-            ctx["ui"].append(d)
+        jarvis_tools.note_focus(self.live, aid, ctx)
 
     async def _focus(self, aid: str, ctx: dict) -> None:
-        await self.live.focus(aid, source="jarvis")
-        self._note_ui(aid, ctx)
+        await jarvis_tools.focus(self, aid, ctx)
 
     async def _ui_action(self, args: dict, ctx: dict) -> dict:
         """One on-screen step for the console to play, in order (directives.js whitelist).
@@ -615,6 +620,7 @@ class Jarvis:
             "equipment has changed.\n"
             "- Name assets like a person would ('Tank 3', 'the Tank 3 to 4 crossover'), not by ID.\n\n"
             f"Asset IDs: {json.dumps(ids)}\nTanks: {json.dumps(tanks)}"
+            + jarvis_tools.PROMPT
         )
 
     def _anthropic(self):

@@ -184,7 +184,8 @@ def test_rules_bind_this_to_the_selection():
     out = run(make(tripped_field()).handle("what's wrong with this?", selected=["TANK_3"]))
     assert out["source"] == "rules"
     assert out["reply"].startswith("Tank 3 is at "), out["reply"]
-    assert out["ui"][0] == {"type": "ui", "action": "focus", "asset_id": "TANK_3"}
+    ui0 = out["ui"][0]  # Track A adds an id/source/reason to every directive; compare what matters
+    assert {k: ui0[k] for k in ("type", "action", "asset_id")} == {"type": "ui", "action": "focus", "asset_id": "TANK_3"}
 
 
 def test_route_accepts_selected():

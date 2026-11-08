@@ -14,8 +14,10 @@
     POST /api/actions/{id}/confirm        send it through the asset's connector
     POST /api/actions/{id}/reject
     POST /api/jarvis                      ask Jarvis
+    GET  /api/jarvis/brief                countdown, plans, Last Call for the console's agents
+    POST /api/jarvis/preview              {action}: what a fix card's action would change (compare_whatif)
     GET  /api/audit                       who proposed, confirmed, rejected, acked what (CF-10)
-    WS   /ws                              state, alert, proposal, ui
+    WS   /ws                              state, alert, proposal, ui, brief
 
 Control tokens (#103, auth.py): with FREEBOARD_TOKEN, OPERATOR_PIN, or FREEBOARD_PHONE_TOKEN
 set, every POST here needs X-Freeboard-Token (the webhook readings route keeps its own
@@ -43,7 +45,7 @@ from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, WebSocke
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, field_validator
 
-from . import auth
+from . import auth, jarvis_tools
 from .auth import Caller, require_role
 from .connectors.webhook import WebhookConnector
 from .forecast import forecast
@@ -143,6 +145,10 @@ class FaultIn(BaseModel):
     rate_bbl_hr: Optional[float] = None
 
 
+class PreviewIn(BaseModel):
+    action: dict
+
+
 class DecideIn(BaseModel):
     by: str = ""
 
@@ -173,6 +179,7 @@ PHONE = Depends(require_role(auth.PHONE))   # phone or operator
 
 def build_router(live: LiveField, jarvis: Jarvis) -> APIRouter:
     r = APIRouter()
+    brief = jarvis_tools.BriefFeed.attach(live, jarvis)
 
     def fail(e: ActionError):
         raise HTTPException(e.status, e.detail)
@@ -284,6 +291,17 @@ def build_router(live: LiveField, jarvis: Jarvis) -> APIRouter:
         except JarvisUnavailable as e:
             raise HTTPException(503, e.detail)
 
+    @r.get("/api/jarvis/brief")
+    async def jarvis_brief() -> dict:
+        return await brief.get()
+
+    @r.post("/api/jarvis/preview")
+    async def jarvis_preview(body: PreviewIn, _caller: Caller = PHONE) -> dict:
+        out = await jarvis_tools.compare_whatif(jarvis, [body.action])
+        if "error" in out:
+            raise HTTPException(422, out["error"])
+        return out
+
     @r.get("/api/audit")
     def get_audit(since: int = 0) -> dict:
         return {"entries": live.audit.entries(since)}
@@ -320,6 +338,8 @@ def build_router(live: LiveField, jarvis: Jarvis) -> APIRouter:
         auth_until = asyncio.get_running_loop().time() + WS_AUTH_S if not token.strip() else None
         try:
             await live.hub.send(client, "state", {"state": live.state()})
+            if brief.latest is not None:
+                await live.hub.send(client, "brief", {"brief": brief.latest})
             while True:
                 msg = await websocket.receive_json()
                 if not isinstance(msg, dict):
@@ -342,9 +362,15 @@ def build_router(live: LiveField, jarvis: Jarvis) -> APIRouter:
                 auth_until = None
                 if msg.get("type") == "ping":
                     await live.hub.send(client, "pong", {})
-                elif steer and msg.get("type") == "ui" and live.fmap.kind_of(str(msg.get("asset_id", ""))):
-                    # A phone can point every console at an asset (with tokens on, only with a valid one).
-                    await live.focus(msg["asset_id"], str(msg.get("reason", "")), source=client.role)
+                elif steer and msg.get("type") == "ui":
+                    # A tokened phone or console can steer every screen, through the same whitelist
+                    # as Jarvis (jarvis_tools.check_directive). An untokened client never can.
+                    d, _why = jarvis_tools.check_directive(live, {"action": "focus", **msg})
+                    if d:
+                        cid = str(msg.get("id") or "")
+                        d.update(id=cid if jarvis_tools.CLIENT_ID.match(cid) else jarvis_tools.new_id(),
+                                 source=client.role, reason=str(msg.get("reason", ""))[:200])
+                        await live.ui(d)
         except (WebSocketDisconnect, RuntimeError, ValueError):
             pass
         finally:
