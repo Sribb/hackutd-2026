@@ -292,3 +292,10 @@ button { text-transform: lowercase; } /* browsers reset text-transform on button
 .ds-outage-t td { vertical-align: top; }
 .ds-outage-t td:first-of-type { text-align: left; }
 .ds-outage-t .ds-plan { margin: 0; }
+@media (max-width: 600px) {
+  .ds-outage-t, .ds-outage-t tbody { display: block; }
+  .ds-outage-t tr { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 8px; padding: 6px 0; border-top: 1px solid var(--line); }
+  .ds-outage-t th { width: auto; grid-column: 1; grid-row: 1; }
+  .ds-outage-t td:last-child { grid-column: 2; grid-row: 1; }
+  .ds-outage-t td:first-of-type { grid-column: 1 / -1; grid-row: 2; }
+}
