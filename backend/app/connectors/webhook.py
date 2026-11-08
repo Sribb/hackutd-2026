@@ -7,7 +7,9 @@ an asset it doesn't own.
 
 Commands go out: a confirmed command is POSTed as JSON to config.url:
     {"connector_id", "command", "asset_id", "value", "target_id", "address"}
-Any 2xx counts as delivered.
+Any 2xx counts as delivered, any other answer as FAILED, and no connection at all (connect
+error or connect timeout) as FAILED with "Couldn't reach". Once the POST may have gone out,
+a read timeout, a reset, or a dropped reply is `uncertain` (UNCERTAIN, never FAILED).
 
 Config: url, timeout_s (default 5), token_env (an environment variable holding a
 shared token: sent as "Authorization: Bearer <token>" on commands, and required as
@@ -22,7 +24,13 @@ from typing import Callable, Optional
 import httpx
 
 from ..fieldmap import SIGNALS, FieldMap
-from .base import Connector, Reading
+from .base import UNCERTAIN_DETAIL, Connector, Reading
+
+# Errors raised before any byte of the command left: the gateway never saw it (FAILED).
+# Anything else after the connection opened (ReadTimeout, WriteTimeout, ReadError, a reset,
+# RemoteProtocolError) may have delivered it, so it is UNCERTAIN.
+NOT_SENT = (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout, httpx.UnsupportedProtocol,
+            httpx.InvalidURL, httpx.LocalProtocolError, httpx.ProxyError)
 
 
 class WebhookConnector(Connector):
@@ -85,10 +93,22 @@ class WebhookConnector(Connector):
                 self.last_error = None
                 return {"ok": True, "detail": f"Delivered to {self.id} (HTTP {r.status_code})."}
             self.last_error = f"HTTP {r.status_code}"
+            if r.status_code == 408 or r.status_code >= 500:
+                # A gateway/proxy error or timeout: the POST was forwarded and the device may have acted.
+                return {"ok": False, "uncertain": True,
+                        "detail": f"{self.id} answered HTTP {r.status_code}: sent, delivery not confirmed. "
+                                  "Check the field before trying again."}
             return {"ok": False, "detail": f"{self.id} answered HTTP {r.status_code}."}
+        except NOT_SENT as e:
+            # Nothing left: no connection was made (or the request could not be built).
+            self.last_error = str(e) or type(e).__name__
+            return {"ok": False, "detail": f"Couldn't reach {self.id}: {e or type(e).__name__}"}
         except Exception as e:  # noqa: BLE001 - a dead endpoint must never break the console
-            self.last_error = str(e)
-            return {"ok": False, "detail": f"Couldn't reach {self.id}: {e}"}
+            # The POST may have gone out (a read timeout, a reset, a dropped reply): the gateway
+            # may have acted on it, so it is UNCERTAIN, never FAILED, and nothing re-sends it.
+            self.last_error = str(e) or type(e).__name__
+            return {"ok": False, "uncertain": True,
+                    "detail": f"{self.id}: POST to {self.url} {UNCERTAIN_DETAIL} ({type(e).__name__}: {e})."}
 
     def status(self) -> dict:
         missing_token = bool(self.config.get("token_env")) and not self.secret("token")

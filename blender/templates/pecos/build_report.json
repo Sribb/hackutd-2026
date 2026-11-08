@@ -4,6 +4,17 @@
   "warnings": [
     "connections are checked but not drawn; piping follows tank_id, pump, and valve fields"
   ],
+  "timing": {
+    "plan": 0.0,
+    "field": 3.87,
+    "scenery": 0.65,
+    "checks": 0.0,
+    "look": 0.36,
+    "optimize": 1.73,
+    "export": 1.13,
+    "blend": 0.09,
+    "report": 0.01
+  },
   "blueprint": "blender/templates/pecos/blueprint.json",
   "name": "Pecos Ridge lease - night shift",
   "site": {
@@ -25,7 +36,46 @@
     "wells": 24,
     "disposal_wells": 3,
     "trucks": 3,
-    "yards": 1
+    "yards": 1,
+    "equipment": 0
+  },
+  "look": {
+    "mode": "fast",
+    "textures": true,
+    "materials": {
+      "M_BUILDING": 13,
+      "M_CONCRETE": 73,
+      "M_CONTAINMENT": 16,
+      "M_GALV": 134,
+      "M_GLASS": 63,
+      "M_HDPE": 24,
+      "M_LINER": 11,
+      "M_MOTOR": 51,
+      "M_PIPE": 109,
+      "M_PJ_DARK": 48,
+      "M_PJ_PAINT": 96,
+      "M_PUMP_PAINT": 8,
+      "M_RUBBER": 20,
+      "M_STEEL": 16,
+      "M_STEEL_DARK": 135,
+      "M_STENCIL": 81,
+      "M_TANK": 12,
+      "M_TRUCK_CAB": 3,
+      "M_TRUCK_TANK": 3,
+      "M_WOOD": 2
+    },
+    "styled": 918,
+    "looks": 313,
+    "theirs": 47,
+    "gaps_filled": 0,
+    "ao_uv_meshes": 0,
+    "seconds": {
+      "roles": 0.04,
+      "uvs": 0.28,
+      "weather": 0.04,
+      "ao": 0.0,
+      "total": 0.36
+    }
   },
   "outputs": {
     "glb": "blender/templates/pecos/field.glb",
@@ -134,18 +184,69 @@
     "passes": [
       {
         "detail": "full",
-        "estimated": 188322,
-        "triangles": 185746
+        "estimated": 285092,
+        "triangles": 294537
       }
     ]
   },
-  "triangles": 185746,
-  "glb_mb": 7.63,
-  "nodes": 969,
-  "objects": 970,
+  "iot": {
+    "sensors": 16,
+    "rtus": 8
+  },
+  "scenery": {
+    "on": true,
+    "seed": "Pecos Ridge lease - night shift",
+    "textures": [
+      "ground_dry_soil",
+      "ground_caliche"
+    ],
+    "fence_m": 0,
+    "cattle_guards": 0,
+    "terrain_m": 5400.0,
+    "mesas": 0,
+    "other_leases": 0,
+    "power_spans": 0,
+    "brush_past_fence": 0,
+    "items": {},
+    "dropped": [
+      "mesas",
+      "the road out of the lease",
+      "signs",
+      "the power line out of the lease",
+      "other leases",
+      "brush past the fence",
+      "fence and cattle guards",
+      "plants and rocks"
+    ],
+    "triangles": 814,
+    "field_triangles": 294537,
+    "images_mb": 3.5
+  },
+  "triangles": 295351,
+  "glb_mb": 11.57,
+  "nodes": 1203,
+  "objects": 1204,
+  "draw_calls": 1055,
+  "compressed": false,
+  "optimize": {
+    "baked_modifiers": 955,
+    "merged": 0,
+    "meshes_before": 1055,
+    "meshes_after": 341,
+    "unshared": 0,
+    "instanced": {},
+    "instances": 0,
+    "no_shadow": 1,
+    "purged": 719,
+    "seconds": 1.73,
+    "glb_meshes": 341,
+    "instanced_nodes": 0
+  },
   "budget": {
     "triangles": 300000,
-    "mb": 30.0
+    "mb": 30.0,
+    "draw_calls": 1600
   },
-  "seconds": 4.18
+  "seconds": 7.84,
+  "cpu_seconds": 22.52
 }

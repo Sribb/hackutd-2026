@@ -1,19 +1,72 @@
-"""Tests for the desert scenery pass (#88). test_generator.py runs these with its ok() and
-its Blender runner.
+"""Tests for the desert scenery pass (#88) and the land around the lease (#98).
+test_generator.py runs these with its ok() and its Blender runner.
 
 - The plan (no Blender): deterministic for a seed, inside its triangle budget, inside the
   fence, and off everything in siting.occupied(), with the fence dropped when it can't fit.
+- The terrain (no Blender): its first loop is exactly the lease ground's edge, no triangle
+  folds, it reaches the horizon on every side, and the mesas sit on the horizon. A pad's berm
+  leaves gaps for flowlines and blockers.
 - Every build: one SCENERY root, every node under it named SCENERY_*, none with an asset
-  ID, kit copies off pads, roads, assets, and truck waypoints, textured ground and road.
+  ID, kit copies off pads, roads, assets, and truck waypoints, textured ground and road, the
+  terrain and mesas under SCENERY and nothing else past the lease ground, vertex colors on the
+  ground and road, and black HDPE flowlines.
 - --no-scenery builds the plain field, and two builds of one blueprint are identical.
 """
 import json
+import math
 import os
 
 import blueprint
 import layout
 import siting
+import terrain
 from glb_read import Glb, touch
+
+
+def test_terrain(ok, root):
+    bp = blueprint.check(json.load(open(os.path.join(root, "scenario", "field.json"))))[0]
+    L = layout.plan(bp)
+    for label, b, rings in (("default", L["ground"], terrain.RINGS), ("wide", (-612.5, 497.5, -140.0, 121.0), terrain.RINGS),
+                            ("lite", L["ground"], terrain.RINGS_LITE)):
+        pts, tris, first = terrain.ring(b, rings)
+        x0, x1, y0, y1 = b
+        nx, ny = terrain.ground_grid(b)
+        edge = {(x0 + (x1 - x0) * i / nx, y) for i in range(nx + 1) for y in (y0, y1)}
+        edge |= {(x, y0 + (y1 - y0) * j / ny) for j in range(ny + 1) for x in (x0, x1)}
+        ok(set(pts[:first]) == edge and first == len(edge),
+           f"terrain {label}: its first loop is exactly the lease ground's {first} edge vertices")
+        folded = [t for t in tris if terrain.signed_area(pts[t[0]], pts[t[1]], pts[t[2]]) <= 1e-9]
+        ok(not folded and len(tris) < 9000, f"terrain {label}: {len(tris)} triangles, none folded")
+        cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+        far = {}
+        for x, y in pts:
+            k = int((math.degrees(math.atan2(y - cy, x - cx)) + 180) // 30) % 12
+            far[k] = max(far.get(k, 0.0), terrain.outside(x, y, b))
+        reach = min(far.get(k, 0.0) for k in range(12))
+        ok(reach > 0.9 * terrain.HORIZON, f"terrain {label}: reaches {reach:.0f} m past the lease on every side")
+        ok(all(terrain.height(x, y, b) == terrain.lease_height(x, y) for x, y in pts[:first]),
+           f"terrain {label}: heights meet the lease ground at its edge")
+    b = L["ground"]
+    cx, cy = (b[0] + b[1]) / 2, (b[2] + b[3]) / 2
+    ms = terrain.mesas(b, bp["name"])
+    dist = [math.hypot(x - cx, y - cy) for v, _, _ in ms for x, y, _ in v]
+    tris = sum(len(f) - 2 for _, fs, _ in ms for f in fs)
+    ok(len(ms) == 24 and 2000 < min(dist) and max(dist) < terrain.HORIZON + 250 and tris < 2500,
+       f"mesas: {len(ms)} on the horizon, {min(dist):.0f} to {max(dist):.0f} m out, {tris} triangles")
+    ok(terrain.mesas(b, bp["name"]) == ms, "mesas: the same seed gives the same mesas")
+    brush = siting.plan_outside(L, 14_000, bp["name"])
+    gx0, gx1, gy0, gy1 = L["ground"]
+    bad = [s for s in brush if abs(s[2]) < 8 or (gx0 - 1 < s[1] < gx1 + 1 and gy0 - 1 < s[2] < gy1 + 1)
+           or max(gx0 - s[1], s[1] - gx1, gy0 - s[2], s[2] - gy1) > siting.OUTSIDE + 2]
+    ok(len(brush) > 30 and not bad and brush == siting.plan_outside(L, 14_000, bp["name"]),
+       f"brush past the fence: {len(brush)} plants in a band off the lease and the road's line, same every time {bad[:2]}")
+    frame = layout.Frame(0.0, 0.0)
+    line = [(-5.5, 76.0), (-5.5, 59.5), (-1.0, 59.5)]
+    runs = siting.berm_runs([line], [((10.0, 18.0, 40.0, 50.0), "a test blocker")], frame)
+    pts = [p for r in runs for p in r]
+    ok(len(runs) >= 3 and not any(abs(x + 5.5) < 1.2 and y > 60 for x, y in pts)
+       and not any(13.0 < x < 15.0 and 39.0 < y < 51.0 for x, y in pts),
+       f"berm: {len(runs)} runs, with gaps where a flowline crosses and a blocker sits")
 
 
 def test_plan(ok, root):
@@ -69,6 +122,35 @@ def check_build(ok, label, rep, glb):
     copies = [n for n in names if n.split("_")[-1].isdigit()]
     hits = [n for n in copies if any(touch(glb.box(n), b, -0.05) for b in walls)]
     ok(not hits, f"{label}: {len(copies)} kit copies stay off pads, assets, the road, and truck stops {hits[:4]}")
+
+    ground, terr = glb.box("SITE_ground"), glb.box("SCENERY_terrain") if "SCENERY_terrain" in glb.by_name else None
+    ok(terr and ("SCENERY_mesas" in glb.by_name or "mesas" in sc["dropped"]) and all(terr[i] < ground[i] - 4500 for i in (0, 2))
+       and all(terr[i] > ground[i] + 4500 for i in (1, 3)),
+       f"{label}: the terrain runs to the horizon with mesas on it, under SCENERY")
+    scenery = set(under) | {root}
+    past = []
+    for i, nd in enumerate(glb.nodes):
+        if i in scenery or "mesh" not in nd:
+            continue
+        b = glb.box(nd["name"])
+        if b and not (ground[0] - 1 <= b[0] and b[1] <= ground[1] + 1 and ground[2] - 1 <= b[2] and b[3] <= ground[3] + 1):
+            past.append(nd["name"])
+    ok(not past, f"{label}: nothing but SCENERY reaches past the lease ground {past[:4]}")
+    colored = []
+    for n in ("SITE_ground", "SCENERY_terrain", "SITE_road", "SCENERY_road"):
+        if n == "SCENERY_road" and n not in glb.by_name and "the road out of the lease" in sc["dropped"]:
+            continue
+        nd = glb.nodes[glb.idx(n)] if n in glb.by_name else {}
+        prims = glb.g["meshes"][nd["mesh"]]["primitives"] if "mesh" in nd else []
+        colored.append(bool(prims) and all("COLOR_0" in p["attributes"] for p in prims))
+    ok(all(colored), f"{label}: the ground, terrain, and roads carry their vertex colors {colored}")
+    flow = [nd for nd in glb.nodes if nd.get("name", "").startswith("PIPE_WELL") and "mesh" in nd]
+    ok(all(mats_of(glb, nd) == {"M_HDPE"} for nd in flow), f"{label}: {len(flow)} well flowlines are black HDPE")
+
+
+def mats_of(glb, nd):
+    ms = glb.g.get("materials", [])
+    return {ms[p["material"]]["name"] for p in glb.g["meshes"][nd["mesh"]]["primitives"] if "material" in p}
 
 
 def test_plain_and_repeat(ok, blender, tmp, small_path, small_rep):
