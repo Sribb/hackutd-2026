@@ -4,7 +4,7 @@
   Serve the repo root over HTTP (browsers block modules and fetch on file://):
     python3 -m http.server 8765
   then open http://127.0.0.1:8765/blender/preview/generate.html
-  Options: ?t=avon|pecos|delaware  &speed=1|2|4  &autoplay=0
+  Options: ?t=avon|pecos|delaware  &speed=1|2|4  &autoplay=0  &look=day|dusk|night (lighting, see look.js)
   The templates come from blender/build_templates.py: the real ingest result, the real review
   list, and the real generator build. Only the timing is slowed down so people can follow it.
 -->
@@ -13,6 +13,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Generation Replay</title>
+<link rel="icon" href="data:,">
 <style>
   :root { --bg: #20252b; --panel: #15191e; --line: #2c333b; --text: #dde3ea; --dim: #8b96a3; --accent: #f2b33d;
           --ok: #5bbf7a; --warn: #e0a03a; --bad: #c6403a; --mono: ui-monospace, SFMono-Regular, Menlo, monospace; }

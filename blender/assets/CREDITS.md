@@ -75,6 +75,7 @@ each material's own color carries the hue. Normal maps are re-encoded unchanged.
 | Asset | File | Source | Author | License |
 |---|---|---|---|---|
 | HDRI_rogland_moonlit_night | `hdri/rogland_moonlit_night_2k.hdr` | [Poly Haven](https://polyhaven.com/a/rogland_moonlit_night) | Greg Zaal | [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/) |
+| HDRI_goegap_day | `hdri/goegap_1k.hdr` | [Poly Haven](https://polyhaven.com/a/goegap) | Greg Zaal | [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/) |
 
 ## How the licenses were checked
 

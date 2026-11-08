@@ -1,0 +1,85 @@
+{
+ "blend": "field.blend",
+ "engine": "BLENDER_EEVEE",
+ "quality": "final",
+ "width": 1600,
+ "shots": [
+  {
+   "name": "golden_hour",
+   "rig": "golden",
+   "file": "golden_hour.jpg",
+   "seconds": 6.9,
+   "jpeg_quality": 92,
+   "bytes": 192900
+  },
+  {
+   "name": "field_aerial",
+   "rig": "afternoon",
+   "file": "field_aerial.jpg",
+   "seconds": 7.2,
+   "jpeg_quality": 92,
+   "bytes": 240929
+  },
+  {
+   "name": "night_shift",
+   "rig": "night",
+   "file": "night_shift.jpg",
+   "seconds": 6.5,
+   "jpeg_quality": 92,
+   "bytes": 153704
+  },
+  {
+   "name": "blue_hour",
+   "rig": "blue",
+   "file": "blue_hour.jpg",
+   "seconds": 4.8,
+   "jpeg_quality": 92,
+   "bytes": 143470
+  },
+  {
+   "name": "pumpjack",
+   "rig": "golden",
+   "file": "pumpjack.jpg",
+   "seconds": 5.1,
+   "jpeg_quality": 92,
+   "bytes": 150610
+  },
+  {
+   "name": "tank_battery",
+   "rig": "afternoon",
+   "file": "tank_battery.jpg",
+   "seconds": 6.7,
+   "jpeg_quality": 92,
+   "bytes": 240958
+  },
+  {
+   "name": "disposal",
+   "rig": "golden",
+   "file": "disposal.jpg",
+   "seconds": 5.9,
+   "jpeg_quality": 92,
+   "bytes": 205003
+  },
+  {
+   "name": "night_alarm",
+   "rig": "night",
+   "file": "night_alarm.jpg",
+   "seconds": 8.1,
+   "jpeg_quality": 92,
+   "bytes": 155645
+  }
+ ],
+ "turntable": {
+  "frames": 264,
+  "fps": 24,
+  "render_seconds": 262.4,
+  "size": [
+   1920,
+   1080
+  ],
+  "file": "turntable.mp4",
+  "encoded": true,
+  "bytes": 6645131
+ },
+ "seconds": 339.7
+}
